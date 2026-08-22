@@ -54,7 +54,7 @@ def create_query(
     return SavedQueryRead.model_validate(svc.create_query(session, conn, payload))
 
 
-@connection_scoped.get("/{connection_id}/queries", response_model=list[SavedQueryRead])
+@connection_scoped.get("/{connection_id}/queries", response_model=list[SavedQueryRead]) # pyright: ignore[reportIndexIssue]
 def list_queries(
     connection_id: str, session: Session = Depends(get_session)
 ) -> list[SavedQueryRead]:
@@ -144,7 +144,7 @@ def run_query(query_id: str, session: Session = Depends(get_session)) -> dict:
     return body
 
 
-@query_scoped.get("/{query_id}/poll", response_model=PollChanged | PollUnchanged)
+@query_scoped.get("/{query_id}/poll", response_model=PollChanged | PollUnchanged) # pyright: ignore[reportGeneralTypeIssues]
 def poll_query(
     query_id: str,
     since_hash: str | None = Query(default=None),
