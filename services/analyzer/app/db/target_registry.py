@@ -216,6 +216,41 @@ def _sqlite_creator(path: str):
     return creator
 
 
+def postgres_connect_args() -> dict:
+    """libpq options for a read-only, time-bounded session.
+
+    Applied as connection options rather than a per-transaction
+    ``SET TRANSACTION READ ONLY``, so no code path can forget them.
+    """
+    settings = get_settings()
+    timeout_ms = settings.query_timeout_ms
+    return {
+        "connect_timeout": settings.connect_timeout_s,
+        "options": (
+            f"-c default_transaction_read_only=on "
+            f"-c statement_timeout={timeout_ms} "
+            f"-c idle_in_transaction_session_timeout={timeout_ms}"
+        ),
+    }
+
+
+def mysql_connect_args() -> dict:
+    """pymysql socket options.
+
+    ``read_timeout`` is deliberately longer than the server's
+    ``max_execution_time``. If they fire together the socket usually wins the
+    race and a merely slow query surfaces as errno 2013 "lost connection",
+    which maps to 502 DB_UNREACHABLE and tells the frontend the database is
+    down. The server must get the chance to return errno 3024 first.
+    """
+    settings = get_settings()
+    return {
+        "connect_timeout": settings.connect_timeout_s,
+        "read_timeout": settings.socket_read_timeout_s,
+        "write_timeout": settings.socket_read_timeout_s,
+    }
+
+
 def _create_engine_for(conn: Connection) -> Engine:
     settings = get_settings()
     timeout_ms = settings.query_timeout_ms
@@ -245,14 +280,7 @@ def _create_engine_for(conn: Connection) -> Engine:
             pool_size=settings.target_pool_size,
             max_overflow=settings.target_max_overflow,
             pool_recycle=1800,
-            connect_args={
-                "connect_timeout": settings.connect_timeout_s,
-                "options": (
-                    f"-c default_transaction_read_only=on "
-                    f"-c statement_timeout={timeout_ms} "
-                    f"-c idle_in_transaction_session_timeout={timeout_ms}"
-                ),
-            },
+            connect_args=postgres_connect_args(),
         )
 
     engine = create_engine(
@@ -261,11 +289,7 @@ def _create_engine_for(conn: Connection) -> Engine:
         pool_size=settings.target_pool_size,
         max_overflow=settings.target_max_overflow,
         pool_recycle=1800,
-        connect_args={
-            "connect_timeout": settings.connect_timeout_s,
-            "read_timeout": settings.query_timeout_s,
-            "write_timeout": settings.query_timeout_s,
-        },
+        connect_args=mysql_connect_args(),
     )
 
     @event.listens_for(engine, "connect")

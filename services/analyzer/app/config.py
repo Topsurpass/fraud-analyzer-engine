@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     query_timeout_s: int = Field(default=10, gt=0)
     connect_timeout_s: int = Field(default=10, gt=0)
 
+    # The client socket must outlast the server-side statement timeout. If they
+    # fire together the socket usually wins the race, and a query that merely
+    # ran long is reported as a lost connection (502) instead of a timeout
+    # (504) -- which tells the frontend the database is down when it is not.
+    socket_timeout_grace_s: int = Field(default=5, gt=0)
+
     # Polling.
     poll_interval_ms: int = Field(default=5000, gt=0)
 
@@ -60,6 +66,11 @@ class Settings(BaseSettings):
     @property
     def query_timeout_ms(self) -> int:
         return self.query_timeout_s * 1000
+
+    @property
+    def socket_read_timeout_s(self) -> int:
+        """Client socket deadline: always later than the server's own timeout."""
+        return self.query_timeout_s + self.socket_timeout_grace_s
 
 
 @lru_cache

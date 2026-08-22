@@ -28,3 +28,22 @@ def test_max_below_default_rejected():
     import pytest
     with pytest.raises(ValueError):
         Settings(_env_file=None, default_row_limit=500, max_row_limit=100)
+
+
+def test_socket_timeout_outlasts_the_server_statement_timeout():
+    """Regression: the two must not fire together.
+
+    When pymysql's socket read_timeout equalled the server's
+    max_execution_time, the socket usually won the race and a merely slow
+    query surfaced as errno 2013 "lost connection" -> 502 DB_UNREACHABLE,
+    instead of errno 3024 -> 504 QUERY_TIMEOUT. A 502 tells the frontend the
+    database is down, which is the wrong signal and the wrong user action.
+    """
+    s = Settings(_env_file=None, query_timeout_s=10)
+    assert s.socket_read_timeout_s > s.query_timeout_s
+
+
+def test_socket_grace_is_configurable(monkeypatch):
+    monkeypatch.setenv("FAE_SOCKET_TIMEOUT_GRACE_S", "30")
+    s = Settings(_env_file=None, query_timeout_s=10)
+    assert s.socket_read_timeout_s == 40

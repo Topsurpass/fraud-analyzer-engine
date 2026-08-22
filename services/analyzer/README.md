@@ -218,7 +218,37 @@ it, so creating a connection to an unreachable host blocks for up to
 ```bash
 uv run pytest                              # everything
 uv run pytest tests/test_sql_guard.py -v   # the adversarial corpus
+uv run pytest tests/test_live_targets.py   # real Postgres and MySQL
 ```
+
+### Live database tests
+
+SQLite cannot exercise the code paths that protect a production database:
+`default_transaction_read_only`, `statement_timeout`, `SET SESSION TRANSACTION
+READ ONLY`, `max_execution_time`, and SQLSTATE-based error mapping.
+`tests/test_live_targets.py` covers those against real servers and skips itself
+automatically when none are reachable, so the default suite stays hermetic.
+
+```bash
+docker run -d --name fae-pg -e POSTGRES_PASSWORD=rootpw -e POSTGRES_DB=fraud \
+    -p 55432:5432 postgres:16-alpine
+docker run -d --name fae-my -e MYSQL_ROOT_PASSWORD=rootpw -e MYSQL_DATABASE=fraud \
+    -p 53306:3306 mysql:8
+# then seed both from tests/fixtures/live_seed.sql
+```
+
+The application user in that fixture is granted **full write access on
+purpose**. It means the only thing preventing a write is this service's own
+enforcement, not the database role. A test that relied on a read-only role
+would prove nothing about this code.
+
+One production bug these tests caught: pymysql's socket `read_timeout` was set
+equal to the server's `max_execution_time`, so the two fired together and the
+socket usually won. A merely slow query surfaced as errno 2013 "lost
+connection", mapping to `502 DB_UNREACHABLE`, which tells a frontend the
+database is down when it is not. The socket deadline is now
+`FAE_QUERY_TIMEOUT_S + FAE_SOCKET_TIMEOUT_GRACE_S`, so the server always gets
+to return its own `504 QUERY_TIMEOUT` first.
 
 `filterwarnings` turns deprecation warnings from `app.*` into errors, so this
 codebase cannot quietly accumulate deprecated API usage.

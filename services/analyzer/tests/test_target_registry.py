@@ -287,3 +287,31 @@ def test_missing_table_is_a_400_not_a_500(target_sqlite):
         with reg.read_only_connection(c) as sa:
             sa.execute(text("SELECT * FROM no_such_table")).fetchall()
     assert ei.value.http_status == 400
+
+
+def test_mysql_socket_timeout_is_padded_beyond_the_statement_timeout(monkeypatch):
+    """Regression: the socket must not time out before the server does.
+
+    When read_timeout equalled max_execution_time the socket usually won the
+    race, and a merely slow query surfaced as errno 2013 "lost connection" ->
+    502 DB_UNREACHABLE instead of 504 QUERY_TIMEOUT. Covered here without a
+    MySQL server; tests/test_live_targets.py proves the resulting error code
+    against a real one.
+    """
+    monkeypatch.setenv("FAE_QUERY_TIMEOUT_S", "10")
+    get_settings.cache_clear()
+
+    args = reg.mysql_connect_args()
+    assert args["read_timeout"] == 15
+    assert args["read_timeout"] > get_settings().query_timeout_s
+    assert args["write_timeout"] > get_settings().query_timeout_s
+
+
+def test_postgres_connect_args_pin_read_only_and_timeout(monkeypatch):
+    monkeypatch.setenv("FAE_QUERY_TIMEOUT_S", "7")
+    get_settings.cache_clear()
+
+    options = reg.postgres_connect_args()["options"]
+    assert "default_transaction_read_only=on" in options
+    assert "statement_timeout=7000" in options
+    assert "idle_in_transaction_session_timeout=7000" in options
