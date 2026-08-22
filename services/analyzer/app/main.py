@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.db import target_registry
 from app.errors import AppError, ErrorCode
-from app.routers import connections, introspection
+from app.routers import connections, introspection, queries
 
 logger = logging.getLogger(__name__)
 
@@ -99,3 +99,5 @@ def health() -> dict:
 
 app.include_router(connections.router)
 app.include_router(introspection.router)
+app.include_router(queries.connection_scoped)
+app.include_router(queries.query_scoped)

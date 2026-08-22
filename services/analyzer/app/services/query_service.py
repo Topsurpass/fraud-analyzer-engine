@@ -210,3 +210,42 @@ def build_chart(query: SavedQuery, columns: list[str]) -> dict:
         "series_field": query.series_field,
         "warnings": warnings,
     }
+
+
+# ---------------------------------------------------------------------------
+# Saved-query orchestration
+# ---------------------------------------------------------------------------
+
+
+def poll_interval_for(query: SavedQuery) -> int:
+    """Per-query interval if set, otherwise the global default."""
+    return query.poll_interval_ms or get_settings().poll_interval_ms
+
+
+def run_saved_query(query: SavedQuery, conn: Connection) -> RunPayload:
+    """Execute a saved query and build its full chart-ready payload."""
+    from app.models import utcnow
+
+    result = execute_sql(conn, query.sql_text, row_limit=query.row_limit)
+    return RunPayload(
+        query_id=query.id,
+        executed_at=utcnow(),
+        duration_ms=result.duration_ms,
+        row_count=result.row_count,
+        truncated=result.truncated,
+        data_hash=canonical_hash(result.columns, result.rows),
+        columns=result.columns,
+        rows=result.rows,
+        chart=build_chart(query, result.columns),
+    )
+
+
+def dry_run(conn: Connection, sql: str) -> None:
+    """Prove a statement actually runs against this connection before saving.
+
+    Validation catches SQL that is unsafe. A dry run catches SQL that is safe
+    but wrong for this database: a misspelled table, a column that does not
+    exist, a permission the role does not have. Saving a query that can never
+    execute would just move the failure to the dashboard.
+    """
+    execute_sql(conn, sql, row_limit=1)
