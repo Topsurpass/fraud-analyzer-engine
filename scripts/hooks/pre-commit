@@ -26,4 +26,19 @@ if git diff --cached --name-only | grep -Eq '(^|/)\.env$|(^|/)\.secrets/|\.db$|\
     exit 1
 fi
 
+# .env.example IS tracked on purpose, which makes it the easiest place to leak
+# a credential by pasting a real connection string over the placeholder.
+# Look for values that are populated rather than empty or obviously fake.
+LEAKS=$(git diff --cached -U0 -- '*.env.example' '*.env.sample' '*.env.template' \
+    | grep -E '^\+' | grep -vE '^\+\+\+' \
+    | grep -EI '(PASSWORD|SECRET|TOKEN|_KEY|DATABASE_URL|DSN)[[:space:]]*=[[:space:]]*.+' \
+    | grep -vEi '=[[:space:]]*("|'"'"')?(|xxx+|placeholder|changeme|your[-_].*|<.*>|\$\{.*\})("|'"'"')?[[:space:]]*$' \
+    || true)
+if [ -n "$LEAKS" ]; then
+    echo "pre-commit: a tracked example env file has a populated secret:" >&2
+    echo "$LEAKS" | sed 's/^/    /' >&2
+    echo "pre-commit: put the real value in .env and leave a placeholder here" >&2
+    exit 1
+fi
+
 echo "pre-commit: ok"
