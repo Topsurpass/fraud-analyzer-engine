@@ -1,0 +1,148 @@
+"""Error taxonomy.
+
+Every failure the API can produce carries a machine-readable ``error_code`` and
+a fixed HTTP status, so the frontend branches on the code rather than parsing
+prose. The status lives on the ErrorCode itself, which keeps the mapping in one
+place and makes "every code maps to exactly one status" testable.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class ErrorCode(StrEnum):
+    # --- 400: the request or its SQL is bad -------------------------------
+    EMPTY_STATEMENT = "EMPTY_STATEMENT"
+    MULTIPLE_STATEMENTS = "MULTIPLE_STATEMENTS"
+    NON_SELECT_STATEMENT = "NON_SELECT_STATEMENT"
+    FORBIDDEN_KEYWORD = "FORBIDDEN_KEYWORD"
+    FORBIDDEN_FUNCTION = "FORBIDDEN_FUNCTION"
+    INVALID_SQL = "INVALID_SQL"
+    QUERY_EXECUTION_ERROR = "QUERY_EXECUTION_ERROR"
+    INVALID_CHART_CONFIG = "INVALID_CHART_CONFIG"
+    INVALID_CONNECTION_CONFIG = "INVALID_CONNECTION_CONFIG"
+    ROW_LIMIT_EXCEEDED = "ROW_LIMIT_EXCEEDED"
+
+    # --- 401 / 403: the target DB refused us ------------------------------
+    DB_AUTH_FAILED = "DB_AUTH_FAILED"
+    DB_PERMISSION_DENIED = "DB_PERMISSION_DENIED"
+
+    # --- 404 ---------------------------------------------------------------
+    CONNECTION_NOT_FOUND = "CONNECTION_NOT_FOUND"
+    QUERY_NOT_FOUND = "QUERY_NOT_FOUND"
+    TABLE_NOT_FOUND = "TABLE_NOT_FOUND"
+
+    # --- 409 ---------------------------------------------------------------
+    DUPLICATE_NAME = "DUPLICATE_NAME"
+
+    # --- 422 ---------------------------------------------------------------
+    REQUEST_VALIDATION_ERROR = "REQUEST_VALIDATION_ERROR"
+
+    # --- 5xx ---------------------------------------------------------------
+    DB_UNREACHABLE = "DB_UNREACHABLE"
+    QUERY_TIMEOUT = "QUERY_TIMEOUT"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+#: Single source of truth for code -> HTTP status. Tested for totality.
+HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
+    ErrorCode.EMPTY_STATEMENT: 400,
+    ErrorCode.MULTIPLE_STATEMENTS: 400,
+    ErrorCode.NON_SELECT_STATEMENT: 400,
+    ErrorCode.FORBIDDEN_KEYWORD: 400,
+    ErrorCode.FORBIDDEN_FUNCTION: 400,
+    ErrorCode.INVALID_SQL: 400,
+    ErrorCode.QUERY_EXECUTION_ERROR: 400,
+    ErrorCode.INVALID_CHART_CONFIG: 400,
+    ErrorCode.INVALID_CONNECTION_CONFIG: 400,
+    ErrorCode.ROW_LIMIT_EXCEEDED: 400,
+    ErrorCode.DB_AUTH_FAILED: 401,
+    ErrorCode.DB_PERMISSION_DENIED: 403,
+    ErrorCode.CONNECTION_NOT_FOUND: 404,
+    ErrorCode.QUERY_NOT_FOUND: 404,
+    ErrorCode.TABLE_NOT_FOUND: 404,
+    ErrorCode.DUPLICATE_NAME: 409,
+    ErrorCode.REQUEST_VALIDATION_ERROR: 422,
+    ErrorCode.DB_UNREACHABLE: 502,
+    ErrorCode.QUERY_TIMEOUT: 504,
+    ErrorCode.INTERNAL_ERROR: 500,
+}
+
+
+class AppError(Exception):
+    """Base for every error the API converts into a structured response."""
+
+    def __init__(
+        self,
+        error_code: ErrorCode,
+        message: str,
+        detail: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.message = message
+        self.detail = detail
+
+    @property
+    def http_status(self) -> int:
+        return HTTP_STATUS_BY_CODE[self.error_code]
+
+    def to_response(self) -> dict:
+        return {
+            "error_code": self.error_code.value,
+            "message": self.message,
+            "detail": self.detail,
+        }
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"{type(self).__name__}({self.error_code.value!r}, {self.message!r})"
+
+
+class SqlValidationError(AppError):
+    """The SQL guard refused the statement. Never reaches a target DB."""
+
+
+class QueryExecutionError(AppError):
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.QUERY_EXECUTION_ERROR, message, detail)
+
+
+class DbAuthError(AppError):
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.DB_AUTH_FAILED, message, detail)
+
+
+class DbPermissionError(AppError):
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.DB_PERMISSION_DENIED, message, detail)
+
+
+class DbUnreachableError(AppError):
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.DB_UNREACHABLE, message, detail)
+
+
+class QueryTimeoutError(AppError):
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.QUERY_TIMEOUT, message, detail)
+
+
+class NotFoundError(AppError):
+    def __init__(
+        self,
+        error_code: ErrorCode,
+        message: str,
+        detail: dict | None = None,
+    ) -> None:
+        super().__init__(error_code, message, detail)
+
+
+class DuplicateNameError(AppError):
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.DUPLICATE_NAME, message, detail)
+
+
+class InvalidConfigError(AppError):
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.INVALID_CONNECTION_CONFIG, message, detail)
