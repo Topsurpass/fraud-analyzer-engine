@@ -34,3 +34,7 @@ packages = ["app"]
 testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = ["error::DeprecationWarning:app.*"]
+markers = [
+    "integration: touches a database, an HTTP client, or a migration",
+    "live: needs a real PostgreSQL or MySQL server (auto-skips without one)",
+]

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Gate lane: every test that does not need a database, an HTTP client, or a
+# migration. Runs on every commit.
+#
+# Measured floor: importing FastAPI + SQLAlchemy costs ~2.6s and pytest
+# startup ~1.2s, so no suite that imports the app can finish in under 2s.
+# The 168 gate tests themselves account for ~3s of the total.
+#
+# Skip once with: git commit --no-verify   (do not make a habit of it)
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT/services/analyzer"
+
+if [ ! -d .venv ]; then
+    echo "pre-commit: no .venv in services/analyzer, skipping tests" >&2
+    exit 0
+fi
+
+echo "pre-commit: running gate tests..."
+uv run pytest -m "not integration" -q
+
+echo "pre-commit: checking for staged secrets..."
+if git diff --cached --name-only | grep -Eq '(^|/)\.env$|(^|/)\.secrets/|\.db$|\.sqlite3?$'; then
+    echo "pre-commit: refusing to commit an env file, secret, or database" >&2
+    exit 1
+fi
+
+echo "pre-commit: ok"

@@ -217,9 +217,25 @@ it, so creating a connection to an unreachable host blocks for up to
 
 ```bash
 uv run pytest                              # everything
+uv run pytest -m "not integration"         # the commit gate lane
 uv run pytest tests/test_sql_guard.py -v   # the adversarial corpus
 uv run pytest tests/test_live_targets.py   # real Postgres and MySQL
 ```
+
+Two lanes. The **gate lane** (`-m "not integration"`) is 168 tests that need no
+database, HTTP client, or migration; it runs on every commit via the hook in
+`scripts/hooks/pre-commit`, installed with `./scripts/install-hooks.sh`. The
+**integration lane** stands up SQLite databases, a `TestClient`, and Alembic.
+
+Test files join a lane by filename, in `tests/conftest.py`, so a new file lands
+in the right one without anyone remembering to mark it.
+
+On the "gate tests must finish in under 2s" convention: that is not reachable
+here, and the numbers say why. Importing `app.main` costs 2.6s on its own
+(FastAPI plus SQLAlchemy plus Pydantic) and pytest startup costs 1.2s, so
+roughly 3.8s is fixed before a single assertion runs. The 168 gate tests
+themselves take about 3s. Total is ~7s, and the only way materially below that
+would be to stop importing the application.
 
 ### Live database tests
 

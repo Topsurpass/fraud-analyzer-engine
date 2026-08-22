@@ -6,11 +6,36 @@ observe another's connections, queries, or ciphertext.
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 
 import pytest
 
 from app.config import get_settings
+
+#: Modules whose tests stand up a database, an HTTP client, or a migration.
+#: Everything else is the fast gate lane, meant to run on every commit.
+_INTEGRATION_MODULES = {
+    "test_connections_api",
+    "test_introspection_api",
+    "test_queries_api",
+    "test_run_poll_api",
+    "test_error_mapping",
+    "test_models",
+    "test_migrations",
+    "test_target_registry",
+}
+
+
+def pytest_collection_modifyitems(items):
+    """Mark by module, so a new test file joins the right lane by name alone."""
+    for item in items:
+        module = item.module.__name__.rsplit(".", 1)[-1]
+        if module == "test_live_targets":
+            item.add_marker(pytest.mark.live)
+            item.add_marker(pytest.mark.integration)
+        elif module in _INTEGRATION_MODULES:
+            item.add_marker(pytest.mark.integration)
 
 
 @pytest.fixture(autouse=True)
@@ -62,36 +87,51 @@ def session(app_db):
         s.close()
 
 
+TARGET_SCHEMA = """
+CREATE TABLE txns (
+    id INTEGER PRIMARY KEY,
+    day TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    flagged INTEGER NOT NULL DEFAULT 0,
+    comment TEXT
+);
+INSERT INTO txns (day, user_id, amount, flagged, comment) VALUES
+    ('2026-08-18', 1, 10.5, 0, 'ok'),
+    ('2026-08-19', 1, 900.0, 1, 'velocity'),
+    ('2026-08-19', 2, 12.0, 0, NULL),
+    ('2026-08-20', 3, 750.25, 1, 'geo mismatch'),
+    ('2026-08-21', 3, 20.0, 0, 'ok');
+CREATE VIEW flagged_txns AS SELECT * FROM txns WHERE flagged = 1;
+"""
+
+
+@pytest.fixture(scope="session")
+def _target_template(tmp_path_factory):
+    """Build the seeded target database once per session.
+
+    Running the DDL per test cost about 80ms each, which dominated the fast
+    lane. Copying a prepared file is roughly a millisecond and gives every test
+    the same pristine, independently writable database.
+    """
+    path = tmp_path_factory.mktemp("template") / "target.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(TARGET_SCHEMA)
+    conn.commit()
+    conn.close()
+    return path
+
+
 @pytest.fixture
-def target_sqlite(tmp_path):
+def target_sqlite(tmp_path, _target_template):
     """A populated SQLite database standing in for a customer's warehouse.
 
     Deliberately not fraud-shaped in any way the engine knows about: the engine
-    must work against whatever schema it is pointed at.
+    must work against whatever schema it is pointed at. Each test gets its own
+    copy, so a test that writes cannot affect another.
     """
     path = tmp_path / "target.db"
-    conn = sqlite3.connect(path)
-    conn.executescript(
-        """
-        CREATE TABLE txns (
-            id INTEGER PRIMARY KEY,
-            day TEXT NOT NULL,
-            user_id INTEGER NOT NULL,
-            amount REAL NOT NULL,
-            flagged INTEGER NOT NULL DEFAULT 0,
-            comment TEXT
-        );
-        INSERT INTO txns (day, user_id, amount, flagged, comment) VALUES
-            ('2026-08-18', 1, 10.5, 0, 'ok'),
-            ('2026-08-19', 1, 900.0, 1, 'velocity'),
-            ('2026-08-19', 2, 12.0, 0, NULL),
-            ('2026-08-20', 3, 750.25, 1, 'geo mismatch'),
-            ('2026-08-21', 3, 20.0, 0, 'ok');
-        CREATE VIEW flagged_txns AS SELECT * FROM txns WHERE flagged = 1;
-        """
-    )
-    conn.commit()
-    conn.close()
+    shutil.copyfile(_target_template, path)
     return str(path)
 
 
