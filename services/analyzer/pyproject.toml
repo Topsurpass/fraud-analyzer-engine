@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Schema-agnostic backend for saved SELECT-only SQL exposed as chart-ready JSON"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115",
+    "fastapi[standard]>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
