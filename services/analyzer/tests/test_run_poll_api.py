@@ -317,3 +317,16 @@ def test_preview_writes_no_execution_log(client, sqlite_connection, session):
 def test_preview_on_missing_connection_is_404(client):
     r = client.post("/connections/nope/query/preview", json={"sql_text": "SELECT 1"})
     assert r.status_code == 404
+
+
+def test_poll_reports_unchanged_after_a_cold_execution(client, saved):
+    """The cold path must also honour since_hash, not only the cached path."""
+    run = client.post(f"/queries/{saved['id']}/run").json()
+    result_cache.clear()
+    body = client.get(
+        f"/queries/{saved['id']}/poll", params={"since_hash": run["data_hash"]}
+    ).json()
+    assert body["changed"] is False
+    assert body["from_cache"] is False
+    assert body["data_hash"] == run["data_hash"]
+    assert "rows" not in body

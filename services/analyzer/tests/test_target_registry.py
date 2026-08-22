@@ -315,3 +315,24 @@ def test_postgres_connect_args_pin_read_only_and_timeout(monkeypatch):
     assert "default_transaction_read_only=on" in options
     assert "statement_timeout=7000" in options
     assert "idle_in_transaction_session_timeout=7000" in options
+
+
+def test_sqlite_interrupt_message_maps_to_timeout():
+    orig = sqlite3.OperationalError("interrupted")
+    assert reg.translate_db_error(_wrap(orig)).error_code == ErrorCode.QUERY_TIMEOUT
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("connection timed out", ErrorCode.QUERY_TIMEOUT),
+        ("statement timeout exceeded", ErrorCode.QUERY_TIMEOUT),
+        ("authentication failed for user", ErrorCode.DB_AUTH_FAILED),
+        ("Access denied for user 'x'", ErrorCode.DB_AUTH_FAILED),
+        ("could not connect to server", ErrorCode.DB_UNREACHABLE),
+        ("connection refused", ErrorCode.DB_UNREACHABLE),
+    ],
+)
+def test_message_fallbacks_for_drivers_without_codes(message, expected):
+    # Last resort for a driver that supplies neither SQLSTATE nor errno.
+    assert reg.translate_db_error(_wrap(Exception(message))).error_code == expected

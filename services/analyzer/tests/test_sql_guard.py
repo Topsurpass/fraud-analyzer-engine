@@ -184,3 +184,18 @@ def test_error_carries_http_400():
     with pytest.raises(SqlValidationError) as ei:
         validate_select("DROP TABLE t")
     assert ei.value.http_status == 400
+
+
+def test_name_typed_exfil_words_are_rejected():
+    # sqlparse types OUTFILE and DUMPFILE as plain names, not keywords, so they
+    # need their own check when they appear without a preceding INTO.
+    for sql in ("SELECT outfile FROM t", "SELECT dumpfile FROM t"):
+        with pytest.raises(SqlValidationError) as ei:
+            validate_select(sql)
+        assert ei.value.error_code == ErrorCode.FORBIDDEN_KEYWORD
+
+
+def test_forbidden_name_rejection_names_the_token():
+    with pytest.raises(SqlValidationError) as ei:
+        validate_select("SELECT outfile FROM t")
+    assert "OUTFILE" in ei.value.message

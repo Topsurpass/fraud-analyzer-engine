@@ -285,3 +285,41 @@ def test_number_chart_needs_only_y_field():
 def test_series_field_is_checked_too():
     chart = build_chart(_query(series_field="missing"), ["day", "flagged_count"])
     assert any("series_field" in w for w in chart["warnings"])
+
+
+def test_to_jsonable_time():
+    from datetime import time as dt_time
+
+    assert to_jsonable(dt_time(13, 45, 30)) == "13:45:30"
+
+
+def test_to_jsonable_nested_list():
+    assert to_jsonable([Decimal("1.5"), date(2026, 1, 1)]) == ["1.5", "2026-01-01"]
+
+
+def test_to_jsonable_tuple_becomes_list():
+    assert to_jsonable((1, 2)) == [1, 2]
+
+
+def test_to_jsonable_dict():
+    assert to_jsonable({1: Decimal("2.5")}) == {"1": "2.5"}
+
+
+def test_to_jsonable_unknown_type_falls_back_to_str():
+    class Weird:
+        def __str__(self):
+            return "weird-value"
+
+    assert to_jsonable(Weird()) == "weird-value"
+
+
+def test_to_jsonable_memoryview():
+    assert to_jsonable(memoryview(b"\x00\x01")) == "AAE="
+
+
+def test_postgres_array_column_serialises(target_sqlite):
+    # A driver returning a list (Postgres arrays, JSON columns) must not break
+    # hashing. Exercised directly since SQLite has no array type.
+    import json
+
+    assert json.dumps(to_jsonable([[1, 2], [3]])) == "[[1, 2], [3]]"

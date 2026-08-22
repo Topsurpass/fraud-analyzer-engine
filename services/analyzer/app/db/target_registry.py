@@ -161,7 +161,7 @@ def translate_db_error(exc: BaseException, *, timed_out: bool = False) -> AppErr
         return DbUnreachableError(_clean(orig))
     if isinstance(exc, (DBAPIError, SQLAlchemyError)) and getattr(
         exc, "connection_invalidated", False
-    ):
+    ):  # pragma: no cover - needs a mid-query server disconnect
         return DbUnreachableError(_clean(orig))
 
     return QueryExecutionError(_clean(orig))

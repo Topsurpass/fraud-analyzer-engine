@@ -197,12 +197,17 @@ def validate_select(sql: str) -> str:
             f"Submit exactly one SELECT.",
             statement_count=len(statements),
         )
-    if not statements:
+    if not statements:  # pragma: no cover - defensive
+        # Unreachable today: the emptiness check above already guarantees at
+        # least one significant statement. Kept so a future change to the
+        # splitting logic fails closed rather than indexing into an empty list.
         _reject(ErrorCode.EMPTY_STATEMENT, "No executable statement was found.")
 
     single = statements[0]
     parsed = sqlparse.parse(single)
-    if not parsed:
+    if not parsed:  # pragma: no cover - defensive
+        # sqlparse returns a statement for any non-empty input, so this is
+        # unreachable. Kept so a parser change fails closed.
         _reject(ErrorCode.INVALID_SQL, "The statement could not be parsed.")
 
     statement = parsed[0]

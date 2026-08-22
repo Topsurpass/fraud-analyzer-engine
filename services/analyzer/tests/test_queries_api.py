@@ -150,3 +150,40 @@ def test_deleting_connection_cascades_to_queries(make_query, client, sqlite_conn
 def test_saving_against_missing_connection_is_404(client):
     r = client.post("/connections/nope/queries", json={"name": "x", "sql_text": "SELECT 1"})
     assert r.status_code == 404
+
+
+def test_update_row_limit_is_clamped_against_the_ceiling(make_query, client):
+    query_id = make_query().json()["id"]
+    r = client.put(f"/queries/{query_id}", json={"row_limit": 999_999})
+    assert r.status_code == 400
+    assert r.json()["error_code"] == "ROW_LIMIT_EXCEEDED"
+
+
+def test_update_row_limit_accepts_a_valid_value(make_query, client):
+    query_id = make_query().json()["id"]
+    assert client.put(f"/queries/{query_id}", json={"row_limit": 50}).json()["row_limit"] == 50
+
+
+def test_renaming_onto_an_existing_name_is_409(make_query, client):
+    make_query(name="first")
+    second = make_query(name="second").json()
+    r = client.put(f"/queries/{second['id']}", json={"name": "first"})
+    assert r.status_code == 409
+    assert r.json()["error_code"] == "DUPLICATE_NAME"
+
+
+def test_execution_log_failure_does_not_break_the_run(make_query, client, monkeypatch):
+    """A logging failure must never turn a successful run into an error."""
+    from app.services import saved_query_service
+
+    query_id = make_query().json()["id"]
+
+    def _explode(*_args, **_kwargs):
+        raise RuntimeError("log table is on fire")
+
+    monkeypatch.setattr(
+        saved_query_service.Session, "add", _explode, raising=False
+    )
+    r = client.post(f"/queries/{query_id}/run")
+    assert r.status_code == 200
+    assert r.json()["row_count"] == 2

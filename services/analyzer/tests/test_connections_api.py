@@ -210,3 +210,92 @@ def test_health(client):
 def test_error_envelope_shape(client):
     body = client.get("/connections/nope").json()
     assert set(body) == {"error_code", "message", "detail"}
+
+
+def test_update_password_reencrypts(client, session):
+    created = client.post(
+        "/connections",
+        json={
+            "name": "pg",
+            "db_type": "postgres",
+            "host": "127.0.0.1",
+            "port": 1,
+            "database": "d",
+            "username": "u",
+            "password": "first-secret",
+        },
+    ).json()["connection"]
+
+    r = client.put(f"/connections/{created['id']}", json={"password": "second-secret"})
+    assert r.status_code == 200
+    assert "second-secret" not in r.text
+
+    from app.security.crypto import decrypt
+
+    stored = session.query(Connection).one()
+    assert decrypt(stored.password_encrypted) == "second-secret"
+
+
+def test_update_rejects_sqlite_path_on_a_non_sqlite_connection(client):
+    created = client.post(
+        "/connections",
+        json={
+            "name": "pg",
+            "db_type": "postgres",
+            "host": "127.0.0.1",
+            "port": 1,
+            "database": "d",
+            "username": "u",
+        },
+    ).json()["connection"]
+    r = client.put(f"/connections/{created['id']}", json={"sqlite_path": "/tmp/x.db"})
+    assert r.status_code == 400
+    assert r.json()["error_code"] == "INVALID_CONNECTION_CONFIG"
+
+
+def test_renaming_a_connection_onto_an_existing_name_is_409(client, target_sqlite):
+    client.post(
+        "/connections",
+        json={"name": "first", "db_type": "sqlite", "sqlite_path": target_sqlite},
+    )
+    second = client.post(
+        "/connections",
+        json={"name": "second", "db_type": "sqlite", "sqlite_path": target_sqlite},
+    ).json()["connection"]
+    r = client.put(f"/connections/{second['id']}", json={"name": "first"})
+    assert r.status_code == 409
+    assert r.json()["error_code"] == "DUPLICATE_NAME"
+
+
+def test_an_unexpected_probe_error_is_caught_not_crashed(client, target_sqlite, monkeypatch):
+    """A probe raising something outside the taxonomy must still be recorded."""
+    from app.db import target_registry
+
+    def _explode(*_args, **_kwargs):
+        raise ValueError("driver did something unexpected")
+
+    monkeypatch.setattr(target_registry, "probe", _explode)
+    r = client.post(
+        "/connections",
+        json={"name": "odd", "db_type": "sqlite", "sqlite_path": target_sqlite},
+    )
+    assert r.status_code == 201
+    assert r.json()["test_ok"] is False
+    assert r.json()["connection"]["status"] == "failed"
+    assert r.json()["test_error_code"] == "QUERY_EXECUTION_ERROR"
+
+
+def test_sqlite_path_on_a_postgres_create_is_rejected(client):
+    r = client.post(
+        "/connections",
+        json={
+            "name": "pg",
+            "db_type": "postgres",
+            "host": "h",
+            "database": "d",
+            "username": "u",
+            "sqlite_path": "/tmp/x.db",
+        },
+    )
+    assert r.status_code == 422
+    assert "sqlite_path" in r.text
