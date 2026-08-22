@@ -19,12 +19,29 @@ from app.models import Base
 
 @lru_cache
 def get_engine() -> Engine:
+    """Build the app-state engine for whichever backend is selected.
+
+    Which URL this is comes from ``Settings.resolved_app_db_url``: the
+    ``FAE_DB_BACKEND`` switch, or an explicit ``FAE_APP_DB_URL`` override.
+    """
     settings = get_settings()
-    url = settings.app_db_url
+    url = settings.resolved_app_db_url
     kwargs: dict = {"future": True, "pool_pre_ping": True}
+
     if url.startswith("sqlite"):
         # check_same_thread=False lets FastAPI's threadpool share the engine.
         kwargs["connect_args"] = {"check_same_thread": False}
+    else:
+        # Managed Postgres (Neon and friends) drops idle connections, and a
+        # serverless instance may have suspended since the last request.
+        # pool_pre_ping already discards dead handles; recycling keeps the pool
+        # from holding one long enough to be dropped mid-request.
+        kwargs["pool_recycle"] = 300
+        kwargs["pool_size"] = 5
+        kwargs["max_overflow"] = 5
+        kwargs["connect_args"] = {
+            "connect_timeout": settings.app_db_connect_timeout_s
+        }
 
     engine = create_engine(url, **kwargs)
 

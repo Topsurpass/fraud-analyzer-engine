@@ -35,6 +35,77 @@ GRANT SELECT ON yourdb.* TO 'fraud_ro'@'%';
 -- SQLite: point sqlite_path at a file the service user can read but not write.
 ```
 
+## Where saved data lives
+
+There are two kinds of database in this system, and it is worth keeping them
+straight.
+
+- The **app-state database** stores connection profiles, saved queries, and
+  execution logs. This is the service's own storage, and it is what a frontend
+  reads saved queries back from.
+- A **target database** is a customer database you point the service at to run
+  fraud SQL against. The service only ever reads from these.
+
+`FAE_DB_BACKEND` selects the app-state store:
+
+| Value | Store | Uses |
+|---|---|---|
+| `sqlite` (default) | a local file | `FAE_SQLITE_APP_DB_PATH`, default `./fraud_analyzer.db` |
+| `neon` | managed Postgres | `DATABASE_URL` |
+
+```bash
+# local development, zero setup
+FAE_DB_BACKEND=sqlite
+
+# shared Postgres a frontend can also read
+FAE_DB_BACKEND=neon
+DATABASE_URL=postgresql://user:pass@host/dbname?sslmode=require
+```
+
+`DATABASE_URL` is read under that exact name, since that is what every managed
+Postgres host injects, and `FAE_DATABASE_URL` works too. A `postgresql://` or
+`postgres://` scheme is rewritten to `postgresql+psycopg://` automatically, so
+a connection string can be pasted in unedited.
+
+Selecting `neon` without a `DATABASE_URL` fails at startup rather than falling
+back to SQLite. A silent fallback would write saved queries to a local file
+nobody would think to look in.
+
+`FAE_APP_DB_URL` is a full escape hatch: set it and it is used verbatim,
+ignoring `FAE_DB_BACKEND`. The test suite uses it to give each test its own
+throwaway database.
+
+Run the migrations against whichever backend is selected:
+
+```bash
+FAE_DB_BACKEND=neon uv run alembic upgrade head
+```
+
+### Enum columns store values, not names
+
+Columns like `db_type`, `status`, and `chart_type` hold the same lowercase
+strings the JSON API uses: `sqlite`, `ok`, `line`. SQLAlchemy's default is to
+store the enum *member name* (`SQLITE`, `OK`, `LINE`), which caused two
+problems worth knowing about if you query the database directly:
+
+- Every `server_default` is written as a value, so a row created by a
+  migration, a seed script, or any client writing SQL directly was unreadable
+  by the service. It raised `LookupError: 'sqlite' is not among the defined
+  enum values`.
+- A frontend reading the database saw different strings than the API returned
+  for the same field.
+
+Migration `0002_enum_values` rewrites existing rows to the value spelling and
+is idempotent.
+
+### Serverless cold starts
+
+Neon suspends an idle database, and the first connection afterwards can take
+well over ten seconds. `FAE_APP_DB_CONNECT_TIMEOUT_S` defaults to 30 for that
+reason, separately from `FAE_CONNECT_TIMEOUT_S`, which bounds connections to
+target databases where a slow connect means something is wrong. The app-state
+pool also recycles every 300s, since a managed host drops idle connections.
+
 ## Setup
 
 Requires [uv](https://docs.astral.sh/uv/). Python 3.12+.

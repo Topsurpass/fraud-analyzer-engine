@@ -20,9 +20,14 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().app_db_url)
+_settings = get_settings()
+config.set_main_option("sqlalchemy.url", _settings.resolved_app_db_url)
 
 target_metadata = Base.metadata
+
+#: Batch mode exists so SQLite can fake ALTER TABLE. Postgres does not need it,
+#: and leaving it on there would rewrite tables for changes it can do in place.
+RENDER_AS_BATCH = _settings.app_db_is_sqlite
 
 
 def run_migrations_offline() -> None:
@@ -31,7 +36,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        render_as_batch=True,
+        render_as_batch=RENDER_AS_BATCH,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -47,8 +52,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            # batch mode lets SQLite handle ALTER TABLE in later migrations
-            render_as_batch=True,
+            render_as_batch=RENDER_AS_BATCH,
         )
         with context.begin_transaction():
             context.run_migrations()

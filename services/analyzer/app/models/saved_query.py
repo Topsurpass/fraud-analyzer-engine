@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, new_id
-from app.models.enums import ChartType
+from app.models.enums import ChartType, enum_column
 
 if TYPE_CHECKING:
     from app.models.connection import Connection
@@ -37,7 +37,7 @@ class SavedQuery(TimestampMixin, Base):
     table_hint: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     chart_type: Mapped[ChartType] = mapped_column(
-        Enum(ChartType, native_enum=False, length=20),
+        enum_column(ChartType),
         nullable=False,
         default=ChartType.TABLE,
         server_default=ChartType.TABLE.value,

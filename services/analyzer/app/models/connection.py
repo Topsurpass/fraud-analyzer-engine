@@ -9,11 +9,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, Integer, String, Text
+from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, new_id
-from app.models.enums import ConnectionStatus, DbType
+from app.models.enums import ConnectionStatus, DbType, enum_column
 
 if TYPE_CHECKING:
     from app.models.saved_query import SavedQuery
@@ -24,9 +24,7 @@ class Connection(TimestampMixin, Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
-    db_type: Mapped[DbType] = mapped_column(
-        Enum(DbType, native_enum=False, length=20), nullable=False
-    )
+    db_type: Mapped[DbType] = mapped_column(enum_column(DbType), nullable=False)
 
     host: Mapped[str | None] = mapped_column(String(255), nullable=True)
     port: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -36,7 +34,7 @@ class Connection(TimestampMixin, Base):
     sqlite_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     status: Mapped[ConnectionStatus] = mapped_column(
-        Enum(ConnectionStatus, native_enum=False, length=20),
+        enum_column(ConnectionStatus),
         nullable=False,
         default=ConnectionStatus.UNTESTED,
         server_default=ConnectionStatus.UNTESTED.value,
