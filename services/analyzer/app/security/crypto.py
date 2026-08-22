@@ -28,6 +28,17 @@ logger = logging.getLogger(__name__)
 KEY_DIR = Path(".secrets")
 KEY_PATH = KEY_DIR / "fernet.key"
 
+#: True when the key came from disk or was generated, rather than from
+#: FAE_FERNET_KEY. Startup reports this: a generated key on an ephemeral
+#: filesystem makes every stored credential undecryptable after a restart.
+_key_is_ephemeral = False
+
+
+def key_is_ephemeral() -> bool:
+    """Whether the encryption key would survive a container restart."""
+    get_fernet()  # resolve the key if it has not been resolved yet
+    return _key_is_ephemeral
+
 
 def generate_key() -> str:
     """Return a fresh urlsafe-base64 Fernet key as text."""
@@ -35,9 +46,14 @@ def generate_key() -> str:
 
 
 def _load_or_create_key() -> str:
+    global _key_is_ephemeral
+
     configured = get_settings().fernet_key
     if configured:
+        _key_is_ephemeral = False
         return configured
+
+    _key_is_ephemeral = True
 
     if KEY_PATH.exists():
         key = KEY_PATH.read_text(encoding="ascii").strip()

@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     sqlite_app_db_path: str = "./fraud_analyzer.db"
     app_db_url: str | None = None
 
+    # Run 'alembic upgrade head' at startup. On by default because a container
+    # deploy has no shell step between image build and server start, and a
+    # service that cannot create its own schema returns "no such table" on
+    # every request. Turn it off if you run migrations as a release step, or if
+    # several instances start at once and you do not want them racing.
+    auto_migrate: bool = True
+
     # Read from DATABASE_URL, the name every managed Postgres host uses, and
     # from FAE_DATABASE_URL for consistency with the rest of these settings.
     database_url: str | None = Field(

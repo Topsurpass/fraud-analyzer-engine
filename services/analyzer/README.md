@@ -106,6 +106,57 @@ reason, separately from `FAE_CONNECT_TIMEOUT_S`, which bounds connections to
 target databases where a slow connect means something is wrong. The app-state
 pool also recycles every 300s, since a managed host drops idle connections.
 
+## Deploying to a container
+
+Three environment variables decide whether a deployment works. Get any of them
+wrong and the failure shows up later, as missing tables or unreadable
+credentials, rather than at deploy time.
+
+```bash
+fly secrets set \
+  FAE_DB_BACKEND=neon \
+  DATABASE_URL='postgresql://user:pass@host/dbname?sslmode=require' \
+  FAE_FERNET_KEY='<output of the keygen command below>'
+```
+
+```bash
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+**`FAE_DB_BACKEND` and `DATABASE_URL`.** `.env` is gitignored, so it never ships
+in an image. Without these the service falls back to the SQLite default and a
+container filesystem is wiped on every deploy, taking every saved connection
+and query with it. Startup logs which backend it resolved and warns when it is
+SQLite.
+
+**`FAE_FERNET_KEY`.** Without it the service generates a key onto local disk.
+On an ephemeral filesystem that key is regenerated on the next restart while
+the encrypted passwords sit in a durable database, so every stored
+target-database credential becomes permanently undecryptable. Set it once and
+keep it stable. Startup warns if it was generated.
+
+### Migrations run at startup
+
+`FAE_AUTO_MIGRATE` defaults to `true`, so the service brings its own schema up
+to head before serving. A container deploy has no shell step between building
+the image and starting the server, and a service that cannot create its own
+schema answers every request with `no such table: connections`.
+
+Set `FAE_AUTO_MIGRATE=false` if you run migrations as a separate release step,
+or if several instances start at once and you would rather they not race. With
+it off, startup verifies the schema and refuses to serve if tables are missing,
+naming the command to run.
+
+### Reading the startup log
+
+```
+App-state backend=neon url=postgresql+psycopg://user:***@host/dbname auto_migrate=True
+Applying app-state migrations to postgresql+psycopg://user:***@host/dbname
+```
+
+The password is redacted. If that first line says `backend=sqlite` on a
+container, the deployment is not configured and its data will not survive.
+
 ## Setup
 
 Requires [uv](https://docs.astral.sh/uv/). Python 3.12+.

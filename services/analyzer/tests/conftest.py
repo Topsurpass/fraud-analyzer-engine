@@ -53,6 +53,10 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("FAE_APP_DB_URL", f"sqlite:///{tmp_path / 'app_state.db'}")
     # Keep an unreachable host from stalling a test for the production default.
     monkeypatch.setenv("FAE_CONNECT_TIMEOUT_S", "1")
+    # The app_db fixture already builds the schema with create_all, so running
+    # Alembic again in every TestClient startup would be pure cost. The tests
+    # that exercise the startup migration path set this back to true.
+    monkeypatch.setenv("FAE_AUTO_MIGRATE", "false")
     get_settings.cache_clear()
     get_fernet.cache_clear()
     app_state.reset_caches()

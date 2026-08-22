@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.db import target_registry
+from app.db.migrate import bootstrap_schema
 from app.errors import AppError, ErrorCode
 from app.routers import connections, introspection, queries
 
@@ -20,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    """Dispose every pooled target engine on shutdown."""
+    """Make the app-state schema usable before serving, clean up after."""
+    bootstrap_schema()
     yield
     target_registry.dispose_all()
 
