@@ -77,3 +77,26 @@ def target_sqlite(tmp_path):
     conn.commit()
     conn.close()
     return str(path)
+
+
+@pytest.fixture
+def client():
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app, raise_server_exceptions=False) as c:
+        yield c
+
+
+@pytest.fixture
+def sqlite_connection(client, target_sqlite):
+    """A created, tested-OK connection pointed at the temp SQLite target."""
+    response = client.post(
+        "/connections",
+        json={"name": "target", "db_type": "sqlite", "sqlite_path": target_sqlite},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["test_ok"] is True, body
+    return body["connection"]
