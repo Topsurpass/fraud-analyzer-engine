@@ -41,12 +41,15 @@ def test_create_saves_even_when_the_test_fails(client, tmp_path):
 
 
 def test_response_never_contains_credentials(client):
+    # 127.0.0.1:1 refuses instantly, so the immediate connection test fails
+    # fast instead of waiting out a DNS lookup or a connect timeout.
     r = client.post(
         "/connections",
         json={
             "name": "pg",
             "db_type": "postgres",
-            "host": "db.internal",
+            "host": "127.0.0.1",
+            "port": 1,
             "database": "fraud",
             "username": "ro_user",
             "password": "s3cret-do-not-leak",
@@ -73,7 +76,8 @@ def test_password_is_encrypted_at_rest(client, session):
         json={
             "name": "pg",
             "db_type": "postgres",
-            "host": "h",
+            "host": "127.0.0.1",
+            "port": 1,
             "database": "d",
             "username": "u",
             "password": "plaintext-never",
