@@ -1,18 +1,43 @@
-# Never let a local secret or database into an image layer.
-.env
-.env.*
-!.env.example
-.secrets/
-*.db
-*.sqlite
-*.sqlite3
+# Patterns are matched against the whole context path, so a bare name only
+# matches at the top level. Everything that can appear in a subdirectory is
+# written as **/<name>.
 
-.venv/
-__pycache__/
-*.pyc
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-htmlcov/
-.coverage
-tests/
+# Never let a local secret or database into an image layer.
+**/.env
+**/.env.*
+!.env.example
+**/.secrets
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.key
+**/*.pem
+
+# Build/test detritus. Host __pycache__ is worse than dead weight: stale .pyc
+# files shadow the source they were built from.
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/htmlcov
+**/.coverage
+**/*.egg-info
+**/dist
+**/build
+**/node_modules
+**/.DS_Store
+
+# The image does not run the test suite.
+tests
+
+# Never needed inside the image, and keeping them out means editing the docs or
+# the Dockerfile does not invalidate the layer that installs the project.
+.git
+.github
+Dockerfile
+.dockerignore
+README.md
+fly.toml

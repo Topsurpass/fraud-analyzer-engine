@@ -1,5 +1,10 @@
 # Fly.io deployment for the analyzer service.
 #
+# This file lives beside the Dockerfile on purpose. Fly's build context is the
+# directory holding fly.toml, and the build needs pyproject.toml and uv.lock,
+# which live here and not at the repo root. Run every fly command from
+# services/analyzer (or pass -c services/analyzer/fly.toml).
+#
 # Secrets are NOT set here. Set them once with:
 #   fly secrets set FAE_DB_BACKEND=neon \
 #                   DATABASE_URL='postgresql://...' \
@@ -14,7 +19,7 @@ app = "fraud-analyzer-engine"
 primary_region = "iad"
 
 [build]
-  dockerfile = "services/analyzer/Dockerfile"
+  dockerfile = "Dockerfile"
 
 [env]
   FAE_LOG_JSON = "true"

@@ -108,23 +108,59 @@ pool also recycles every 300s, since a managed host drops idle connections.
 
 ## Deploying to a container
 
-`services/analyzer/Dockerfile` builds the image and `fly.toml` at the repo root
-configures the Fly deployment:
+`Dockerfile` and `fly.toml` both live in `services/analyzer/`, and every
+container command runs from there. That is not cosmetic: a Docker build context
+and a Fly build context are both "the directory the config sits in", and the
+build needs `pyproject.toml` and `uv.lock`, which are here and not at the repo
+root. With `fly.toml` at the root, `COPY pyproject.toml uv.lock ./` had nothing
+to copy and `fly deploy` could not build at all.
 
 ```bash
+cd services/analyzer
 fly deploy
+
+# The same build, without Fly:
+docker build -t fae .
+docker run --rm -p 8000:8000 \
+  -e DATABASE_URL='postgresql://user:pass@host/dbname?sslmode=require' \
+  -e FAE_FERNET_KEY='<32-byte urlsafe base64>' \
+  fae
 ```
 
-The image runs as a non-root user, installs from the lockfile in a build stage
-so no compiler or `uv` ships in the runtime layer, and defaults
-`FAE_DB_BACKEND=neon` and `FAE_SQLITE_ALLOWED_DIRS=""` because neither SQLite
-app-state nor a SQLite target can work on an ephemeral container filesystem.
+The image runs as uid 10001, installs from the lockfile in a build stage so no
+compiler or `uv` ships in the runtime layer, and defaults `FAE_DB_BACKEND=neon`
+and `FAE_SQLITE_ALLOWED_DIRS=""` because neither SQLite app-state nor a SQLite
+target can work on an ephemeral container filesystem.
+
+The code and the virtualenv are root-owned and read-only to the service
+account. A service whose whole job is running caller-supplied SQL should not be
+able to rewrite its own source. The process writes to exactly two paths:
+
+| Path | What lands there | When |
+|---|---|---|
+| `/app/.secrets` | `fernet.key` | Only when `FAE_FERNET_KEY` is unset |
+| `/app/data` | `fraud_analyzer.db` | Only when `FAE_DB_BACKEND=sqlite` |
+
+Set `FAE_FERNET_KEY` and `DATABASE_URL` and neither is touched, so the image
+runs read-only:
+
+```bash
+docker run --rm --read-only --tmpfs /tmp -p 8000:8000 \
+  -e DATABASE_URL=... -e FAE_FERNET_KEY=... fae
+```
+
+`.dockerignore` keeps `.env`, `.secrets/`, `*.db`, `.git`, and every
+`__pycache__` out of the image. The last one matters beyond size: a host
+`__pycache__` copied in can shadow the source it was built from. `alembic/` and
+`alembic.ini` are deliberately *not* excluded, because `FAE_AUTO_MIGRATE=true`
+needs them at startup.
 
 Three environment variables decide whether a deployment works. Get any of them
 wrong and the failure shows up later, as missing tables or unreadable
 credentials, rather than at deploy time.
 
 ```bash
+# From services/analyzer, the directory holding fly.toml.
 fly secrets set \
   FAE_DB_BACKEND=neon \
   DATABASE_URL='postgresql://user:pass@host/dbname?sslmode=require' \
@@ -192,7 +228,7 @@ working, turning a dependency outage into a restart loop.
 returning 503 `SERVICE_NOT_READY` when it cannot. Give it a generous grace
 period. A suspended Neon instance can take over ten seconds just to accept a
 connection, and startup runs migrations before serving, so a short grace kills
-the machine mid-migration. `fly.toml` sets 60s.
+the machine mid-migration. `services/analyzer/fly.toml` sets 60s.
 
 ## Setup
 
@@ -459,7 +495,7 @@ connection; it bounds the damage of the ones they can.
 against the container's filesystem, so a path from a developer's laptop
 resolves to nothing, and a Fly volume attaches to one machine so it would work
 on some requests and fail on others. Use `postgres` or `mysql` with a read-only
-role for anything deployed. The Dockerfile and `fly.toml` set
+role for anything deployed. The Dockerfile and `services/analyzer/fly.toml` set
 `FAE_SQLITE_ALLOWED_DIRS=""` so this fails with a clear message rather than a
 confusing one.
 
