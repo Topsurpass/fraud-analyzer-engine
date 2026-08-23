@@ -26,6 +26,8 @@ Every non-2xx response, without exception, has this shape:
 | `INVALID_CHART_CONFIG` | 400 | The chart mapping is not usable |
 | `INVALID_CONNECTION_CONFIG` | 400 | Fields supplied do not match the `db_type` |
 | `ROW_LIMIT_EXCEEDED` | 400 | `row_limit` is below 1 or above the ceiling |
+| `SQL_TOO_LONG` | 400 | The statement is longer than `FAE_MAX_SQL_LENGTH` |
+| `RESULT_TOO_LARGE` | 400 | The result passed `FAE_MAX_RESULT_BYTES` while being read |
 | `DB_AUTH_FAILED` | 401 | The target database rejected the credentials |
 | `DB_PERMISSION_DENIED` | 403 | The role lacks rights, or a write hit a read-only session |
 | `CONNECTION_NOT_FOUND` | 404 | No connection with that id |
@@ -34,9 +36,22 @@ Every non-2xx response, without exception, has this shape:
 | `DASHBOARD_NOT_FOUND` | 404 | No dashboard with that id |
 | `DUPLICATE_NAME` | 409 | A connection, query, or dashboard already has that name |
 | `REQUEST_VALIDATION_ERROR` | 422 | The request body or query params failed validation |
+| `RATE_LIMITED` | 429 | Per-client request budget exhausted; see `Retry-After` |
 | `INTERNAL_ERROR` | 500 | Unexpected failure; details are logged, never returned |
 | `DB_UNREACHABLE` | 502 | Could not open a connection to the target |
 | `QUERY_TIMEOUT` | 504 | The statement exceeded the timeout |
+| `SERVICE_NOT_READY` | 503 | `/ready` only: the app-state database is unreachable |
+
+Two notes on codes that changed behaviour:
+
+* `INVALID_SQL` was previously unreachable. Every path to it was marked
+  defensive, and a real `sqlparse` failure escaped as an uncaught 500. It is
+  now emitted whenever the parser refuses the input, including at sqlparse's
+  own 10,000-token ceiling.
+* `QUERY_TIMEOUT` used to be returned for pool exhaustion, where the query had
+  never run. That case is now `DB_UNREACHABLE` with
+  `detail.reason = "pool_exhausted"`, and the pool configuration is no longer
+  included in the message.
 
 ## `POST /queries/{id}/run`
 
@@ -100,6 +115,73 @@ received as `since_hash`. Pass `force=true` to bypass the cache.
 
 Nothing is persisted and nothing is logged. Capped at `FAE_PREVIEW_ROW_LIMIT`
 (default 100) regardless of what the request asks for.
+
+## `POST /queries/poll`
+
+Poll many saved queries in one request. Every chart on a dashboard otherwise
+runs its own loop: twelve cards at the five-second default is twelve requests
+per tick, each taking a worker thread, an app-state session, and on a cache
+miss a target connection.
+
+```json
+{ "queries": [ { "query_id": "...", "since_hash": "sha256:..." } ], "force": false }
+```
+
+`queries` holds 1 to 100 items. The response is one result per query, in the
+order submitted:
+
+```json
+{ "results": [ { "query_id": "...", "changed": true, "...": "..." } ] }
+```
+
+Each entry is the same shape `GET /queries/{id}/poll` returns. A query that
+fails yields an error entry instead, so one broken card cannot blank out the
+others on the board:
+
+```json
+{ "query_id": "...", "ok": false, "error_code": "QUERY_EXECUTION_ERROR",
+  "message": "...", "detail": null }
+```
+
+The batch endpoint shares its implementation with the single one, so the two
+cannot drift on caching, hashing, or logging.
+
+## `GET /queries?ids=a,b,c`
+
+Resolve many saved queries in one request. A dashboard card resolves to a saved
+query and a board may span connections, so the per-connection listing cannot
+serve one. Returns them in the order asked for; unknown ids are omitted rather
+than raising, so a board that just lost a query still renders the rest.
+
+## Health and readiness
+
+| Method | Path | Meaning |
+|---|---|---|
+| `GET` | `/health` | Liveness. Answers whenever the process is up, and deliberately touches no database: a liveness probe that fails on a dependency outage turns that outage into a restart loop. |
+| `GET` | `/ready` | Readiness. Runs `SELECT 1` against the app-state database. 200 `{"status":"ready"}`, or 503 `SERVICE_NOT_READY`. |
+
+Point an orchestrator's liveness check at `/health` and its readiness check at
+`/ready`. Allow a generous readiness grace period: a suspended serverless
+Postgres can take over ten seconds just to accept a connection, and startup
+runs migrations before serving.
+
+## Rate limiting
+
+Two per-client-IP budgets, since the service has no authentication:
+`FAE_RATE_LIMIT_PER_MINUTE` (default 600) for general traffic and
+`FAE_RATE_LIMIT_EXECUTION_PER_MINUTE` (default 300) for anything that opens a
+connection to a target database. Exceeding one returns 429 `RATE_LIMITED` with
+a `Retry-After` header. Set either to 0 to disable it.
+
+Budgets are per process, so behind several instances the effective limit
+multiplies by instance count.
+
+## Request correlation
+
+Every response carries `X-Request-ID`. An inbound `X-Request-ID` is honoured so
+a trace started at a proxy or in the frontend carries through; otherwise one is
+generated. The same id is attached to every log line emitted while serving that
+request.
 
 ## Dashboards
 

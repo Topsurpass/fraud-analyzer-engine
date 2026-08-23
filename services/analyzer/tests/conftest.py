@@ -25,6 +25,15 @@ _INTEGRATION_MODULES = {
     "test_models",
     "test_migrations",
     "test_target_registry",
+    "test_sqlite_path_api",
+    "test_batch_api",
+    "test_health_api",
+    "test_ratelimit_api",
+    "test_openapi_contract",
+    "test_log_retention",
+    "test_query_efficiency",
+    "test_result_limits",
+    "test_observability",
 }
 
 
@@ -47,20 +56,34 @@ def isolated_environment(tmp_path, monkeypatch):
     the schema is left to the `app_db` fixture, so the large unit-test files
     (SQL guard, errors, config) never pay for a database they do not touch.
     """
+    from app import ratelimit
     from app.db import app_state
+    from app.security import sql_guard
     from app.security.crypto import generate_key, get_fernet
+    from app.services import result_cache
 
     monkeypatch.setenv("FAE_FERNET_KEY", generate_key())
     monkeypatch.setenv("FAE_APP_DB_URL", f"sqlite:///{tmp_path / 'app_state.db'}")
     # Keep an unreachable host from stalling a test for the production default.
     monkeypatch.setenv("FAE_CONNECT_TIMEOUT_S", "1")
+    # Target sqlite files live under the per-test tmp_path, which is outside
+    # the default allowlist. Opting the tmp directory in keeps the guard
+    # switched on everywhere else, so a path-escape test still has something
+    # real to fail against. tests/test_sqlite_paths.py sets its own values.
+    monkeypatch.setenv("FAE_SQLITE_ALLOWED_DIRS", str(tmp_path))
     # The app_db fixture already builds the schema with create_all, so running
     # Alembic again in every TestClient startup would be pure cost. The tests
     # that exercise the startup migration path set this back to true.
     monkeypatch.setenv("FAE_AUTO_MIGRATE", "false")
+    # Access logs are proven by tests/test_observability.py; everywhere else
+    # they bury the actual assertion failure in pytest's captured output.
+    monkeypatch.setenv("FAE_LOG_LEVEL", "WARNING")
     get_settings.cache_clear()
     get_fernet.cache_clear()
     app_state.reset_caches()
+    sql_guard.clear_validation_cache()
+    result_cache.clear()
+    ratelimit.reset()
 
     yield
 
@@ -70,6 +93,9 @@ def isolated_environment(tmp_path, monkeypatch):
     get_settings.cache_clear()
     get_fernet.cache_clear()
     app_state.reset_caches()
+    sql_guard.clear_validation_cache()
+    result_cache.clear()
+    ratelimit.reset()
 
 
 @pytest.fixture

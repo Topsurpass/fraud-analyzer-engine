@@ -35,6 +35,7 @@ from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.engine import URL
 from sqlalchemy.engine import Connection as SAConnection
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.pool import QueuePool
 
 from app.config import get_settings
@@ -49,6 +50,7 @@ from app.errors import (
 )
 from app.models import Connection, DbType
 from app.security.crypto import decrypt
+from app.security.sqlite_paths import resolve_sqlite_path
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +134,20 @@ def translate_db_error(exc: BaseException, *, timed_out: bool = False) -> AppErr
     if timed_out:
         return QueryTimeoutError("The query exceeded the statement timeout.")
 
+    # Pool exhaustion, checked before anything else because it is not a
+    # database error at all: the query never ran. It used to fall through to
+    # the text match on "timed out" below and surface as QUERY_TIMEOUT, which
+    # told the frontend a query was slow when in fact the service had no free
+    # connection. The driver message also spells out the pool configuration
+    # ("QueuePool limit of size 5 overflow 2 reached"), so it is replaced
+    # rather than passed through.
+    if isinstance(exc, PoolTimeout):
+        return DbUnreachableError(
+            "No connection to the target database was available in time. "
+            "Too many queries are running against this connection at once.",
+            {"reason": "pool_exhausted"},
+        )
+
     orig = getattr(exc, "orig", None) or exc
 
     sqlstate = _sqlstate_of(orig)
@@ -175,9 +191,7 @@ def translate_db_error(exc: BaseException, *, timed_out: bool = False) -> AppErr
 def build_url(conn: Connection) -> URL:
     """Build the SQLAlchemy URL for a connection, decrypting the password."""
     if conn.db_type == DbType.SQLITE:
-        if not conn.sqlite_path:
-            raise InvalidConfigError("A sqlite connection requires 'sqlite_path'.")
-        return URL.create("sqlite", database=conn.sqlite_path)
+        return URL.create("sqlite", database=str(resolve_sqlite_path(conn.sqlite_path)))
 
     if not conn.host or not conn.database:
         raise InvalidConfigError(
@@ -202,7 +216,10 @@ def build_url(conn: Connection) -> URL:
 
 
 def _sqlite_creator(path: str):
-    resolved = str(Path(path).expanduser())
+    # Validated here, not only at write time, so a connection row that predates
+    # the allowlist is checked when it is used rather than trusted because it
+    # is already stored.
+    resolved = str(resolve_sqlite_path(path))
 
     def creator():
         # mode=ro makes the handle itself incapable of writing, which is
@@ -256,8 +273,6 @@ def _create_engine_for(conn: Connection) -> Engine:
     timeout_ms = settings.query_timeout_ms
 
     if conn.db_type == DbType.SQLITE:
-        if not conn.sqlite_path:
-            raise InvalidConfigError("A sqlite connection requires 'sqlite_path'.")
         # SQLAlchemy defaults a bare "sqlite://" URL to SingletonThreadPool,
         # which cannot be sized. The creator opens a real file with
         # check_same_thread=False, so a normal QueuePool is both safe and
@@ -269,6 +284,7 @@ def _create_engine_for(conn: Connection) -> Engine:
             pool_pre_ping=True,
             pool_size=settings.target_pool_size,
             max_overflow=settings.target_max_overflow,
+            pool_timeout=settings.target_pool_timeout_s,
         )
 
     url = build_url(conn)
@@ -279,6 +295,7 @@ def _create_engine_for(conn: Connection) -> Engine:
             pool_pre_ping=True,
             pool_size=settings.target_pool_size,
             max_overflow=settings.target_max_overflow,
+            pool_timeout=settings.target_pool_timeout_s,
             pool_recycle=1800,
             connect_args=postgres_connect_args(),
         )
@@ -288,6 +305,7 @@ def _create_engine_for(conn: Connection) -> Engine:
         pool_pre_ping=True,
         pool_size=settings.target_pool_size,
         max_overflow=settings.target_max_overflow,
+            pool_timeout=settings.target_pool_timeout_s,
         pool_recycle=1800,
         connect_args=mysql_connect_args(),
     )

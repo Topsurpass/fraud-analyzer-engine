@@ -1,0 +1,104 @@
+name: analyzer
+
+on:
+  push:
+    branches: [master, "feat/**"]
+  pull_request:
+
+# A second push to the same branch cancels the first: CI feedback on stale
+# code is worse than no feedback, because it gets trusted.
+concurrency:
+  group: analyzer-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: services/analyzer
+
+jobs:
+  gate:
+    name: gate tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/analyzer/uv.lock
+
+      - run: uv sync --frozen
+
+      # The fast lane, the same one the pre-commit hook runs.
+      - name: gate tests
+        run: uv run pytest -m "not integration and not slow" -q
+
+      # Excluded from the commit hook because they spend real CPU to assert a
+      # CPU bound. CI is where that belongs.
+      - name: performance bounds
+        run: uv run pytest -m "slow" -q
+
+      - name: integration tests
+        run: uv run pytest -m "integration and not live" -q
+
+      # The committed OpenAPI file is what frontend clients generate from.
+      # A drifted contract is a silent break, so fail here rather than there.
+      - name: contract is not stale
+        run: |
+          uv run python scripts/export_openapi.py
+          cd "$GITHUB_WORKSPACE"
+          git diff --exit-code contracts/openapi.json
+
+  live:
+    name: live target databases
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: analyzer
+          POSTGRES_USER: analyzer
+          POSTGRES_DB: analyzer
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U analyzer"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: analyzer
+          MYSQL_DATABASE: analyzer
+          MYSQL_USER: analyzer
+          MYSQL_PASSWORD: analyzer
+        ports: ["53306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: services/analyzer/uv.lock
+      - run: uv sync --frozen
+
+      # These roles are write-privileged on purpose. The point of the lane is
+      # that the service's own read-only enforcement is the only thing stopping
+      # a write, so granting it less would test nothing. This lane is what
+      # found the MySQL socket/statement timeout race.
+      - name: live target tests
+        run: uv run pytest -m live -q
+
+  image:
+    name: image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: services/analyzer
+          file: services/analyzer/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

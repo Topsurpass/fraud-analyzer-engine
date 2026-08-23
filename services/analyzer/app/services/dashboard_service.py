@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.errors import DuplicateNameError, ErrorCode, NotFoundError
 from app.models import Dashboard, DashboardItem, SavedQuery
@@ -28,7 +28,22 @@ def get_dashboard(session: Session, dashboard_id: str) -> Dashboard:
 
 
 def list_dashboards(session: Session) -> list[Dashboard]:
-    return list(session.scalars(select(Dashboard).order_by(Dashboard.created_at)))
+    """Every dashboard, with its items already loaded.
+
+    ``selectinload`` is load-bearing, not a micro-optimisation. ``query_ids``
+    walks ``Dashboard.items``, so serialising a list of N boards lazily emitted
+    1 + N statements: five boards measured six round trips. Local SQLite hides
+    that entirely; against a managed Postgres at ~10ms per round trip, twenty
+    boards is over 200ms of pure latency on a view the frontend loads on every
+    page. Two statements now, regardless of how many boards exist.
+    """
+    return list(
+        session.scalars(
+            select(Dashboard)
+            .options(selectinload(Dashboard.items))
+            .order_by(Dashboard.created_at)
+        )
+    )
 
 
 def _validate_query_ids(session: Session, query_ids: list[str]) -> list[str]:
@@ -80,7 +95,9 @@ def _commit(session: Session, dashboard: Dashboard, name: str) -> Dashboard:
             f"A dashboard named {name!r} already exists.",
             {"name": name},
         ) from exc
-    session.refresh(dashboard)
+    # refresh() re-SELECTs the whole row on every write. The only thing the
+    # caller reads afterwards is the item list, so refresh just that.
+    session.refresh(dashboard, ["items"])
     return dashboard
 
 

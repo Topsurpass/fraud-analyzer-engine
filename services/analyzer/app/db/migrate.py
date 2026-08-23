@@ -88,12 +88,17 @@ def warn_if_storage_is_ephemeral() -> None:
     settings = get_settings()
     if not settings.app_db_is_sqlite:
         return
+    # The *resolved* file, not the sqlite_app_db_path setting. When
+    # FAE_APP_DB_URL overrides the backend, the setting names a file that is
+    # not in use, and an operator acting on this warning would go looking in
+    # the wrong place.
+    location = settings.app_db_sqlite_file or settings.sqlite_app_db_path
     logger.warning(
         "App-state is SQLite at %s. On a container with an ephemeral "
         "filesystem every saved connection and query is lost on restart. "
         "Set FAE_DB_BACKEND=neon and DATABASE_URL for durable storage, or "
         "mount a persistent volume at that path.",
-        settings.sqlite_app_db_path,
+        location,
     )
 
 
@@ -120,9 +125,16 @@ def warn_if_encryption_key_is_ephemeral() -> None:
 def bootstrap_schema() -> None:
     """Startup hook: migrate if allowed, then confirm the schema is usable."""
     settings = get_settings()
+    # Report what actually took effect, not just the switch. FAE_APP_DB_URL
+    # overrides FAE_DB_BACKEND entirely, and a banner reading "backend=neon"
+    # beside a sqlite:// URL is exactly the confusion this line exists to
+    # prevent -- the README tells operators to read it to confirm a
+    # deployment is configured the way they think it is.
+    source = "FAE_APP_DB_URL override" if settings.app_db_url else "FAE_DB_BACKEND"
     logger.info(
-        "App-state backend=%s url=%s auto_migrate=%s",
-        settings.db_backend.value,
+        "App-state backend=%s (from %s) url=%s auto_migrate=%s",
+        "sqlite" if settings.app_db_is_sqlite else settings.db_backend.value,
+        source,
         describe_app_db(),
         settings.auto_migrate,
     )

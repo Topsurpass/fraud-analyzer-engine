@@ -69,7 +69,13 @@ def test_unhandled_exception_returns_500_without_leaking(client):
     def _boom():
         raise RuntimeError("secret internal detail: password=hunter2")
 
+    # Snapshot and restore, rather than filtering by path afterwards. The
+    # filter version removed far more than it meant to and left the app
+    # without its API routers for every test that ran later.
+    original_routes = list(app.routes)
+    original_schema = app.openapi_schema
     app.include_router(boom)
+    app.openapi_schema = None
     try:
         r = client.get("/_boom")
         assert r.status_code == 500
@@ -79,7 +85,8 @@ def test_unhandled_exception_returns_500_without_leaking(client):
         assert "Traceback" not in r.text
         assert r.json()["detail"] is None
     finally:
-        app.routes[:] = [r for r in app.routes if getattr(r, "path", None) != "/_boom"]
+        app.routes[:] = original_routes
+        app.openapi_schema = original_schema
 
 
 def test_guard_rejection_names_a_specific_reason_not_a_generic_403(

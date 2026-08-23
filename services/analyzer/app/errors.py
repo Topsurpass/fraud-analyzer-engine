@@ -23,6 +23,8 @@ class ErrorCode(StrEnum):
     INVALID_CHART_CONFIG = "INVALID_CHART_CONFIG"
     INVALID_CONNECTION_CONFIG = "INVALID_CONNECTION_CONFIG"
     ROW_LIMIT_EXCEEDED = "ROW_LIMIT_EXCEEDED"
+    SQL_TOO_LONG = "SQL_TOO_LONG"
+    RESULT_TOO_LARGE = "RESULT_TOO_LARGE"
 
     # --- 401 / 403: the target DB refused us ------------------------------
     DB_AUTH_FAILED = "DB_AUTH_FAILED"
@@ -40,10 +42,14 @@ class ErrorCode(StrEnum):
     # --- 422 ---------------------------------------------------------------
     REQUEST_VALIDATION_ERROR = "REQUEST_VALIDATION_ERROR"
 
+    # --- 429 ---------------------------------------------------------------
+    RATE_LIMITED = "RATE_LIMITED"
+
     # --- 5xx ---------------------------------------------------------------
     DB_UNREACHABLE = "DB_UNREACHABLE"
     QUERY_TIMEOUT = "QUERY_TIMEOUT"
     INTERNAL_ERROR = "INTERNAL_ERROR"
+    SERVICE_NOT_READY = "SERVICE_NOT_READY"
 
 
 #: Single source of truth for code -> HTTP status. Tested for totality.
@@ -58,6 +64,8 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.INVALID_CHART_CONFIG: 400,
     ErrorCode.INVALID_CONNECTION_CONFIG: 400,
     ErrorCode.ROW_LIMIT_EXCEEDED: 400,
+    ErrorCode.SQL_TOO_LONG: 400,
+    ErrorCode.RESULT_TOO_LARGE: 400,
     ErrorCode.DB_AUTH_FAILED: 401,
     ErrorCode.DB_PERMISSION_DENIED: 403,
     ErrorCode.CONNECTION_NOT_FOUND: 404,
@@ -66,9 +74,11 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.DASHBOARD_NOT_FOUND: 404,
     ErrorCode.DUPLICATE_NAME: 409,
     ErrorCode.REQUEST_VALIDATION_ERROR: 422,
+    ErrorCode.RATE_LIMITED: 429,
     ErrorCode.DB_UNREACHABLE: 502,
     ErrorCode.QUERY_TIMEOUT: 504,
     ErrorCode.INTERNAL_ERROR: 500,
+    ErrorCode.SERVICE_NOT_READY: 503,
 }
 
 
@@ -148,3 +158,20 @@ class DuplicateNameError(AppError):
 class InvalidConfigError(AppError):
     def __init__(self, message: str, detail: dict | None = None) -> None:
         super().__init__(ErrorCode.INVALID_CONNECTION_CONFIG, message, detail)
+
+
+class ResultTooLargeError(AppError):
+    """The payload passed the byte budget while rows were being coerced."""
+
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.RESULT_TOO_LARGE, message, detail)
+
+
+class RateLimitedError(AppError):
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.RATE_LIMITED, message, detail)
+
+
+class ServiceNotReadyError(AppError):
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.SERVICE_NOT_READY, message, detail)

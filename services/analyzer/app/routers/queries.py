@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
-
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
@@ -12,6 +10,8 @@ from app.db.app_state import get_session
 from app.errors import AppError
 from app.models import utcnow
 from app.schemas.query import (
+    BatchPollRequest,
+    BatchPollResponse,
     ExecutionLogRead,
     PollChanged,
     PollUnchanged,
@@ -65,6 +65,30 @@ def list_queries(
     ]
 
 
+@query_scoped.get("", response_model=list[SavedQueryRead])  # pyright: ignore[reportIndexIssue]
+def list_queries_by_ids(
+    ids: str = Query(
+        description="Comma-separated saved-query ids, in the order you want them back."
+    ),
+    session: Session = Depends(get_session),
+) -> list[SavedQueryRead]:
+    """Resolve many saved queries in one request.
+
+    A dashboard card resolves to a saved query and a board may span several
+    connections, so the per-connection listing cannot serve one. Without this
+    the frontend issues one GET per card, and a twelve-card board is thirteen
+    round trips before it can paint anything.
+
+    Unknown ids are omitted rather than raising: a board that just lost a query
+    should still render the cards that survived.
+    """
+    requested = [part.strip() for part in ids.split(",") if part.strip()]
+    return [
+        SavedQueryRead.model_validate(q)
+        for q in svc.list_queries_by_ids(session, requested)
+    ]
+
+
 @query_scoped.get("/{query_id}", response_model=SavedQueryRead)
 def get_query(query_id: str, session: Session = Depends(get_session)) -> SavedQueryRead:
     return SavedQueryRead.model_validate(svc.get_query(session, query_id))
@@ -105,9 +129,7 @@ def list_logs(
 
 
 def _to_run_response(payload, poll_interval_ms: int) -> dict:
-    body = asdict(payload)
-    body["poll_interval_ms"] = poll_interval_ms
-    return body
+    return payload.as_dict(poll_interval_ms)
 
 
 def _execute_and_log(session: Session, query, conn):
@@ -159,6 +181,17 @@ def poll_query(
 
     Returns ``changed: false`` when the current hash equals ``since_hash``, and
     the full payload otherwise.
+    """
+    return _poll_one(session, query_id, since_hash, force)
+
+
+def _poll_one(
+    session: Session, query_id: str, since_hash: str | None, force: bool
+) -> dict:
+    """The whole poll decision for one query.
+
+    Shared by the single and batch endpoints so the two cannot drift apart on
+    caching, hashing, or logging behaviour.
     """
     query = svc.get_query(session, query_id)
     interval = query_service.poll_interval_for(query)
@@ -215,3 +248,40 @@ def preview_query(
         columns=result.columns,
         rows=result.rows,
     )
+
+
+@query_scoped.post("/poll", response_model=BatchPollResponse)
+def poll_queries(
+    payload: BatchPollRequest, session: Session = Depends(get_session)
+) -> dict:
+    """Poll many saved queries in one request.
+
+    Every chart on a dashboard runs its own interval loop. Twelve cards at the
+    five-second default is twelve concurrent requests every five seconds, each
+    taking a worker thread and an app-state session, and each taking a target
+    connection out of a pool of ten whenever it misses cache. That load is
+    structural, not incidental, and this is the endpoint that removes it: one
+    request per board per tick instead of one per card.
+
+    A failure is reported per query rather than failing the batch, so one card
+    with broken SQL cannot blank out the eleven beside it.
+    """
+    results: list[dict] = []
+
+    for item in payload.queries:
+        try:
+            results.append(
+                _poll_one(session, item.query_id, item.since_hash, payload.force)
+            )
+        except AppError as error:
+            results.append(
+                {
+                    "query_id": item.query_id,
+                    "ok": False,
+                    "error_code": error.error_code.value,
+                    "message": error.message,
+                    "detail": error.detail,
+                }
+            )
+
+    return {"results": results}

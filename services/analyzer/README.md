@@ -108,6 +108,18 @@ pool also recycles every 300s, since a managed host drops idle connections.
 
 ## Deploying to a container
 
+`services/analyzer/Dockerfile` builds the image and `fly.toml` at the repo root
+configures the Fly deployment:
+
+```bash
+fly deploy
+```
+
+The image runs as a non-root user, installs from the lockfile in a build stage
+so no compiler or `uv` ships in the runtime layer, and defaults
+`FAE_DB_BACKEND=neon` and `FAE_SQLITE_ALLOWED_DIRS=""` because neither SQLite
+app-state nor a SQLite target can work on an ephemeral container filesystem.
+
 Three environment variables decide whether a deployment works. Get any of them
 wrong and the failure shows up later, as missing tables or unreadable
 credentials, rather than at deploy time.
@@ -150,12 +162,37 @@ naming the command to run.
 ### Reading the startup log
 
 ```
-App-state backend=neon url=postgresql+psycopg://user:***@host/dbname auto_migrate=True
+App-state backend=neon (from FAE_DB_BACKEND) url=postgresql+psycopg://user:***@host/dbname auto_migrate=True
 Applying app-state migrations to postgresql+psycopg://user:***@host/dbname
 ```
 
 The password is redacted. If that first line says `backend=sqlite` on a
 container, the deployment is not configured and its data will not survive.
+
+The line names which setting won, because `FAE_APP_DB_URL` overrides
+`FAE_DB_BACKEND` entirely and a banner reading `backend=neon` beside a
+`sqlite://` URL is exactly the confusion this line exists to prevent.
+
+Nothing in the service configured the root logger until recently, so uvicorn's
+default left root at `WARNING` and this line was discarded: it was documented
+and unreachable. `FAE_LOG_LEVEL` (default `INFO`) now controls it, and
+`FAE_LOG_JSON=true` switches to one JSON object per line for a log shipper.
+
+Every response carries an `X-Request-ID` header, echoed from the request when
+supplied, and every log line emitted while serving that request carries the
+same id.
+
+### Health and readiness
+
+`/health` is liveness and touches nothing: a liveness probe that fails during a
+database outage makes the orchestrator kill and reschedule a process that was
+working, turning a dependency outage into a restart loop.
+
+`/ready` is readiness and runs `SELECT 1` against the app-state database,
+returning 503 `SERVICE_NOT_READY` when it cannot. Give it a generous grace
+period. A suspended Neon instance can take over ten seconds just to accept a
+connection, and startup runs migrations before serving, so a short grace kills
+the machine mid-migration. `fly.toml` sets 60s.
 
 ## Setup
 
@@ -195,7 +232,16 @@ Interactive docs at http://127.0.0.1:8000/docs. Run the tests with
 | GET/PUT/DELETE | `/queries/{id}` | Read, update, delete a saved query |
 | POST | `/queries/{id}/run` | Execute now, always fresh |
 | GET | `/queries/{id}/poll` | Cheap change check for an interval loop |
+| POST | `/queries/poll` | Poll up to 100 queries in one request |
+| GET | `/queries?ids=a,b,c` | Resolve many saved queries in one request |
 | GET | `/queries/{id}/logs` | Recent execution attempts |
+| GET | `/health` | Liveness; touches nothing |
+| GET | `/ready` | Readiness; checks the app-state database |
+
+The two batch endpoints exist because a dashboard is the normal case. Twelve
+cards previously cost thirteen requests to paint and twelve more every five
+seconds, each taking a worker thread, an app-state session, and on a cache miss
+a target connection.
 
 Response shapes and the full `error_code` table are in
 [`contracts/analyzer-api.md`](../../contracts/analyzer-api.md).
@@ -256,6 +302,48 @@ SELECT pg_sleep(300)                     -- denial of service
 
 Matching is on the call shape, a name followed by `(`, so a column that happens
 to be named `sleep` still works.
+
+**Quoted names count, and getting this wrong voided the whole list.** `sqlparse`
+types a double-quoted identifier as `String.Symbol`, not `Name`. An earlier
+version scanned only name and keyword tokens, so this walked straight past the
+blocklist while the bare form was correctly rejected:
+
+```sql
+SELECT "pg_read_file"('/etc/passwd')     -- PostgreSQL accepts both spellings
+```
+
+Two quote characters defeated every entry. The corpus now pins each blocklisted
+function in bare, double-quoted, backticked, and bracketed form.
+
+The list also covers functions that write or change session state, not just
+ones that read files. The important one is `set_config`:
+
+```sql
+SELECT set_config('default_transaction_read_only', 'off', false)
+```
+
+That turns off the *second* layer of the read-only guarantee (see below) for
+the life of the pooled connection, so it would survive into later requests
+reusing the same handle. That is a privilege escalation, not a coverage gap.
+`nextval`, `setval`, `pg_terminate_backend`, `pg_notify`, `get_lock` and the
+large-object and `dblink` families are blocked for the same reason.
+
+`generate_series` and `repeat` are deliberately **not** blocked. Both are
+ordinary in analytics, and both are bounded by the statement timeout and the
+result byte budget instead.
+
+**6. Locking reads.** `FOR SHARE` and `FOR KEY SHARE` take row locks on the
+customer's production tables. They cannot go on the keyword blocklist, because
+`sqlparse` types a bare `share` as a keyword too and blocking the word would
+reject `SELECT share FROM positions`. The check anchors on the `FOR ... SHARE`
+sequence, which is what separates the clause from the column.
+
+**Statement length is capped** at `FAE_MAX_SQL_LENGTH`, checked before anything
+parses. `sqlparse` is pure Python and superlinear in token density, so an
+unbounded statement is a CPU denial of service that never reaches a database
+and is therefore never bounded by the statement timeout. A 1.6MB statement
+measured 51 seconds. Accepted statements are memoised, so a saved query pays
+parsing once rather than on every poll.
 
 The adversarial corpus in `tests/test_sql_guard.py` is the quality gate for this
 component. A single bypass there means the fraud tool is itself an attack
@@ -334,6 +422,56 @@ default. See `.env.example` for the full list.
 One worth knowing: `POST /connections` tests the connection as part of creating
 it, so creating a connection to an unreachable host blocks for up to
 `FAE_CONNECT_TIMEOUT_S`. Lower it if that latency matters to your UI.
+
+### Limits worth understanding
+
+| Setting | Default | Why it exists |
+|---|---|---|
+| `FAE_SQLITE_ALLOWED_DIRS` | `.` | Directories a SQLite **target** may point into. See below; empty disables SQLite targets entirely, which is right for a container. |
+| `FAE_MAX_SQL_LENGTH` | `8000` | Bounds how much CPU one statement can spend in the parser. |
+| `FAE_MAX_RESULT_BYTES` | `32MB` | Refuses a runaway payload while rows are read. `row_limit` bounds row count, not row width. |
+| `FAE_CACHE_MAX_BYTES` | `64MB` | Poll cache budget. It used to be bounded by entry count, which said nothing about cost. |
+| `FAE_RATE_LIMIT_PER_MINUTE` | `600` | General per-IP budget. 0 disables. |
+| `FAE_RATE_LIMIT_EXECUTION_PER_MINUTE` | `300` | Budget for anything opening a target connection. |
+| `FAE_MAX_REQUEST_BYTES` | `1MB` | Refuses an oversized body before it is read. |
+| `FAE_LOG_RETENTION_DAYS` | `30` | Execution logs are pruned at startup past this age. 0 disables. |
+| `FAE_MAX_LOGS_PER_QUERY` | `1000` | Caps log depth per query, so one busy card cannot bury the rest. |
+
+### SQLite target connections are restricted by path
+
+A connection profile carries a filesystem path that the API process opens
+directly. Unconstrained, that is not a database connection, it is an
+arbitrary-file-read primitive, and its best target is this service's own
+app-state database: point a connection at it and
+`SELECT name, password_encrypted FROM connections` returns every stored
+credential through the ordinary query endpoints.
+
+So a SQLite target must resolve inside `FAE_SQLITE_ALLOWED_DIRS`, and the
+app-state database is refused whatever that allows. Paths are compared after
+resolving symlinks and `..`, and the check runs when the connection is *used*,
+not only when it is created, so a row written before the allowlist existed is
+still checked.
+
+This is containment, not authentication. It does not decide who may register a
+connection; it bounds the damage of the ones they can.
+
+**A SQLite target cannot work in a container at all.** The path is resolved
+against the container's filesystem, so a path from a developer's laptop
+resolves to nothing, and a Fly volume attaches to one machine so it would work
+on some requests and fail on others. Use `postgres` or `mysql` with a read-only
+role for anything deployed. The Dockerfile and `fly.toml` set
+`FAE_SQLITE_ALLOWED_DIRS=""` so this fails with a clear message rather than a
+confusing one.
+
+### Rate limiting
+
+There is no authentication, by scope. That makes the per-IP budget the only
+thing between the open internet and an endpoint that runs caller-supplied SQL
+against a production database. Buckets are fixed one-minute windows held per
+process, so behind several instances the effective limit multiplies by
+instance count. `X-Forwarded-For` is honoured (Fly's proxy makes every request
+appear to come from one peer otherwise); it is client-controlled and therefore
+spoofable, which is another reason this is containment rather than auth.
 
 ## Tests
 

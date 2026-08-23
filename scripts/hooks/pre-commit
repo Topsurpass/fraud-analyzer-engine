@@ -2,9 +2,16 @@
 # Gate lane: every test that does not need a database, an HTTP client, or a
 # migration. Runs on every commit.
 #
-# Measured floor: importing FastAPI + SQLAlchemy costs ~2.6s and pytest
-# startup ~1.2s, so no suite that imports the app can finish in under 2s.
-# The 168 gate tests themselves account for ~3s of the total.
+# Measured: 329 gate tests in ~23s. Importing FastAPI + SQLAlchemy costs ~2.6s
+# and pytest startup ~1.2s, so no suite that imports the app can finish in
+# under 2s regardless. Most of the remainder is the SQL guard corpus, which
+# validates every blocklisted function in four quoting styles -- ~2.7s well
+# spent, since a hole there is the whole tool's security story.
+#
+# 'slow' is excluded here and runs in CI instead. Those tests assert CPU
+# bounds by actually spending the CPU (the SQL guard's worst-case parse costs
+# several seconds by design), which is worth measuring but not on every
+# commit.
 #
 # Skip once with: git commit --no-verify   (do not make a habit of it)
 set -euo pipefail
@@ -18,7 +25,7 @@ if [ ! -d .venv ]; then
 fi
 
 echo "pre-commit: running gate tests..."
-uv run pytest -m "not integration" -q
+uv run pytest -m "not integration and not slow" -q
 
 echo "pre-commit: checking for staged secrets..."
 if git diff --cached --name-only | grep -Eq '(^|/)\.env$|(^|/)\.secrets/|\.db$|\.sqlite3?$'; then

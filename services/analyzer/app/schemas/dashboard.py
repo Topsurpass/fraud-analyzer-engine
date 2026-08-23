@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.schemas.types import UtcDatetime
+
 
 class DashboardCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -29,5 +31,5 @@ class DashboardRead(BaseModel):
     id: str
     name: str
     query_ids: list[str]
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime

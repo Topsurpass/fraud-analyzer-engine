@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, new_id, utcnow
@@ -16,6 +16,18 @@ if TYPE_CHECKING:
 
 class QueryExecutionLog(Base):
     __tablename__ = "query_execution_logs"
+
+    # recent_logs() filters on query_id and orders by executed_at DESC with a
+    # LIMIT. The single-column indexes below cannot serve that together: the
+    # planner scans one and then sorts the whole match set. This composite
+    # answers it straight from the index and stops at the limit.
+    __table_args__ = (
+        Index(
+            "ix_logs_query_executed",
+            "query_id",
+            text("executed_at DESC"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     query_id: Mapped[str] = mapped_column(

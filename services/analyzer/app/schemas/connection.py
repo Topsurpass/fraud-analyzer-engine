@@ -14,6 +14,7 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from app.models.enums import ConnectionStatus, DbType
+from app.schemas.types import UtcDatetime
 
 
 class ConnectionBase(BaseModel):
@@ -85,10 +86,10 @@ class ConnectionRead(BaseModel):
     username: str | None
     sqlite_path: str | None
     status: ConnectionStatus
-    last_tested_at: datetime | None
+    last_tested_at: UtcDatetime | None
     last_test_error: str | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class ConnectionCreateResult(BaseModel):
@@ -103,7 +104,7 @@ class ConnectionCreateResult(BaseModel):
 class ConnectionTestResult(BaseModel):
     connection_id: str
     status: ConnectionStatus
-    tested_at: datetime
+    tested_at: UtcDatetime
     ok: bool
     error: str | None = None
     error_code: str | None = None

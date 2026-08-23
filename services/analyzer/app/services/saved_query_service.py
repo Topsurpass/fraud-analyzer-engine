@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.errors import AppError, DuplicateNameError, ErrorCode, NotFoundError
-from app.models import Connection, QueryExecutionLog, SavedQuery
+from app.models import Connection, QueryExecutionLog, SavedQuery, utcnow
 from app.schemas.query import SavedQueryCreate, SavedQueryUpdate
 from app.services import query_service, result_cache
 
@@ -144,3 +146,102 @@ def recent_logs(session: Session, query_id: str, limit: int = 20) -> list[QueryE
             .limit(limit)
         )
     )
+
+
+def list_queries_by_ids(session: Session, query_ids: list[str]) -> list[SavedQuery]:
+    """Fetch many saved queries in one statement, in the order asked for.
+
+    A dashboard card resolves to a saved query, and a board may span several
+    connections, so the per-connection listing cannot serve one. Without this
+    the frontend issues one GET per card: a twelve-card board was thirteen
+    round trips before first paint, each with its own app-state session.
+
+    Unknown ids are skipped rather than raising, because a board that has just
+    lost a query should still render the cards that survived.
+    """
+    if not query_ids:
+        return []
+
+    found = {
+        query.id: query
+        for query in session.scalars(
+            select(SavedQuery).where(SavedQuery.id.in_(query_ids))
+        )
+    }
+    return [found[qid] for qid in query_ids if qid in found]
+
+
+def prune_execution_logs(session: Session | None = None) -> int:
+    """Delete execution logs past the retention window. Returns rows removed.
+
+    Two limits, because they fail differently. ``log_retention_days`` bounds
+    age, which is what stops the table growing forever on a metered backend.
+    ``max_logs_per_query`` bounds depth per query, which is what stops one
+    busy card from burying every other query's history inside the window.
+
+    Opens its own session when not given one, so startup can call it before
+    any request has created a session.
+    """
+    settings = get_settings()
+    if settings.log_retention_days <= 0 and settings.max_logs_per_query <= 0:
+        return 0
+
+    owns_session = session is None
+    if session is None:
+        from app.db.app_state import get_sessionmaker
+
+        session = get_sessionmaker()()
+
+    try:
+        removed = 0
+
+        if settings.log_retention_days > 0:
+            cutoff = utcnow() - timedelta(days=settings.log_retention_days)
+            result = session.execute(
+                delete(QueryExecutionLog).where(QueryExecutionLog.executed_at < cutoff)
+            )
+            removed += result.rowcount or 0
+
+        if settings.max_logs_per_query > 0:
+            removed += _trim_per_query(session, settings.max_logs_per_query)
+
+        session.commit()
+        return removed
+    finally:
+        if owns_session:
+            session.close()
+
+
+def _trim_per_query(session: Session, keep: int) -> int:
+    """Keep only the newest ``keep`` rows per query.
+
+    Done as one grouped scan plus a delete per over-quota query rather than a
+    window function, because the app-state backend may be SQLite or Postgres
+    and this keeps one code path for both. Queries at or under quota cost
+    nothing beyond the initial count.
+    """
+    over_quota = session.execute(
+        select(QueryExecutionLog.query_id)
+        .group_by(QueryExecutionLog.query_id)
+        .having(func.count(QueryExecutionLog.id) > keep)
+    ).scalars()
+
+    removed = 0
+    for query_id in list(over_quota):
+        cutoff_row = session.execute(
+            select(QueryExecutionLog.executed_at)
+            .where(QueryExecutionLog.query_id == query_id)
+            .order_by(QueryExecutionLog.executed_at.desc())
+            .offset(keep)
+            .limit(1)
+        ).scalar_one_or_none()
+        if cutoff_row is None:
+            continue
+        result = session.execute(
+            delete(QueryExecutionLog).where(
+                QueryExecutionLog.query_id == query_id,
+                QueryExecutionLog.executed_at <= cutoff_row,
+            )
+        )
+        removed += result.rowcount or 0
+    return removed

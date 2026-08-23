@@ -336,3 +336,60 @@ def test_sqlite_interrupt_message_maps_to_timeout():
 def test_message_fallbacks_for_drivers_without_codes(message, expected):
     # Last resort for a driver that supplies neither SQLSTATE nor errno.
     assert reg.translate_db_error(_wrap(Exception(message))).error_code == expected
+
+
+# --------------------------------------------------------------------------
+# Pool exhaustion
+#
+# Regression: no pool_timeout was set, so SQLAlchemy's 30 s default applied.
+# The resulting sqlalchemy.exc.TimeoutError fell through translate_db_error to
+# the text match on "timed out" and surfaced as QUERY_TIMEOUT (504), telling
+# the frontend a query was slow when in fact the service had no free
+# connection and the query never ran. The driver message also spelled out the
+# pool configuration to an unauthenticated caller.
+# --------------------------------------------------------------------------
+
+
+def test_pool_exhaustion_is_not_reported_as_a_query_timeout():
+    from sqlalchemy.exc import TimeoutError as PoolTimeout
+
+    from app.db.target_registry import translate_db_error
+    from app.errors import ErrorCode
+
+    exhausted = PoolTimeout(
+        "QueuePool limit of size 5 overflow 2 reached, connection timed out, "
+        "timeout 30.00"
+    )
+    translated = translate_db_error(exhausted)
+
+    assert translated.error_code == ErrorCode.DB_UNREACHABLE
+    assert translated.error_code != ErrorCode.QUERY_TIMEOUT
+
+
+def test_pool_exhaustion_does_not_leak_the_pool_configuration():
+    """The raw driver message names the pool size and overflow."""
+    from sqlalchemy.exc import TimeoutError as PoolTimeout
+
+    from app.db.target_registry import translate_db_error
+
+    translated = translate_db_error(
+        PoolTimeout("QueuePool limit of size 5 overflow 2 reached, timeout 30.00")
+    )
+
+    assert "QueuePool" not in translated.message
+    assert "overflow" not in translated.message
+    assert translated.detail == {"reason": "pool_exhausted"}
+
+
+def test_pool_timeout_is_configured_on_target_engines(session, target_sqlite):
+    """Without this the default is 30 s, past the frontend's poll deadline."""
+    from app.config import get_settings
+    from app.db import target_registry
+    from app.models import Connection, DbType
+
+    conn = Connection(name="p", db_type=DbType.SQLITE, sqlite_path=target_sqlite)
+    session.add(conn)
+    session.commit()
+
+    engine = target_registry.get_engine(conn)
+    assert engine.pool.timeout() == get_settings().target_pool_timeout_s

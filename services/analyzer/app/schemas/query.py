@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import ChartType
+from app.schemas.types import UtcDatetime
 
 
 class SavedQueryBase(BaseModel):
@@ -57,8 +58,8 @@ class SavedQueryRead(BaseModel):
     series_field: str | None
     row_limit: int
     poll_interval_ms: int | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class ChartSpec(BaseModel):
@@ -71,7 +72,7 @@ class ChartSpec(BaseModel):
 
 class RunResponse(BaseModel):
     query_id: str
-    executed_at: datetime
+    executed_at: UtcDatetime
     duration_ms: int
     row_count: int
     truncated: bool
@@ -104,7 +105,7 @@ class PreviewRequest(BaseModel):
 
 class PreviewResponse(BaseModel):
     connection_id: str
-    executed_at: datetime
+    executed_at: UtcDatetime
     duration_ms: int
     row_count: int
     truncated: bool
@@ -117,9 +118,39 @@ class ExecutionLogRead(BaseModel):
 
     id: str
     query_id: str
-    executed_at: datetime
+    executed_at: UtcDatetime
     row_count: int | None
     duration_ms: int | None
     success: bool
     error_code: str | None
     error_message: str | None
+
+
+class BatchPollItem(BaseModel):
+    """One query's place in a batch poll request."""
+
+    query_id: str
+    since_hash: str | None = None
+
+
+class BatchPollRequest(BaseModel):
+    queries: list[BatchPollItem] = Field(min_length=1, max_length=100)
+    force: bool = False
+
+
+class BatchPollFailure(BaseModel):
+    """One query's failure, carried inside an otherwise successful batch.
+
+    A batch must not fail wholesale because one card's SQL is broken: the
+    other eleven cards on the board are fine and should still render.
+    """
+
+    query_id: str
+    ok: bool = False
+    error_code: str
+    message: str
+    detail: dict | None = None
+
+
+class BatchPollResponse(BaseModel):
+    results: list[dict]

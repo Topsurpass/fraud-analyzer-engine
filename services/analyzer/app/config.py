@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from enum import StrEnum
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class DbBackend(StrEnum):
@@ -74,6 +76,56 @@ class Settings(BaseSettings):
     max_row_limit: int = Field(default=10000, gt=0)
     preview_row_limit: int = Field(default=100, gt=0)
 
+    # Hard ceiling on a single statement's length, in characters.
+    #
+    # sqlparse is pure Python and its grouping cost is superlinear in token
+    # density, not in length. Measured end-to-end through validate_select with
+    # token-dense input ("SELECT a,a,a,...,1"), all of it spent before any
+    # database is involved and therefore never bounded by the statement
+    # timeout:
+    #
+    #     1,600,000 chars -> 51.2 s   (the original unbounded case)
+    #         8,008 chars ->  6.7 s   <- the peak
+    #         6,008 chars ->  4.3 s
+    #         4,008 chars ->  2.4 s
+    #         2,008 chars ->  1.6 s
+    #
+    # The peak is at roughly 8-9k characters, not at the top end: past ~10k
+    # such input trips sqlparse's own 10,000-token ceiling and bails early
+    # (10,008 chars -> 1.4 s). So raising this above ~10,000 costs nothing and
+    # lowering it below ~8,000 is the only way to cut the peak.
+    #
+    # 8,000 is the compromise. A deliberately wide but realistic query (200
+    # aggregate expressions) is 8,405 characters, so this is at the top of what
+    # real analytics SQL needs; ordinary saved queries are a few hundred.
+    # Lower it if you want a tighter CPU bound and your queries are short.
+    #
+    # Three things bound this, and they are meant to be read together: this
+    # cap bounds one request, validate_select's cache means a *saved* query
+    # pays it once rather than on every poll, and
+    # rate_limit_execution_per_minute bounds a flood of distinct statements.
+    max_sql_length: int = Field(default=8_000, gt=0)
+
+    # How many distinct validated statements to remember. Saved queries send
+    # byte-identical SQL on every run and every cache-missing poll, and
+    # revalidating it each time was pure repeated cost on the hot path.
+    sql_validation_cache_size: int = Field(default=512, ge=0)
+
+    # Hard ceiling on one result payload, in bytes, measured while rows are
+    # coerced. row_limit bounds the number of rows but says nothing about their
+    # width, so a single SELECT repeat('x', 1000000000) would otherwise be
+    # materialised, hashed, cached, and serialised in full.
+    max_result_bytes: int = Field(default=32 * 1024 * 1024, gt=0)
+
+    # Directories a sqlite *target* connection may point into, comma-separated.
+    # Without this a connection profile is an arbitrary-file-read primitive:
+    # the path is resolved inside the API process, so pointing it at the
+    # service's own app-state database dumps every stored credential through
+    # the public query endpoints. The app-state file is always refused
+    # regardless of what this allows. Empty string means "refuse every sqlite
+    # target", which is the right setting for a container deployment.
+    sqlite_allowed_dirs: str = "."
+
     # Serverless Postgres suspends when idle, and the first connection after
     # that pays a cold start that can run past ten seconds. This is separate
     # from connect_timeout_s, which bounds connections to *target* databases
@@ -93,13 +145,51 @@ class Settings(BaseSettings):
     # Polling.
     poll_interval_ms: int = Field(default=5000, gt=0)
 
+    # Approximate bytes the poll result cache may hold in total. The cache used
+    # to be bounded by entry count alone, which said nothing about cost: one
+    # 10,000-row by 5-column result measured 1.1 MB, so 256 entries was really
+    # a 0.27 GB ceiling for narrow results and about 1 GB for wide ones. A
+    # small container is OOM-killed long before eviction triggers.
+    cache_max_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
+
     # HTTP.
     cors_origins: str = "*"
 
+    # Requests per minute per client IP, 0 to disable. There is no auth, so
+    # every execution endpoint runs caller-supplied SQL against a customer
+    # production database; a bucket is the only thing bounding that. The
+    # execution bucket has to absorb a legitimate dashboard: twelve cards at a
+    # five-second interval is 144 polls/minute from one browser.
+    rate_limit_per_minute: int = Field(default=600, ge=0)
+
+    # Largest request body accepted, in bytes, checked against Content-Length
+    # before the body is read. The SQL guard caps statement length, but only
+    # after Starlette has buffered and decoded the whole payload. 0 disables.
+    max_request_bytes: int = Field(default=1024 * 1024, ge=0)
+    rate_limit_execution_per_minute: int = Field(default=300, ge=0)
+
+    # Logging. Nothing configures the root logger otherwise, so uvicorn's
+    # default leaves root at WARNING and every INFO line the service emits --
+    # including the startup banner the README tells operators to check -- is
+    # silently discarded.
+    log_level: str = "INFO"
+    log_json: bool = False
+
+    # Execution-log retention. One card polling at the default interval writes
+    # roughly 17k rows a day on cache misses, forever, and nothing else in the
+    # service ever deletes them. 0 disables pruning.
+    log_retention_days: int = Field(default=30, ge=0)
+    max_logs_per_query: int = Field(default=1000, ge=0)
+
     # Target-engine pooling.
-    target_pool_size: int = Field(default=5, gt=0)
-    target_max_overflow: int = Field(default=2, ge=0)
+    target_pool_size: int = Field(default=10, gt=0)
+    target_max_overflow: int = Field(default=5, ge=0)
     max_target_engines: int = Field(default=32, gt=0)
+
+    # How long a request waits for a pooled connection before giving up.
+    # SQLAlchemy's default is 30 s, which outlives the frontend's poll deadline
+    # and turns pool exhaustion into a hang rather than an error.
+    target_pool_timeout_s: int = Field(default=5, gt=0)
 
     @field_validator("max_row_limit")
     @classmethod
@@ -139,6 +229,35 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         """Split the comma-separated origins into a list uvicorn/CORS can use."""
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def sqlite_allowed_dir_list(self) -> list[Path]:
+        """Absolute, symlink-resolved roots a sqlite target may live under.
+
+        Resolved rather than merely absolute so a path cannot walk out through
+        ``..`` or a symlink and still compare as inside an allowed root.
+        """
+        return [
+            Path(part.strip()).expanduser().resolve()
+            for part in self.sqlite_allowed_dirs.split(",")
+            if part.strip()
+        ]
+
+    @property
+    def app_db_sqlite_file(self) -> Path | None:
+        """Absolute path of the app-state SQLite file, if that is the backend.
+
+        Used to refuse a target connection that points at this service's own
+        database, which would otherwise expose every stored credential
+        ciphertext through the ordinary query endpoints.
+        """
+        url = self.resolved_app_db_url
+        if not url.startswith("sqlite"):
+            return None
+        database = make_url(url).database
+        if not database or database == ":memory:":
+            return None
+        return Path(database).expanduser().resolve()
 
     @property
     def query_timeout_ms(self) -> int:
