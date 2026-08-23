@@ -593,3 +593,86 @@ def test_returned_string_is_itself_checked_for_ambiguity():
             validate_select(sql)
     # Nothing ambiguous was memoised as an acceptance.
     assert not any(sql_guard._BACKSLASH_QUOTE in key for key in sql_guard._validated)
+
+
+# --------------------------------------------------------------------------
+# PostgreSQL field notation: a call with no parenthesis
+#
+# `(x).f` and `x.f` both mean `f(x)` in PostgreSQL, which reaches a function
+# without the `name` + `(` shape the function check keys on. Confirmed against
+# PostgreSQL 16 through the service's own execution path:
+#
+#   SELECT ('/etc/hostname'::text).pg_read_file
+#     -> ['pg_read_file'] [['9f9b00f4308e\n']]        (file contents)
+#   SELECT ('/etc'::text).pg_ls_dir
+#     -> ['pg_ls_dir'] [['.pwd.lock'], ['gai.conf'], ...]
+#   SELECT (2.0::float8).pg_sleep                      (slept 2.02s)
+# --------------------------------------------------------------------------
+
+FIELD_NOTATION_CALLS = [
+    "SELECT (2.0::float8).pg_sleep",
+    "SELECT ('/etc/hostname'::text).pg_read_file",
+    "SELECT ('/etc'::text).pg_ls_dir",
+    "SELECT (('/etc/hostname')::text).pg_read_file",
+    "SELECT text('/etc/hostname').pg_read_file",
+    'SELECT (x)."pg_read_file" FROM t',
+    "SELECT r.pg_read_file FROM (SELECT 1) r(x)",
+    "SELECT (x).nextval FROM t",
+    "SELECT (x).set_config FROM t",
+    "SELECT (x).dblink FROM t",
+]
+
+
+@pytest.mark.parametrize("sql", FIELD_NOTATION_CALLS)
+def test_field_notation_call_is_rejected(sql):
+    with pytest.raises(SqlValidationError) as ei:
+        validate_select(sql)
+    assert ei.value.error_code == ErrorCode.FORBIDDEN_FUNCTION
+
+
+def test_the_exact_field_notation_file_read_is_rejected():
+    """Regression, kept verbatim. Returned /etc/hostname's contents on PG 16."""
+    with pytest.raises(SqlValidationError) as ei:
+        validate_select("SELECT ('/etc/hostname'::text).pg_read_file")
+    assert ei.value.detail["function"] == "pg_read_file"
+
+
+# The dot rule is scoped to PostgreSQL functions, because only PostgreSQL has
+# field notation. Applying it to the whole blocklist would reject ordinary
+# qualified column references.
+QUALIFIED_COLUMNS_THAT_MUST_WORK = [
+    "SELECT a.edit, b.comment FROM a JOIN b ON a.id = b.id",
+    "SELECT t.sleep FROM naps t",
+    "SELECT f.zipfile FROM files f",
+    "SELECT t.benchmark FROM runs t",
+    "SELECT t.readfile FROM t",
+    "SELECT t.day, t.amount FROM txns t",
+]
+
+
+@pytest.mark.parametrize("sql", QUALIFIED_COLUMNS_THAT_MUST_WORK)
+def test_qualified_column_named_after_a_non_postgres_function_still_works(sql):
+    assert validate_select(sql)
+
+
+def test_every_postgres_function_is_blocked_in_field_notation():
+    """The whole PostgreSQL group, not just the ones that were demonstrated."""
+    from app.security.sql_guard import _POSTGRES_FUNCTIONS
+
+    for name in sorted(_POSTGRES_FUNCTIONS):
+        with pytest.raises(SqlValidationError) as ei:
+            validate_select(f"SELECT (x).{name} FROM t")
+        assert ei.value.error_code == ErrorCode.FORBIDDEN_FUNCTION, name
+
+
+def test_blocklist_groups_partition_the_whole_list():
+    """The union must stay the full list, so regrouping cannot silently drop one."""
+    from app.security.sql_guard import (
+        _MYSQL_FUNCTIONS,
+        _POSTGRES_FUNCTIONS,
+        _SQLITE_FUNCTIONS,
+    )
+
+    assert (
+        _POSTGRES_FUNCTIONS | _MYSQL_FUNCTIONS | _SQLITE_FUNCTIONS
+    ) == sql_guard.FORBIDDEN_FUNCTIONS

@@ -166,12 +166,9 @@ FORBIDDEN_NAMES: frozenset[str] = frozenset({"outfile", "dumpfile", "pragma"})
 #: Deliberately absent: ``generate_series`` and ``repeat``. Both are ordinary
 #: in analytics and both are bounded by the statement timeout and the result
 #: byte budget rather than by a blocklist.
-FORBIDDEN_FUNCTIONS: frozenset[str] = frozenset(
+_POSTGRES_FUNCTIONS: frozenset[str] = frozenset(
     {
-        # --- PostgreSQL: session state ---------------------------------
-        # Can disable the read-only transaction default underneath us.
         "set_config",
-        # --- PostgreSQL: filesystem ------------------------------------
         "pg_read_file",
         "pg_read_binary_file",
         "pg_ls_dir",
@@ -181,13 +178,11 @@ FORBIDDEN_FUNCTIONS: frozenset[str] = frozenset(
         "pg_ls_tmpdir",
         "pg_ls_archive_statusdir",
         "pg_logdir_ls",
-        # --- PostgreSQL: stall ------------------------------------------
         "pg_sleep",
         "pg_sleep_for",
         "pg_sleep_until",
         "pg_advisory_lock",
         "pg_advisory_xact_lock",
-        # --- PostgreSQL: large objects (read and write) -----------------
         "lo_import",
         "lo_export",
         "lo_get",
@@ -199,7 +194,6 @@ FORBIDDEN_FUNCTIONS: frozenset[str] = frozenset(
         "lo_write",
         "loread",
         "lowrite",
-        # --- PostgreSQL: outbound connections ---------------------------
         "dblink",
         "dblink_exec",
         "dblink_connect",
@@ -208,14 +202,11 @@ FORBIDDEN_FUNCTIONS: frozenset[str] = frozenset(
         "dblink_fetch",
         "dblink_open",
         "dblink_close",
-        # --- PostgreSQL: arbitrary SQL through an XML wrapper -----------
         "query_to_xml",
         "query_to_xmlschema",
         "query_to_xml_and_xmlschema",
-        # --- PostgreSQL: sequence writes --------------------------------
         "nextval",
         "setval",
-        # --- PostgreSQL: server control (denial of service) -------------
         "pg_terminate_backend",
         "pg_cancel_backend",
         "pg_reload_conf",
@@ -234,7 +225,13 @@ FORBIDDEN_FUNCTIONS: frozenset[str] = frozenset(
         "pg_stat_reset",
         "pg_stat_reset_shared",
         "pg_notify",
-        # --- MySQL -------------------------------------------------------
+    }
+)
+
+#: MySQL-only. Not reachable through PostgreSQL's field-notation call syntax,
+#: because MySQL has no such syntax.
+_MYSQL_FUNCTIONS: frozenset[str] = frozenset(
+    {
         "load_file",
         "benchmark",
         "sleep",
@@ -245,7 +242,12 @@ FORBIDDEN_FUNCTIONS: frozenset[str] = frozenset(
         "source_pos_wait",
         "sys_exec",
         "sys_eval",
-        # --- SQLite ------------------------------------------------------
+    }
+)
+
+#: SQLite-only, same reasoning as the MySQL group.
+_SQLITE_FUNCTIONS: frozenset[str] = frozenset(
+    {
         "readfile",
         "writefile",
         "load_extension",
@@ -255,6 +257,10 @@ FORBIDDEN_FUNCTIONS: frozenset[str] = frozenset(
         "sqlar_compress",
         "sqlar_uncompress",
     }
+)
+
+FORBIDDEN_FUNCTIONS: frozenset[str] = (
+    _POSTGRES_FUNCTIONS | _MYSQL_FUNCTIONS | _SQLITE_FUNCTIONS
 )
 
 
@@ -372,23 +378,55 @@ def _check_functions(statement: Statement) -> None:
     and ``[readfile](...)`` are all calls to the same function as far as the
     server is concerned, and each quoting style lands on a different sqlparse
     token type, so all of them are matched here after the quotes are stripped.
+
+    A call does not need a parenthesis at all. PostgreSQL's functional
+    notation makes ``(x).f`` and ``x.f`` mean ``f(x)``, so a name preceded by
+    a dot is also treated as a call. The cost is that a *column* named after a
+    blocklisted function can no longer be read through a qualified reference:
+    ``SELECT t.sleep FROM t`` is rejected where ``SELECT sleep FROM t`` still
+    works. That is a deliberate trade -- the unqualified form is not a call on
+    any supported engine, and the qualified form reads arbitrary files on
+    PostgreSQL.
     """
     tokens = [t for t in statement.flatten() if not t.is_whitespace]
     for index, token in enumerate(tokens):
         if token.ttype not in _NAME_TYPES and token.ttype not in _KEYWORD_TYPES:
             continue
-        following = tokens[index + 1] if index + 1 < len(tokens) else None
-        if following is None or following.value != "(":
-            continue
+
         name = token.value.strip(_QUOTES).lower()
-        if name in FORBIDDEN_FUNCTIONS:
-            _reject(
-                ErrorCode.FORBIDDEN_FUNCTION,
-                f"Forbidden function {name!r}: it can read the filesystem, "
-                f"open a network connection, change session settings, or "
-                f"stall the server.",
-                function=name,
-            )
+        if name not in FORBIDDEN_FUNCTIONS:
+            continue
+
+        following = tokens[index + 1] if index + 1 < len(tokens) else None
+        preceding = tokens[index - 1] if index else None
+
+        called_with_parens = following is not None and following.value == "("
+        # PostgreSQL's functional notation: `(x).f` and `x.f` both mean `f(x)`.
+        # This reaches a function with no parenthesis after its name at all,
+        # which is the shape the check above keys on. Confirmed against
+        # PostgreSQL 16: `SELECT ('/etc/hostname'::text).pg_read_file`
+        # returned the file's contents, and `SELECT (2.0::float8).pg_sleep`
+        # slept for two seconds.
+        # Only PostgreSQL has this syntax, so only PostgreSQL's functions are
+        # reachable through it. Applying the rule to the whole blocklist would
+        # reject `SELECT a.edit FROM a` -- an ordinary column reference, since
+        # `edit` is only a function on SQLite, which has no field notation.
+        called_as_field = (
+            preceding is not None
+            and preceding.value == "."
+            and name in _POSTGRES_FUNCTIONS
+        )
+
+        if not (called_with_parens or called_as_field):
+            continue
+
+        _reject(
+            ErrorCode.FORBIDDEN_FUNCTION,
+            f"Forbidden function {name!r}: it can read the filesystem, "
+            f"open a network connection, change session settings, or "
+            f"stall the server.",
+            function=name,
+        )
 
 
 def _check_locking_clause(statement: Statement) -> None:
