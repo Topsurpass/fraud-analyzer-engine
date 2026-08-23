@@ -12,6 +12,7 @@ from app.models.enums import ChartType, enum_column
 
 if TYPE_CHECKING:
     from app.models.connection import Connection
+    from app.models.dashboard import DashboardItem
     from app.models.execution_log import QueryExecutionLog
 
 DEFAULT_ROW_LIMIT = 1000
@@ -53,6 +54,12 @@ class SavedQuery(TimestampMixin, Base):
 
     connection: Mapped["Connection"] = relationship(back_populates="queries")
     execution_logs: Mapped[list["QueryExecutionLog"]] = relationship(
+        back_populates="query",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    #: Deleting a query takes it off every dashboard that showed it.
+    dashboard_items: Mapped[list["DashboardItem"]] = relationship(
         back_populates="query",
         cascade="all, delete-orphan",
         passive_deletes=True,

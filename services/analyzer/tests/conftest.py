@@ -17,6 +17,7 @@ from app.config import get_settings
 #: Everything else is the fast gate lane, meant to run on every commit.
 _INTEGRATION_MODULES = {
     "test_connections_api",
+    "test_dashboards_api",
     "test_introspection_api",
     "test_queries_api",
     "test_run_poll_api",

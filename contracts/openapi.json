@@ -526,6 +526,100 @@
         "title": "ConnectionUpdate",
         "type": "object"
       },
+      "DashboardCreate": {
+        "properties": {
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "query_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Query Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "DashboardCreate",
+        "type": "object"
+      },
+      "DashboardRead": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "query_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Query Ids",
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "query_ids",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "DashboardRead",
+        "type": "object"
+      },
+      "DashboardUpdate": {
+        "description": "Every field optional. Omitted fields are left untouched.\n\nPassing ``query_ids`` replaces the whole arrangement rather than merging\ninto it: a dashboard is an ordered list, and a partial merge has no\nwell-defined meaning for order.",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "query_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Ids"
+          }
+        },
+        "title": "DashboardUpdate",
+        "type": "object"
+      },
       "DbType": {
         "enum": [
           "postgres",
@@ -1798,6 +1892,199 @@
         "summary": "Test Connection",
         "tags": [
           "connections"
+        ]
+      }
+    },
+    "/dashboards": {
+      "get": {
+        "description": "Every dashboard, oldest first.",
+        "operationId": "list_dashboards_dashboards_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DashboardRead"
+                  },
+                  "title": "Response List Dashboards Dashboards Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Dashboards",
+        "tags": [
+          "dashboards"
+        ]
+      },
+      "post": {
+        "description": "Create a dashboard, optionally populated in one call.\n\nEvery referenced query must exist; nothing is persisted otherwise.",
+        "operationId": "create_dashboard_dashboards_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DashboardCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Dashboard",
+        "tags": [
+          "dashboards"
+        ]
+      }
+    },
+    "/dashboards/{dashboard_id}": {
+      "delete": {
+        "description": "Delete the board. The saved queries it showed are untouched.",
+        "operationId": "delete_dashboard_dashboards__dashboard_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dashboard_id",
+            "required": true,
+            "schema": {
+              "title": "Dashboard Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Dashboard",
+        "tags": [
+          "dashboards"
+        ]
+      },
+      "get": {
+        "operationId": "get_dashboard_dashboards__dashboard_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dashboard_id",
+            "required": true,
+            "schema": {
+              "title": "Dashboard Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Dashboard",
+        "tags": [
+          "dashboards"
+        ]
+      },
+      "put": {
+        "description": "Rename a dashboard, reorder it, or replace what is on it.\n\n``query_ids`` replaces the whole arrangement rather than merging into it.",
+        "operationId": "update_dashboard_dashboards__dashboard_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dashboard_id",
+            "required": true,
+            "schema": {
+              "title": "Dashboard Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DashboardUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Dashboard",
+        "tags": [
+          "dashboards"
         ]
       }
     },

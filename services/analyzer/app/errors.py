@@ -32,6 +32,7 @@ class ErrorCode(StrEnum):
     CONNECTION_NOT_FOUND = "CONNECTION_NOT_FOUND"
     QUERY_NOT_FOUND = "QUERY_NOT_FOUND"
     TABLE_NOT_FOUND = "TABLE_NOT_FOUND"
+    DASHBOARD_NOT_FOUND = "DASHBOARD_NOT_FOUND"
 
     # --- 409 ---------------------------------------------------------------
     DUPLICATE_NAME = "DUPLICATE_NAME"
@@ -62,6 +63,7 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.CONNECTION_NOT_FOUND: 404,
     ErrorCode.QUERY_NOT_FOUND: 404,
     ErrorCode.TABLE_NOT_FOUND: 404,
+    ErrorCode.DASHBOARD_NOT_FOUND: 404,
     ErrorCode.DUPLICATE_NAME: 409,
     ErrorCode.REQUEST_VALIDATION_ERROR: 422,
     ErrorCode.DB_UNREACHABLE: 502,

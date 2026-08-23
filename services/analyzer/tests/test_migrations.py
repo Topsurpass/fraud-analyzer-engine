@@ -69,6 +69,8 @@ def test_migration_creates_the_expected_tables(tmp_path, alembic_for):
         "connections",
         "saved_queries",
         "query_execution_logs",
+        "dashboards",
+        "dashboard_items",
     }
 
 
@@ -76,10 +78,15 @@ def test_migration_sets_on_delete_cascade(tmp_path, alembic_for):
     url = f"sqlite:///{tmp_path / 'fk.db'}"
     command.upgrade(alembic_for(url), "head")
     inspector = inspect(create_engine(url))
-    for table in ("saved_queries", "query_execution_logs"):
+    for table in ("saved_queries", "query_execution_logs", "dashboard_items"):
         fks = inspector.get_foreign_keys(table)
         assert fks, f"{table} has no foreign key"
-        assert fks[0]["options"].get("ondelete") == "CASCADE", table
+        # dashboard_items has two, and both must cascade: a board must not
+        # outlive its dashboard, nor keep a card for a deleted query.
+        for fk in fks:
+            assert fk["options"].get("ondelete") == "CASCADE", (
+                f"{table}.{fk['constrained_columns']}"
+            )
 
 
 def test_downgrade_to_base_drops_everything(tmp_path, alembic_for):

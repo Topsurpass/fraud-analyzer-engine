@@ -31,7 +31,8 @@ Every non-2xx response, without exception, has this shape:
 | `CONNECTION_NOT_FOUND` | 404 | No connection with that id |
 | `QUERY_NOT_FOUND` | 404 | No saved query with that id |
 | `TABLE_NOT_FOUND` | 404 | No such table or view on that connection |
-| `DUPLICATE_NAME` | 409 | A connection or query already has that name |
+| `DASHBOARD_NOT_FOUND` | 404 | No dashboard with that id |
+| `DUPLICATE_NAME` | 409 | A connection, query, or dashboard already has that name |
 | `REQUEST_VALIDATION_ERROR` | 422 | The request body or query params failed validation |
 | `INTERNAL_ERROR` | 500 | Unexpected failure; details are logged, never returned |
 | `DB_UNREACHABLE` | 502 | Could not open a connection to the target |
@@ -99,6 +100,49 @@ received as `since_hash`. Pass `force=true` to bypass the cache.
 
 Nothing is persisted and nothing is logged. Capped at `FAE_PREVIEW_ROW_LIMIT`
 (default 100) regardless of what the request asks for.
+
+## Dashboards
+
+A dashboard is a named, ordered arrangement of saved queries. It holds no SQL of
+its own and never touches a target database; every card on it resolves through
+the saved-query endpoints. A dashboard may span connections, which is the point
+of having one.
+
+| Method | Path |
+|---|---|
+| `GET` | `/dashboards` |
+| `POST` | `/dashboards` |
+| `GET` | `/dashboards/{dashboard_id}` |
+| `PUT` | `/dashboards/{dashboard_id}` |
+| `DELETE` | `/dashboards/{dashboard_id}` |
+
+```json
+{
+  "id": "0f0c...",
+  "name": "Card testing",
+  "query_ids": ["8a1f...", "4634..."],
+  "created_at": "2026-08-23T09:12:44Z",
+  "updated_at": "2026-08-23T09:31:02Z"
+}
+```
+
+`query_ids` is the display order. On `POST` and `PUT` it is taken literally:
+duplicates collapse to their first position, and every id must name an existing
+saved query or the whole write is refused with `QUERY_NOT_FOUND` and nothing is
+persisted. A board pointing at a query that does not exist would render a card
+that can only ever error, so the reference is checked on write rather than
+discovered on read.
+
+`PUT` is a partial update on `name`, but `query_ids` **replaces** the whole
+arrangement rather than merging into it: a dashboard is an ordered list, and a
+partial merge has no well-defined meaning for order. Omit `query_ids` to rename
+without touching the cards; send `[]` to empty the board.
+
+Membership is a table, not a JSON column of ids, so the database keeps the
+reference honest. Deleting a saved query removes it from every dashboard that
+showed it, and deleting a connection cascades through its queries to the same
+effect. Deleting a dashboard is the reverse: the board goes, the saved queries
+it showed are untouched.
 
 ## Credentials
 
