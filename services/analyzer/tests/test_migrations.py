@@ -73,6 +73,7 @@ def test_migration_creates_the_expected_tables(tmp_path, alembic_for):
         "dashboard_items",
         "flag_rules",
         "flag_conditions",
+        "flag_dismissals",
     }
 
 
@@ -152,3 +153,18 @@ def test_ssl_columns_survive_a_downgrade_and_reapply(tmp_path, alembic_for):
     command.upgrade(cfg, "head")
     columns = {c["name"] for c in inspect(create_engine(url)).get_columns("connections")}
     assert {"ssl_mode", "ssl_root_cert"} <= columns
+
+
+def test_flag_dismissals_cascade_from_their_query(tmp_path, alembic_for):
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    command.upgrade(alembic_for(url), "head")
+
+    inspector = inspect(create_engine(url))
+    keys = inspector.get_foreign_keys("flag_dismissals")
+    assert any(
+        key["referred_table"] == "saved_queries" and key["options"].get("ondelete") == "CASCADE"
+        for key in keys
+    )
+    # One row cannot be dismissed twice on the same query.
+    uniques = {tuple(u["column_names"]) for u in inspector.get_unique_constraints("flag_dismissals")}
+    assert ("query_id", "row_fingerprint") in uniques

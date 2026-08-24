@@ -219,13 +219,26 @@ def translate_db_error(exc: BaseException, *, timed_out: bool = False) -> AppErr
             return translated
 
     message = str(orig).lower()
-    # Checked before the timeout probe: a TLS refusal is a configuration
+    # Checked before the timeout probe: a TLS mismatch is a configuration
     # problem with one specific fix, and saying so beats any generic mapping.
-    if "connection is insecure" in message or "server does not support ssl" in message:
+    #
+    # The two directions are opposite failures and must not share a message.
+    # Telling someone to raise a mode that is already too high sends them the
+    # wrong way, which is worse than saying nothing.
+    if "connection is insecure" in message:
+        # The server requires TLS; we offered plaintext.
         return DbTlsRequiredError(
             "The target refused an unencrypted connection. Set this "
             "connection's TLS mode to 'require' or stronger.",
-            {"reason": "tls_required"},
+            {"reason": "tls_required_by_server"},
+        )
+    if "server does not support ssl" in message or "ssl is not enabled" in message:
+        # We require TLS; the server cannot speak it at all.
+        return DbTlsRequiredError(
+            "This connection requires TLS but the target does not offer it. "
+            "Enable TLS on the database, or set this connection's TLS mode to "
+            "'prefer' if the link between them is already trusted.",
+            {"reason": "tls_unsupported_by_server"},
         )
     if "timeout" in message or "timed out" in message:
         return QueryTimeoutError(_clean(orig))

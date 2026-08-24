@@ -13,7 +13,7 @@ reported as a warning at evaluation time instead, which is the same treatment
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.enums import (
     BINARY_OPERATORS,
@@ -143,3 +143,30 @@ class FlagOutcomeRead(BaseModel):
     rows: list[RowFlagRead] = Field(default_factory=list)
     rules: list[RuleHitRead] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+
+class FlagDismissalRequest(BaseModel):
+    """Rows to stop showing in the flagged view, by content fingerprint."""
+
+    # Bounded because the client can send a whole section at once ("dismiss
+    # all") and the row limit caps how many a single run can produce.
+    fingerprints: list[str] = Field(default_factory=list, max_length=10000)
+
+    @field_validator("fingerprints")
+    @classmethod
+    def _look_like_hashes(cls, value: list[str]) -> list[str]:
+        # These are echoed back from the flagged view, never typed. Rejecting
+        # anything that is not a sha256 hex digest keeps arbitrary strings out
+        # of a table whose whole contract is "this is a hash of a row".
+        for fingerprint in value:
+            if len(fingerprint) != 64 or not all(
+                character in "0123456789abcdef" for character in fingerprint
+            ):
+                raise ValueError("each fingerprint must be a sha256 hex digest")
+        return value
+
+
+class FlagDismissalResult(BaseModel):
+    query_id: str
+    #: Rows newly dismissed, or newly restored. Zero means it was already so.
+    changed: int

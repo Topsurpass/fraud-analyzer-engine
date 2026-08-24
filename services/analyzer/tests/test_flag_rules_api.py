@@ -525,3 +525,204 @@ def test_flagged_view_on_an_unknown_connection_is_a_404(client):
     response = client.get("/connections/nope/flagged")
     assert response.status_code == 404
     assert response.json()["error_code"] == "CONNECTION_NOT_FOUND"
+
+
+# ---------------------------------------------------------------------------
+# Dismissing reviewed rows
+#
+# The flagged view is a review queue, so rows an analyst has cleared have to
+# stop coming back. Nothing about a flagged row is stored - they are recomputed
+# from the cached result on every load - so a dismissal records a hash of the
+# row's values instead. That choice is what these tests are really about.
+# ---------------------------------------------------------------------------
+
+
+def _flagged(client, connection_id):
+    return client.get(f"/connections/{connection_id}/flagged").json()["queries"][0]
+
+
+@pytest.fixture
+def flagged_section(client, sqlite_connection, query):
+    client.put(
+        f"/queries/{query['id']}/flag-rules",
+        json={"rules": [rule("Large", "amount", "gt", "500")]},
+    )
+    client.post(f"/queries/{query['id']}/run")
+    return _flagged(client, sqlite_connection["id"])
+
+
+def test_every_flagged_row_carries_a_fingerprint(flagged_section):
+    # The client dismisses by fingerprint, never by index: an index is a
+    # position in one run's result and points elsewhere after the next run.
+    for row in flagged_section["rows"]:
+        assert len(row["fingerprint"]) == 64
+        assert set(row["fingerprint"]) <= set("0123456789abcdef")
+
+
+def test_two_different_rows_fingerprint_differently(flagged_section):
+    prints = {row["fingerprint"] for row in flagged_section["rows"]}
+    assert len(prints) == len(flagged_section["rows"])
+
+
+def test_a_dismissed_row_stops_appearing(
+    client, sqlite_connection, query, flagged_section
+):
+    victim = flagged_section["rows"][0]["fingerprint"]
+    response = client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": [victim]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["changed"] == 1
+
+    after = _flagged(client, sqlite_connection["id"])
+    assert [row["fingerprint"] for row in after["rows"]] == [
+        flagged_section["rows"][1]["fingerprint"]
+    ]
+
+
+def test_the_count_follows_what_is_shown(client, sqlite_connection, query, flagged_section):
+    # A count that never moves however much of the queue is cleared is not a
+    # queue length, it is decoration.
+    assert flagged_section["flagged_count"] == 2
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": [flagged_section["rows"][0]["fingerprint"]]},
+    )
+    after = _flagged(client, sqlite_connection["id"])
+    assert after["flagged_count"] == 1
+    assert after["dismissed_count"] == 1
+
+
+def test_the_rule_legend_counts_only_what_survived(
+    client, sqlite_connection, query, flagged_section
+):
+    assert flagged_section["rules"][0]["matched"] == 2
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": [flagged_section["rows"][0]["fingerprint"]]},
+    )
+    after = _flagged(client, sqlite_connection["id"])
+    assert after["rules"][0]["matched"] == 1
+
+
+def test_dismissing_every_row_empties_the_section(
+    client, sqlite_connection, query, flagged_section
+):
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": [r["fingerprint"] for r in flagged_section["rows"]]},
+    )
+    after = _flagged(client, sqlite_connection["id"])
+    assert after["rows"] == []
+    assert after["flagged_count"] == 0
+    assert after["dismissed_count"] == 2
+
+
+def test_a_dismissal_survives_a_refresh(
+    client, sqlite_connection, query, flagged_section
+):
+    # The whole point: re-running the query must not resurrect reviewed rows.
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": [flagged_section["rows"][0]["fingerprint"]]},
+    )
+    refreshed = client.post(
+        f"/connections/{sqlite_connection['id']}/flagged/refresh"
+    ).json()
+    assert refreshed["queries"][0]["flagged_count"] == 1
+
+
+def test_dismissing_twice_is_not_an_error(client, query, flagged_section):
+    body = {"fingerprints": [flagged_section["rows"][0]["fingerprint"]]}
+    assert client.post(f"/queries/{query['id']}/flag-dismissals", json=body).json()[
+        "changed"
+    ] == 1
+    # Two tabs open on the same queue is normal use, not a conflict.
+    second = client.post(f"/queries/{query['id']}/flag-dismissals", json=body)
+    assert second.status_code == 200
+    assert second.json()["changed"] == 0
+
+
+def test_restoring_brings_a_row_back(
+    client, sqlite_connection, query, flagged_section
+):
+    victim = flagged_section["rows"][0]["fingerprint"]
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals", json={"fingerprints": [victim]}
+    )
+    response = client.delete(f"/queries/{query['id']}/flag-dismissals")
+    assert response.status_code == 200, response.text
+    assert response.json()["changed"] == 1
+
+    after = _flagged(client, sqlite_connection["id"])
+    assert after["flagged_count"] == 2
+    assert after["dismissed_count"] == 0
+
+
+def test_restoring_one_named_row_leaves_the_others_dismissed(
+    client, sqlite_connection, query, flagged_section
+):
+    prints = [row["fingerprint"] for row in flagged_section["rows"]]
+    client.post(f"/queries/{query['id']}/flag-dismissals", json={"fingerprints": prints})
+    client.delete(
+        f"/queries/{query['id']}/flag-dismissals", params={"fingerprint": [prints[0]]}
+    )
+    after = _flagged(client, sqlite_connection["id"])
+    assert [row["fingerprint"] for row in after["rows"]] == [prints[0]]
+
+
+def test_a_dismissal_is_scoped_to_its_query(client, sqlite_connection, query, flagged_section):
+    # The same values flagged by two different queries are two findings.
+    twin = make_query(
+        client,
+        sqlite_connection["id"],
+        "SELECT day, amount, comment FROM txns",
+        name="twin",
+    )
+    client.put(
+        f"/queries/{twin['id']}/flag-rules",
+        json={"rules": [rule("Large", "amount", "gt", "500")]},
+    )
+    client.post(f"/queries/{twin['id']}/run")
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": [r["fingerprint"] for r in flagged_section["rows"]]},
+    )
+
+    sections = client.get(f"/connections/{sqlite_connection['id']}/flagged").json()
+    by_name = {s["query_name"]: s for s in sections["queries"]}
+    assert by_name["q"]["flagged_count"] == 0
+    assert by_name["twin"]["flagged_count"] == 2
+
+
+def test_a_fingerprint_that_is_not_a_hash_is_refused(client, query):
+    response = client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": ["'; DROP TABLE flag_dismissals; --"]},
+    )
+    assert response.status_code == 422
+
+
+def test_dismissing_on_an_unknown_query_is_a_404(client):
+    response = client.post(
+        "/queries/does-not-exist/flag-dismissals", json={"fingerprints": []}
+    )
+    assert response.status_code == 404
+
+
+def test_deleting_the_query_takes_its_dismissals_with_it(
+    client, sqlite_connection, query, flagged_section
+):
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": [flagged_section["rows"][0]["fingerprint"]]},
+    )
+    assert client.delete(f"/queries/{query['id']}").status_code == 204
+    # A dismissal describes rows a deleted query can no longer produce.
+    from app.models import FlagDismissal
+    from app.db.app_state import get_engine
+    from sqlalchemy.orm import Session
+
+    with Session(get_engine()) as session:
+        assert session.query(FlagDismissal).count() == 0

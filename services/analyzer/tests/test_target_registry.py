@@ -583,3 +583,38 @@ Multiple connection attempts failed. All failures were:
 def test_a_single_attempt_message_is_untouched():
     orig = OperationalError('connection to server at "10.0.0.1" failed: Connection refused', {}, None)
     assert "Connection refused" in reg._clean(orig)
+
+
+def test_a_server_without_tls_is_not_told_to_raise_its_mode():
+    """The opposite failure to the one above, and the opposite fix.
+
+    "connection is insecure" means the server demanded TLS and we offered
+    plaintext: raise the mode. "server does not support SSL" means we demanded
+    TLS and the server cannot speak it: raising the mode again does nothing.
+    Sharing one message sent the reader the wrong way, which is worse than
+    saying nothing at all.
+    """
+    orig = OperationalError(
+        'connection to server at "10.0.0.1", port 5432 failed: server does not '
+        "support SSL, but SSL was required",
+        {},
+        None,
+    )
+    error = reg.translate_db_error(_wrap(orig))
+    assert error.error_code == ErrorCode.DB_TLS_REQUIRED
+    assert error.detail["reason"] == "tls_unsupported_by_server"
+    assert "does not offer it" in error.message
+    # Must not tell someone to set a mode they have already set.
+    assert "'require' or stronger" not in error.message
+
+
+def test_the_two_tls_directions_are_told_apart():
+    insecure = reg.translate_db_error(
+        _wrap(OperationalError("ERROR: connection is insecure", {}, None))
+    )
+    unsupported = reg.translate_db_error(
+        _wrap(OperationalError("server does not support SSL", {}, None))
+    )
+    assert insecure.detail["reason"] == "tls_required_by_server"
+    assert unsupported.detail["reason"] == "tls_unsupported_by_server"
+    assert insecure.message != unsupported.message

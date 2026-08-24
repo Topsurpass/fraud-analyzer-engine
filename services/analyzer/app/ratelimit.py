@@ -72,7 +72,7 @@ def _is_execution(path: str, method: str) -> bool:
         # Saving a rule set writes to the app-state database and never reaches
         # the target, so it does not belong in the bucket that exists to bound
         # load on a customer's production server.
-        if path.endswith("/flag-rules"):
+        if path.endswith("/flag-rules") or path.endswith("/flag-dismissals"):
             return False
         return True
     return False

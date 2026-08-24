@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.db.app_state import get_session
-from app.schemas.flag_rule import FlagRuleSetRead, FlagRuleSetUpdate
+from app.schemas.flag_rule import (
+    FlagDismissalRequest,
+    FlagDismissalResult,
+    FlagRuleSetRead,
+    FlagRuleSetUpdate,
+)
 from app.services import connection_service
+from app.services import flag_dismissal_service as dismissals
 from app.services import flag_rule_service as svc
 from app.services import saved_query_service
 
@@ -67,3 +73,40 @@ def refresh_flagged(
     """
     conn = connection_service.get_connection(session, connection_id)
     return svc.flagged_for_connection(session, conn, refresh=True)
+
+
+@query_scoped.post("/{query_id}/flag-dismissals", response_model=FlagDismissalResult)
+def dismiss_flagged_rows(
+    query_id: str,
+    payload: FlagDismissalRequest,
+    session: Session = Depends(get_session),
+) -> FlagDismissalResult:
+    """Mark flagged rows as reviewed so they stop appearing.
+
+    Addressed by fingerprint, not by row index: an index is a position in one
+    run's result and points somewhere else after the next run. The fingerprints
+    come from the flagged view's own rows.
+
+    Dismissing a row that is already dismissed is a no-op rather than a
+    conflict -- two tabs open on the same queue is normal use.
+    """
+    query = saved_query_service.get_query(session, query_id)
+    stored = dismissals.dismiss(session, query, payload.fingerprints)
+    return FlagDismissalResult(query_id=query_id, changed=stored)
+
+
+@query_scoped.delete("/{query_id}/flag-dismissals", response_model=FlagDismissalResult)
+def restore_flagged_rows(
+    query_id: str,
+    fingerprint: list[str] | None = Query(default=None),
+    session: Session = Depends(get_session),
+) -> FlagDismissalResult:
+    """Undo dismissals: the named rows, or all of them when none are named.
+
+    Without this a mis-click is permanent. Dismissed rows are listed nowhere --
+    the engine stores their hashes, not the rows -- so there is no other way
+    back to one.
+    """
+    query = saved_query_service.get_query(session, query_id)
+    removed = dismissals.restore(session, query, fingerprint)
+    return FlagDismissalResult(query_id=query_id, changed=removed)

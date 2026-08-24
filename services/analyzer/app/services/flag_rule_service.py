@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.models import Connection, FlagCondition, FlagRule, SavedQuery
-from app.services import flagging, query_service, result_cache
+from app.services import flag_dismissal_service, flagging, query_service, result_cache
 from app.services.saved_query_service import get_query
 
 
@@ -128,6 +128,7 @@ class FlaggedQuery:
         stale: bool = False,
         error_code: str | None = None,
         error_message: str | None = None,
+        dismissed: set[str] | None = None,
     ) -> None:
         self.query = query
         self.columns = columns or []
@@ -137,6 +138,7 @@ class FlaggedQuery:
         self.stale = stale
         self.error_code = error_code
         self.error_message = error_message
+        self.dismissed = dismissed or set()
 
     def as_dict(self) -> dict:
         """Only the flagged rows themselves, not the whole result.
@@ -145,20 +147,57 @@ class FlaggedQuery:
         every query on the connection so the client can filter would multiply
         the payload by the inverse of the flag rate, which for a working rule
         set is a large number.
+
+        Rows the analyst has dismissed are removed here rather than at the
+        client, so a reviewed row never reaches the browser again. Each row
+        carries its fingerprint, which is what the client sends back to dismiss
+        it -- the row index cannot serve: it is a position in one run's result
+        and means something different after the next.
+
+        ``flagged_count`` counts what is being shown. The number beside a
+        section is what the analyst still has to work through, not a total that
+        never moves however much of the queue they clear; ``dismissed_count``
+        carries the rest, so the view can offer to restore them.
         """
         by_index = {row["index"]: row["rule_ids"] for row in self.outcome["rows"]}
+
+        rows = []
+        dismissed_count = 0
+        for index, rule_ids in sorted(by_index.items()):
+            if index >= len(self.rows):
+                continue
+            values = self.rows[index]
+            fingerprint = flag_dismissal_service.row_fingerprint(values)
+            if fingerprint in self.dismissed:
+                dismissed_count += 1
+                continue
+            rows.append(
+                {
+                    "index": index,
+                    "rule_ids": rule_ids,
+                    "values": values,
+                    "fingerprint": fingerprint,
+                }
+            )
+
+        # Per-rule counts are recomputed over what survived, for the same
+        # reason: a legend reading "Large transfer 40" beside four visible rows
+        # describes a queue the analyst has already emptied.
+        shown = [set(row["rule_ids"]) for row in rows]
+        rules = [
+            {**rule, "matched": sum(1 for ids in shown if rule["id"] in ids)}
+            for rule in self.outcome["rules"]
+        ]
+
         return {
             "query_id": self.query.id,
             "query_name": self.query.name,
             "columns": self.columns,
-            "rows": [
-                {"index": index, "rule_ids": rule_ids, "values": self.rows[index]}
-                for index, rule_ids in sorted(by_index.items())
-                if index < len(self.rows)
-            ],
-            "rules": self.outcome["rules"],
+            "rows": rows,
+            "rules": rules,
             "warnings": self.outcome["warnings"],
-            "flagged_count": self.outcome["flagged_count"],
+            "flagged_count": len(rows),
+            "dismissed_count": dismissed_count,
             "executed_at": self.executed_at,
             "stale": self.stale,
             "error_code": self.error_code,
@@ -166,12 +205,12 @@ class FlaggedQuery:
         }
 
 
-def _from_cache(query: SavedQuery) -> FlaggedQuery:
+def _from_cache(query: SavedQuery, dismissed: set[str]) -> FlaggedQuery:
     entry = result_cache.get(query.id)
     if entry is None:
         # Never run, or the entry aged out. Not an error: the view says so and
         # offers a refresh rather than quietly showing nothing.
-        return FlaggedQuery(query, stale=True)
+        return FlaggedQuery(query, stale=True, dismissed=dismissed)
 
     payload = entry.payload
     return FlaggedQuery(
@@ -181,10 +220,13 @@ def _from_cache(query: SavedQuery) -> FlaggedQuery:
         outcome=payload.get("flags") or flagging.FlagOutcome().as_dict(),
         executed_at=payload.get("executed_at"),
         stale=False,
+        dismissed=dismissed,
     )
 
 
-def _run_one(session: Session, query: SavedQuery, conn: Connection) -> FlaggedQuery:
+def _run_one(
+    session: Session, query: SavedQuery, conn: Connection, dismissed: set[str]
+) -> FlaggedQuery:
     from app.db.target_registry import translate_db_error
     from app.errors import AppError
 
@@ -198,6 +240,7 @@ def _run_one(session: Session, query: SavedQuery, conn: Connection) -> FlaggedQu
             stale=True,
             error_code=exc.error_code.value,
             error_message=exc.message,
+            dismissed=dismissed,
         )
     except Exception as exc:  # noqa: BLE001 - normalised below
         translated = translate_db_error(exc)
@@ -206,6 +249,7 @@ def _run_one(session: Session, query: SavedQuery, conn: Connection) -> FlaggedQu
             stale=True,
             error_code=translated.error_code.value,
             error_message=translated.message,
+            dismissed=dismissed,
         )
 
     result_cache.set(
@@ -221,6 +265,7 @@ def _run_one(session: Session, query: SavedQuery, conn: Connection) -> FlaggedQu
         outcome=payload.flags,
         executed_at=payload.executed_at,
         stale=False,
+        dismissed=dismissed,
     )
 
 
@@ -245,15 +290,24 @@ def flagged_for_connection(
         queries = queries[: settings.flagged_refresh_max_queries]
         truncated = True
 
-    sections = [
-        _run_one(session, query, conn) if refresh else _from_cache(query)
-        for query in queries
-    ]
+    sections = []
+    for query in queries:
+        dismissed = flag_dismissal_service.dismissed_fingerprints(session, query.id)
+        sections.append(
+            _run_one(session, query, conn, dismissed)
+            if refresh
+            else _from_cache(query, dismissed)
+        )
+
+    # Built once: as_dict does the dismissal filtering, and the totals have to
+    # agree with the sections the client is actually shown.
+    payloads = [section.as_dict() for section in sections]
 
     return {
         "connection_id": conn.id,
-        "queries": [section.as_dict() for section in sections],
-        "flagged_count": sum(section.outcome["flagged_count"] for section in sections),
+        "queries": payloads,
+        "flagged_count": sum(payload["flagged_count"] for payload in payloads),
+        "dismissed_count": sum(payload["dismissed_count"] for payload in payloads),
         "refreshed": refresh,
         "refresh_truncated": truncated,
     }
