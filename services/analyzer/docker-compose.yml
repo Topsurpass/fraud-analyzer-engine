@@ -1,0 +1,66 @@
+# Development stack: the analyzer plus the Postgres it stores its own state in.
+#
+#   cd services/analyzer
+#   export FAE_FERNET_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+#   docker compose up -d
+#
+# That is the same command DOCKER.md uses, and it is the only one: a Fernet key
+# is 32 random bytes in urlsafe base64, and having two ways to make the one
+# value that is unrecoverable if wrong is how they drift.
+#
+# Nothing secret lives in this file. Both credentials come from the shell, and
+# FAE_FERNET_KEY has no default on purpose: `:?` fails the run with a message
+# rather than starting with a key that changes on every `up`, which would make
+# every credential saved in the previous run undecryptable.
+#
+# See DOCKER.md for what each setting does and for the production story, which
+# is deliberately NOT this file.
+
+name: fae
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: fae
+      POSTGRES_DB: fae
+      # Local throwaway. The port is never published, so this reaches no
+      # further than the compose network.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # This is what makes `condition: service_healthy` below mean anything.
+    # `pg_isready` polls once and returns immediately, so waiting has to be the
+    # healthcheck's retry loop, not a sleep in a script.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fae -d fae"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  analyzer:
+    build: .
+    depends_on:
+      postgres:
+        # Not `depends_on: [postgres]`. That waits for the container to be
+        # created, not for Postgres to accept connections, and the analyzer
+        # runs Alembic at startup: it connects immediately and exits non-zero
+        # if the database is not up yet.
+        condition: service_healthy
+    environment:
+      # postgres is the service name, resolved on the compose network. Not
+      # localhost: inside a container that is the container's own loopback.
+      DATABASE_URL: postgresql://fae:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/fae
+      FAE_FERNET_KEY: ${FAE_FERNET_KEY:?set FAE_FERNET_KEY before `docker compose up`; see DOCKER.md}
+      # The image ships JSON logs for a shipper. A human is reading these.
+      FAE_LOG_JSON: "false"
+      FAE_CORS_ORIGINS: ${FAE_CORS_ORIGINS:-*}
+    ports:
+      # Loopback only. This service has no authentication and executes
+      # caller-supplied SQL, so it must not be reachable from the LAN.
+      - "127.0.0.1:${FAE_HOST_PORT:-8000}:8000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

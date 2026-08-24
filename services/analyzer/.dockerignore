@@ -35,9 +35,19 @@ tests
 
 # Never needed inside the image, and keeping them out means editing the docs or
 # the Dockerfile does not invalidate the layer that installs the project.
+# Prose is excluded by extension rather than by name so a new document (this is
+# how DOCKER.md was added) does not silently start busting the dependency layer
+# on every edit. Nothing the build reads is Markdown: pyproject.toml declares no
+# readme, hatchling packages only app/, and alembic/README has no extension.
 .git
 .github
 Dockerfile
 .dockerignore
-README.md
+**/*.md
 fly.toml
+# The dev stack and the reverse proxy build/front this image; none of these
+# files is ever read from inside it.
+docker-compose.yml
+docker-compose.*.yml
+compose.yaml
+Caddyfile

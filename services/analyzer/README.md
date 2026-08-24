@@ -108,6 +108,11 @@ pool also recycles every 300s, since a managed host drops idle connections.
 
 ## Deploying to a container
 
+**[`DOCKER.md`](DOCKER.md) is the full guide**: local, development, and
+production, across both app-state backends, with a configuration reference
+generated from `app/config.py` and a troubleshooting section built from
+reproduced failures. What follows is the short version.
+
 `Dockerfile` and `fly.toml` both live in `services/analyzer/`, and every
 container command runs from there. That is not cosmetic: a Docker build context
 and a Fly build context are both "the directory the config sits in", and the
@@ -117,71 +122,31 @@ to copy and `fly deploy` could not build at all.
 
 ```bash
 cd services/analyzer
-fly deploy
-
-# The same build, without Fly:
 docker build -t fae .
-docker run --rm -p 8000:8000 \
-  -e DATABASE_URL='postgresql://user:pass@host/dbname?sslmode=require' \
-  -e FAE_FERNET_KEY='<32-byte urlsafe base64>' \
-  fae
+fly deploy
 ```
 
 The image runs as uid 10001, installs from the lockfile in a build stage so no
-compiler or `uv` ships in the runtime layer, and defaults `FAE_DB_BACKEND=neon`
-and `FAE_SQLITE_ALLOWED_DIRS=""` because neither SQLite app-state nor a SQLite
-target can work on an ephemeral container filesystem.
+compiler or `uv` ships in the runtime layer, and keeps the code and virtualenv
+root-owned so a service whose whole job is running caller-supplied SQL cannot
+rewrite its own source. It defaults `FAE_DB_BACKEND=neon` and
+`FAE_SQLITE_ALLOWED_DIRS=""` because neither SQLite app-state nor a SQLite
+target can work on an ephemeral container filesystem, and it writes to exactly
+two paths: `/app/.secrets` (only when `FAE_FERNET_KEY` is unset) and
+`/app/data` (only when the app-state backend resolves to SQLite).
 
-The code and the virtualenv are root-owned and read-only to the service
-account. A service whose whole job is running caller-supplied SQL should not be
-able to rewrite its own source. The process writes to exactly two paths:
+Three environment variables decide whether a deployment works, and getting any
+of them wrong surfaces later as missing tables, blocked dashboard requests, or
+unreadable credentials rather than at deploy time: `DATABASE_URL`,
+`FAE_FERNET_KEY`, and `FAE_CORS_ORIGINS`. `DOCKER.md` covers each one, what its
+absence actually costs, and how to confirm from the outside that it took.
 
-| Path | What lands there | When |
-|---|---|---|
-| `/app/.secrets` | `fernet.key` | Only when `FAE_FERNET_KEY` is unset |
-| `/app/data` | `fraud_analyzer.db` | Only when `FAE_DB_BACKEND=sqlite` |
-
-Set `FAE_FERNET_KEY` and `DATABASE_URL` and neither is touched, so the image
-runs read-only:
-
-```bash
-docker run --rm --read-only --tmpfs /tmp -p 8000:8000 \
-  -e DATABASE_URL=... -e FAE_FERNET_KEY=... fae
-```
-
-`.dockerignore` keeps `.env`, `.secrets/`, `*.db`, `.git`, and every
-`__pycache__` out of the image. The last one matters beyond size: a host
-`__pycache__` copied in can shadow the source it was built from. `alembic/` and
-`alembic.ini` are deliberately *not* excluded, because `FAE_AUTO_MIGRATE=true`
-needs them at startup.
-
-Three environment variables decide whether a deployment works. Get any of them
-wrong and the failure shows up later, as missing tables or unreadable
-credentials, rather than at deploy time.
-
-```bash
-# From services/analyzer, the directory holding fly.toml.
-fly secrets set \
-  FAE_DB_BACKEND=neon \
-  DATABASE_URL='postgresql://user:pass@host/dbname?sslmode=require' \
-  FAE_FERNET_KEY='<output of the keygen command below>'
-```
-
-```bash
-uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
-
-**`FAE_DB_BACKEND` and `DATABASE_URL`.** `.env` is gitignored, so it never ships
-in an image. Without these the service falls back to the SQLite default and a
-container filesystem is wiped on every deploy, taking every saved connection
-and query with it. Startup logs which backend it resolved and warns when it is
-SQLite.
-
-**`FAE_FERNET_KEY`.** Without it the service generates a key onto local disk.
-On an ephemeral filesystem that key is regenerated on the next restart while
-the encrypted passwords sit in a durable database, so every stored
-target-database credential becomes permanently undecryptable. Set it once and
-keep it stable. Startup warns if it was generated.
+**This service has no authentication and serves an interactive SQL console at
+`/docs` on the same port.** Publish it on loopback (`-p 127.0.0.1:8000:8000`)
+behind an authenticating, TLS-terminating reverse proxy. `FAE_CORS_ORIGINS`
+constrains browsers only and stops no direct caller; rate limits are
+containment, not auth. See
+[`DOCKER.md`](DOCKER.md#before-you-expose-this).
 
 ### Migrations run at startup
 
@@ -191,9 +156,13 @@ the image and starting the server, and a service that cannot create its own
 schema answers every request with `no such table: connections`.
 
 Set `FAE_AUTO_MIGRATE=false` if you run migrations as a separate release step,
-or if several instances start at once and you would rather they not race. With
-it off, startup verifies the schema and refuses to serve if tables are missing,
-naming the command to run.
+or if several instances start at once and you would rather they not race.
+
+`bootstrap_schema()` calls `verify_schema()` unconditionally
+(`app/db/migrate.py:145`), whether or not it migrated. With auto-migrate on
+that confirms the upgrade actually produced the tables; with it off it is the
+gate that refuses to serve against an unmigrated database, naming the command
+to run.
 
 ### Reading the startup log
 
@@ -211,8 +180,13 @@ The line names which setting won, because `FAE_APP_DB_URL` overrides
 
 Nothing in the service configured the root logger until recently, so uvicorn's
 default left root at `WARNING` and this line was discarded: it was documented
-and unreachable. `FAE_LOG_LEVEL` (default `INFO`) now controls it, and
-`FAE_LOG_JSON=true` switches to one JSON object per line for a log shipper.
+and unreachable. `FAE_LOG_LEVEL` (default `INFO`) now controls it.
+
+`FAE_LOG_JSON=true` switches **the service's own logger** to one JSON object
+per line. uvicorn has its own logging configuration and is unaffected, so its
+four startup lines and its access log stay plain text on the same stream. A log
+shipper has to tolerate both. [`DOCKER.md`](DOCKER.md#what-the-logs-actually-look-like)
+has the measured breakdown and how to drop uvicorn's duplicate access line.
 
 Every response carries an `X-Request-ID` header, echoed from the request when
 supplied, and every log line emitted while serving that request carries the

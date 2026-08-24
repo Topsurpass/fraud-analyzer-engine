@@ -14,3 +14,7 @@ htmlcov/
 dist/
 build/
 .DS_Store
+
+# Bind-mount target for a container-run analyzer (services/analyzer/DOCKER.md 2c).
+# Created by `mkdir -p ./data` in that recipe; holds a sqlite app-state file.
+services/analyzer/data/
