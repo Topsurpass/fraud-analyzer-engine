@@ -493,3 +493,104 @@ def test_specs_from_models_sorts_rules_and_conditions_by_position():
     specs = specs_from_models(models)
     assert [spec.id for spec in specs] == ["a", "b"]
     assert [c.column_name for c in specs[1].conditions] == ["x", "y"]
+
+
+# ---------------------------------------------------------------------------
+# Saying why a rule caught nothing
+#
+# A rule naming a missing column already warns. This is the quieter failure:
+# every column exists, the rule evaluates cleanly, and it can never be true.
+# The case that prompted it was `first_name eq true` against a result whose
+# boolean column was called something else - no error anywhere, no rows
+# flagged, and nothing on screen to suggest the rule was at fault.
+# ---------------------------------------------------------------------------
+
+
+def _rule(column, operator, value, name="R"):
+    return RuleSpec(
+        id="r1",
+        name=name,
+        severity=FlagSeverity.MEDIUM,
+        conditions=(ConditionSpec(column_name=column, operator=operator, value=value),),
+    )
+
+
+def test_a_rule_that_matches_nothing_says_so():
+    outcome = evaluate(
+        [_rule("amount", FlagOperator.GT, "999999")], ["amount"], [[10], [20]]
+    )
+    assert outcome.flagged_count == 0
+    assert any("matched no rows" in w for w in outcome.warnings)
+
+
+def test_comparing_a_text_column_to_true_is_named_as_the_problem():
+    outcome = evaluate(
+        [_rule("first_name", FlagOperator.EQ, "true", name="check changed password")],
+        ["first_name", "must_change_password"],
+        [["Ada", True], ["Bob", False]],
+    )
+    warning = " ".join(outcome.warnings)
+    assert "'first_name'" in warning
+    assert "no true/false values" in warning
+    assert "different column" in warning
+
+
+def test_the_warning_never_quotes_the_column_s_own_values():
+    # Column names and the value the analyst typed are theirs already. The
+    # column's contents are the customer's data.
+    outcome = evaluate(
+        [_rule("email", FlagOperator.EQ, "false")],
+        ["email"],
+        [["ada@example.test"], ["bob@example.test"]],
+    )
+    warning = " ".join(outcome.warnings)
+    assert "example.test" not in warning
+
+
+def test_a_rule_that_matches_is_not_warned_about():
+    outcome = evaluate(
+        [_rule("flag", FlagOperator.EQ, "true")], ["flag"], [[True], [False]]
+    )
+    assert outcome.flagged_count == 1
+    assert outcome.warnings == []
+
+
+def test_a_boolean_column_compared_to_true_gets_no_mismatch_note():
+    # Matches nothing because every value is False, not because the comparison
+    # is impossible. Saying "did you mean a different column" would be wrong.
+    outcome = evaluate(
+        [_rule("flag", FlagOperator.EQ, "true")], ["flag"], [[False], [False]]
+    )
+    warning = " ".join(outcome.warnings)
+    assert "matched no rows" in warning
+    assert "different column" not in warning
+
+
+def test_a_column_of_only_nulls_gets_no_mismatch_note():
+    # Nothing to conclude from an empty column.
+    outcome = evaluate(
+        [_rule("flag", FlagOperator.EQ, "true")], ["flag"], [[None], [None]]
+    )
+    assert "different column" not in " ".join(outcome.warnings)
+
+
+def test_text_booleans_still_count_as_boolean_values():
+    # SQLite and some drivers return "t"/"yes" for a boolean column, so those
+    # must not be reported as "holds no true/false values".
+    outcome = evaluate(
+        [_rule("flag", FlagOperator.EQ, "false")], ["flag"], [["t"], ["t"]]
+    )
+    assert "different column" not in " ".join(outcome.warnings)
+
+
+def test_a_disabled_rule_is_not_warned_about():
+    rule = RuleSpec(
+        id="r1",
+        name="off",
+        severity=FlagSeverity.LOW,
+        enabled=False,
+        conditions=(
+            ConditionSpec(column_name="amount", operator=FlagOperator.GT, value="9"),
+        ),
+    )
+    assert evaluate([rule], ["amount"], [[1]]).warnings == []

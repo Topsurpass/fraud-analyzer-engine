@@ -434,16 +434,59 @@ def evaluate(
     # Keep every rule in the tally, including ones that matched nothing: "this
     # rule caught 0 rows" is information, and a rule vanishing from the summary
     # looks like it was never saved.
-    for rule, _ in usable:
+    for rule, resolved in usable:
+        matched = matched_counts[rule.id]
         outcome.rules.append(
             RuleHit(
                 id=rule.id,
                 name=rule.name,
                 severity=rule.severity,
-                matched=matched_counts[rule.id],
+                matched=matched,
             )
         )
+        if matched == 0:
+            outcome.warnings.append(_why_nothing_matched(rule, resolved, rows))
     return outcome
+
+
+def _why_nothing_matched(
+    rule: RuleSpec,
+    resolved: Sequence[tuple[ConditionSpec, int]],
+    rows: Sequence[Sequence[Any]],
+) -> str:
+    """Explain a rule that ran cleanly and caught nothing.
+
+    A rule naming a column that is absent already warns. This is the quieter
+    failure: every column exists, the rule evaluates fine, and it can never be
+    true. The one that prompted it was ``first_name eq true`` on a result whose
+    boolean column was named something else -- no error anywhere, no rows
+    flagged, and nothing on screen to suggest the rule was the problem rather
+    than the data.
+
+    Where the mismatch is diagnosable the message names it. Column *names* and
+    the value the analyst typed are theirs already; the column's own values are
+    the customer's data, so this describes their shape and never quotes one.
+    """
+    detail = ""
+    for condition, position in resolved:
+        if condition.operator not in (FlagOperator.EQ, FlagOperator.NEQ):
+            continue
+        if as_bool(condition.value) is None:
+            continue
+        # Compared against true/false. If nothing in the column is boolean-ish,
+        # this condition could not have been satisfied by any row.
+        column = [row[position] for row in rows if row[position] is not None]
+        if column and not any(
+            isinstance(cell, bool) or _is_bool_word(cell) for cell in column
+        ):
+            detail = (
+                f" Column {condition.column_name!r} holds no true/false values, "
+                f"so comparing it to {condition.value!r} can never match. Did you "
+                f"mean a different column?"
+            )
+            break
+
+    return f"Rule {rule.name!r} matched no rows.{detail}"
 
 
 def specs_from_models(rules: Iterable[Any]) -> list[RuleSpec]:

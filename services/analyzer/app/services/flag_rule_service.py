@@ -120,6 +120,13 @@ def queries_with_rules(session: Session, connection_id: str) -> list[SavedQuery]
     return [query for query in session.scalars(statement) if query.flag_rules]
 
 
+def _warnings_from_last_run(query_id: str) -> list[str]:
+    entry = result_cache.get(query_id)
+    if entry is None:
+        return []
+    return list((entry.payload.get("flags") or {}).get("warnings") or [])
+
+
 def _section(session: Session, query: SavedQuery) -> dict:
     """One query's contribution to a connection's flagged view.
 
@@ -174,7 +181,12 @@ def _section(session: Session, query: SavedQuery) -> dict:
             for position, row in enumerate(stored)
         ],
         "rules": list(rules_by_id.values()),
-        "warnings": [],
+        # From the last run rather than the stored rows: a warning is about the
+        # run ("this rule matched nothing", "that column is gone"), not about a
+        # finding, and there is no finding to hang it on precisely when it
+        # matters most. Empty when the cache has aged out, which is the honest
+        # answer - the engine does not know whether it would still warn.
+        "warnings": _warnings_from_last_run(query.id),
         "flagged_count": len(stored),
         "dismissed_count": dismissed,
         "executed_at": max((row.last_seen_at for row in stored), default=None),

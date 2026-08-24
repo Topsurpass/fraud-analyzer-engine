@@ -34,6 +34,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging()
     bootstrap_schema()
     _prune_logs_on_startup()
+    _report_unreadable_credentials()
 
     stop = asyncio.Event()
     task = None
@@ -53,6 +54,61 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         except (TimeoutError, asyncio.CancelledError):  # pragma: no cover
             task.cancel()
     target_registry.dispose_all()
+
+
+def _report_unreadable_credentials() -> None:
+    """Say at startup which stored credentials this key cannot read.
+
+    A Fernet key that changed between the save and the read makes every query
+    on that connection fail, and the failure surfaces one request at a time, on
+    a connection whose every visible field is correct. It is the same
+    confusion each time, so it belongs in the log at boot rather than being
+    rediscovered.
+
+    The key's fingerprint goes in the same line: comparing it across two
+    restarts is what turns "the password broke again" into "these are two
+    different keys". It is a truncated hash of the key, never the key.
+    """
+    import hashlib
+
+    from sqlalchemy.orm import Session
+
+    from app.db.app_state import get_engine
+    from app.models import Connection
+    from app.security.crypto import decrypt
+
+    try:
+        settings = get_settings()
+        key = settings.fernet_key or ""
+        fingerprint = (
+            hashlib.sha256(key.encode()).hexdigest()[:12] if key else "generated"
+        )
+
+        with Session(get_engine()) as session:
+            unreadable = []
+            for conn in session.query(Connection).all():
+                if not conn.password_encrypted:
+                    continue
+                try:
+                    decrypt(conn.password_encrypted)
+                except Exception:  # noqa: BLE001 - any failure means unreadable
+                    unreadable.append(conn.name)
+
+        if unreadable:
+            logger.warning(
+                "Credential encryption key fingerprint %s cannot decrypt the stored "
+                "password for: %s. These were saved under a different "
+                "FAE_FERNET_KEY, so every query on them will fail until the "
+                "password is entered again. Note that a FAE_FERNET_KEY exported in "
+                "the shell overrides the one in .env, so starting the stack from "
+                "different shells produces different keys.",
+                fingerprint,
+                ", ".join(sorted(unreadable)),
+            )
+        else:
+            logger.info("Credential encryption key fingerprint %s.", fingerprint)
+    except Exception:  # noqa: BLE001 - never block startup on a diagnostic
+        logger.exception("Could not check stored credentials at startup; continuing.")
 
 
 def _prune_logs_on_startup() -> None:
