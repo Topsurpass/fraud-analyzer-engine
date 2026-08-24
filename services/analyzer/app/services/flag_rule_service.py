@@ -18,7 +18,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.models import Connection, FlagCondition, FlagRule, SavedQuery
-from app.services import flag_dismissal_service, flagging, query_service, result_cache
+from app.services import (
+    flag_dismissal_service,
+    flagged_row_service,
+    query_service,
+    result_cache,
+)
+from app.services.flagging import SEVERITY_ORDER
 from app.services.saved_query_service import get_query
 
 
@@ -114,159 +120,97 @@ def queries_with_rules(session: Session, connection_id: str) -> list[SavedQuery]
     return [query for query in session.scalars(statement) if query.flag_rules]
 
 
-class FlaggedQuery:
-    """One query's contribution to a connection's flagged view."""
+def _section(session: Session, query: SavedQuery) -> dict:
+    """One query's contribution to a connection's flagged view.
 
-    def __init__(
-        self,
-        query: SavedQuery,
-        *,
-        columns: list[str] | None = None,
-        rows: list[list] | None = None,
-        outcome: dict | None = None,
-        executed_at: datetime | None = None,
-        stale: bool = False,
-        error_code: str | None = None,
-        error_message: str | None = None,
-        dismissed: set[str] | None = None,
-    ) -> None:
-        self.query = query
-        self.columns = columns or []
-        self.rows = rows or []
-        self.outcome = outcome or flagging.FlagOutcome().as_dict()
-        self.executed_at = executed_at
-        self.stale = stale
-        self.error_code = error_code
-        self.error_message = error_message
-        self.dismissed = dismissed or set()
+    Read from the stored findings, not from the result cache. The cache expires
+    on the poll interval and is empty after a restart, so the view used to say
+    "not run yet" about queries that had been flagging rows for days. What is
+    stored is what needs review.
 
-    def as_dict(self) -> dict:
-        """Only the flagged rows themselves, not the whole result.
+    ``columns`` comes off the rows themselves, so a finding still renders under
+    the headers it was flagged with even if the SELECT list has changed since.
+    """
+    stored = flagged_row_service.rows_for_query(session, query.id)
+    dismissed = len(flag_dismissal_service.dismissed_fingerprints(session, query.id))
 
-        The flagged view exists to show what matched. Carrying every row of
-        every query on the connection so the client can filter would multiply
-        the payload by the inverse of the flag rate, which for a working rule
-        set is a large number.
-
-        Rows the analyst has dismissed are removed here rather than at the
-        client, so a reviewed row never reaches the browser again. Each row
-        carries its fingerprint, which is what the client sends back to dismiss
-        it -- the row index cannot serve: it is a position in one run's result
-        and means something different after the next.
-
-        ``flagged_count`` counts what is being shown. The number beside a
-        section is what the analyst still has to work through, not a total that
-        never moves however much of the queue they clear; ``dismissed_count``
-        carries the rest, so the view can offer to restore them.
-        """
-        by_index = {row["index"]: row["rule_ids"] for row in self.outcome["rows"]}
-
-        rows = []
-        dismissed_count = 0
-        for index, rule_ids in sorted(by_index.items()):
-            if index >= len(self.rows):
-                continue
-            values = self.rows[index]
-            fingerprint = flag_dismissal_service.row_fingerprint(values)
-            if fingerprint in self.dismissed:
-                dismissed_count += 1
-                continue
-            rows.append(
-                {
-                    "index": index,
-                    "rule_ids": rule_ids,
-                    "values": values,
-                    "fingerprint": fingerprint,
-                }
+    rules_by_id: dict[str, dict] = {}
+    for row in stored:
+        for rule_id, name in zip(row.rule_ids, row.rule_names, strict=False):
+            entry = rules_by_id.setdefault(
+                rule_id,
+                {"id": rule_id, "name": name, "severity": row.severity.value, "matched": 0},
             )
+            entry["matched"] += 1
+            # A rule's severity is a property of the rule; the row carries the
+            # worst across its rules, so the strongest wins on a tie.
+            if SEVERITY_ORDER[row.severity.value] > SEVERITY_ORDER[entry["severity"]]:
+                entry["severity"] = row.severity.value
 
-        # Per-rule counts are recomputed over what survived, for the same
-        # reason: a legend reading "Large transfer 40" beside four visible rows
-        # describes a queue the analyst has already emptied.
-        shown = [set(row["rule_ids"]) for row in rows]
-        rules = [
-            {**rule, "matched": sum(1 for ids in shown if rule["id"] in ids)}
-            for rule in self.outcome["rules"]
-        ]
+    # Rules that currently match nothing still belong in the legend: "Large
+    # transfer 0" is the answer to "did my rule stop working".
+    for rule in query.flag_rules:
+        rules_by_id.setdefault(
+            rule.id,
+            {"id": rule.id, "name": rule.name, "severity": rule.severity.value,
+             "matched": 0},
+        )
 
-        return {
-            "query_id": self.query.id,
-            "query_name": self.query.name,
-            "columns": self.columns,
-            "rows": rows,
-            "rules": rules,
-            "warnings": self.outcome["warnings"],
-            "flagged_count": len(rows),
-            "dismissed_count": dismissed_count,
-            "executed_at": self.executed_at,
-            "stale": self.stale,
-            "error_code": self.error_code,
-            "error_message": self.error_message,
-        }
-
-
-def _from_cache(query: SavedQuery, dismissed: set[str]) -> FlaggedQuery:
-    entry = result_cache.get(query.id)
-    if entry is None:
-        # Never run, or the entry aged out. Not an error: the view says so and
-        # offers a refresh rather than quietly showing nothing.
-        return FlaggedQuery(query, stale=True, dismissed=dismissed)
-
-    payload = entry.payload
-    return FlaggedQuery(
-        query,
-        columns=payload.get("columns", []),
-        rows=payload.get("rows", []),
-        outcome=payload.get("flags") or flagging.FlagOutcome().as_dict(),
-        executed_at=payload.get("executed_at"),
-        stale=False,
-        dismissed=dismissed,
-    )
+    return {
+        "query_id": query.id,
+        "query_name": query.name,
+        "columns": stored[0].columns if stored else [],
+        "rows": [
+            {
+                "index": position,
+                "rule_ids": row.rule_ids,
+                "rule_names": row.rule_names,
+                "values": row.values,
+                "fingerprint": row.row_fingerprint,
+                "severity": row.severity.value,
+                "first_seen_at": row.first_seen_at,
+                "last_seen_at": row.last_seen_at,
+            }
+            for position, row in enumerate(stored)
+        ],
+        "rules": list(rules_by_id.values()),
+        "warnings": [],
+        "flagged_count": len(stored),
+        "dismissed_count": dismissed,
+        "executed_at": max((row.last_seen_at for row in stored), default=None),
+        # Nothing stored and nothing ever run: the view says so rather than
+        # implying the rules matched nothing.
+        "stale": not stored and result_cache.get(query.id) is None,
+        "error_code": None,
+        "error_message": None,
+    }
 
 
-def _run_one(
-    session: Session, query: SavedQuery, conn: Connection, dismissed: set[str]
-) -> FlaggedQuery:
+def _run_one(session: Session, query: SavedQuery, conn: Connection) -> tuple:
+    """Run one query so its stored findings are current.
+
+    Returns ``(error_code, error_message)``; both None on success. One broken
+    query must not empty the whole view - the other cards on this connection
+    are fine and their findings still matter - so the failure is reported
+    against its own section and the rest are built as usual.
+    """
     from app.db.target_registry import translate_db_error
     from app.errors import AppError
 
     try:
         payload = query_service.run_saved_query(query, conn)
     except AppError as exc:
-        # One broken query must not empty the whole view. The other cards on
-        # this connection are fine and their flagged rows still matter.
-        return FlaggedQuery(
-            query,
-            stale=True,
-            error_code=exc.error_code.value,
-            error_message=exc.message,
-            dismissed=dismissed,
-        )
+        return exc.error_code.value, exc.message
     except Exception as exc:  # noqa: BLE001 - normalised below
         translated = translate_db_error(exc)
-        return FlaggedQuery(
-            query,
-            stale=True,
-            error_code=translated.error_code.value,
-            error_message=translated.message,
-            dismissed=dismissed,
-        )
+        return translated.error_code.value, translated.message
 
+    interval = query_service.poll_interval_for(query)
     result_cache.set(
-        query.id,
-        payload.data_hash,
-        payload.as_dict(query_service.poll_interval_for(query)),
-        ttl_ms=query_service.poll_interval_for(query),
+        query.id, payload.data_hash, payload.as_dict(interval), ttl_ms=interval
     )
-    return FlaggedQuery(
-        query,
-        columns=payload.columns,
-        rows=payload.rows,
-        outcome=payload.flags,
-        executed_at=payload.executed_at,
-        stale=False,
-        dismissed=dismissed,
-    )
+    flagged_row_service.sync(session, query, payload.columns, payload.rows, payload.flags)
+    return None, None
 
 
 def flagged_for_connection(
@@ -275,7 +219,11 @@ def flagged_for_connection(
     *,
     refresh: bool = False,
 ) -> dict:
-    """Flagged rows across every rule-bearing query on one connection.
+    """Stored findings across every rule-bearing query on one connection.
+
+    Read from the flagged store, so this costs the target database nothing and
+    shows what needs review even after a restart. ``refresh`` re-runs the
+    queries first, which is the only path here that touches the target.
 
     Queries with no rules are skipped entirely rather than reported with zero
     hits: a connection where only two of twenty queries define rules should
@@ -290,18 +238,15 @@ def flagged_for_connection(
         queries = queries[: settings.flagged_refresh_max_queries]
         truncated = True
 
-    sections = []
+    payloads = []
     for query in queries:
-        dismissed = flag_dismissal_service.dismissed_fingerprints(session, query.id)
-        sections.append(
-            _run_one(session, query, conn, dismissed)
-            if refresh
-            else _from_cache(query, dismissed)
-        )
-
-    # Built once: as_dict does the dismissal filtering, and the totals have to
-    # agree with the sections the client is actually shown.
-    payloads = [section.as_dict() for section in sections]
+        error_code = error_message = None
+        if refresh:
+            error_code, error_message = _run_one(session, query, conn)
+        section = _section(session, query)
+        section["error_code"] = error_code
+        section["error_message"] = error_message
+        payloads.append(section)
 
     return {
         "connection_id": conn.id,

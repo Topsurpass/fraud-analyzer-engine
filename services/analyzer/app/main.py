@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -16,6 +17,7 @@ from sqlalchemy import text
 
 from app.config import get_settings
 from app.db import target_registry
+from app.services import scheduler
 from app.db.app_state import get_engine
 from app.db.migrate import bootstrap_schema
 from app.errors import HTTP_STATUS_BY_CODE, AppError, ErrorCode
@@ -32,7 +34,24 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging()
     bootstrap_schema()
     _prune_logs_on_startup()
+
+    stop = asyncio.Event()
+    task = None
+    if get_settings().scheduler_enabled:
+        task = asyncio.create_task(scheduler.run_forever(stop))
+    else:
+        logger.info("Flag scheduler disabled by FAE_SCHEDULER_ENABLED=false.")
+
     yield
+
+    if task is not None:
+        stop.set()
+        # Bounded: a shutdown must not hang on a query that is mid-flight
+        # against a slow target.
+        try:
+            await asyncio.wait_for(task, timeout=10)
+        except (TimeoutError, asyncio.CancelledError):  # pragma: no cover
+            task.cancel()
     target_registry.dispose_all()
 
 
@@ -178,6 +197,7 @@ app.include_router(queries.connection_scoped)
 app.include_router(queries.query_scoped)
 app.include_router(flag_rules.connection_scoped)
 app.include_router(flag_rules.query_scoped)
+app.include_router(flag_rules.summary_scoped)
 
 
 # ---------------------------------------------------------------------------

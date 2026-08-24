@@ -647,9 +647,16 @@ def test_dismissing_twice_is_not_an_error(client, query, flagged_section):
     assert second.json()["changed"] == 0
 
 
-def test_restoring_brings_a_row_back(
+def test_restoring_lifts_the_suppression_and_the_row_returns_on_the_next_run(
     client, sqlite_connection, query, flagged_section
 ):
+    """Restoring is not an undelete.
+
+    Dismissing removes the stored finding, which is what was asked for, so
+    there is nothing to put back: what a restore does is stop suppressing the
+    row, and the next run flags it again. Until that run the queue is honestly
+    empty of it.
+    """
     victim = flagged_section["rows"][0]["fingerprint"]
     client.post(
         f"/queries/{query['id']}/flag-dismissals", json={"fingerprints": [victim]}
@@ -658,9 +665,14 @@ def test_restoring_brings_a_row_back(
     assert response.status_code == 200, response.text
     assert response.json()["changed"] == 1
 
+    # Suppression lifted, but nothing has re-run yet.
+    lifted = _flagged(client, sqlite_connection["id"])
+    assert lifted["flagged_count"] == 1
+    assert lifted["dismissed_count"] == 0
+
+    client.post(f"/queries/{query['id']}/run")
     after = _flagged(client, sqlite_connection["id"])
     assert after["flagged_count"] == 2
-    assert after["dismissed_count"] == 0
 
 
 def test_restoring_one_named_row_leaves_the_others_dismissed(
@@ -671,6 +683,9 @@ def test_restoring_one_named_row_leaves_the_others_dismissed(
     client.delete(
         f"/queries/{query['id']}/flag-dismissals", params={"fingerprint": [prints[0]]}
     )
+    # Only the named row is un-suppressed, and it comes back when the query
+    # next runs; the other stays dismissed.
+    client.post(f"/queries/{query['id']}/run")
     after = _flagged(client, sqlite_connection["id"])
     assert [row["fingerprint"] for row in after["rows"]] == [prints[0]]
 

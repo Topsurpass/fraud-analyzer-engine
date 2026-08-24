@@ -25,6 +25,7 @@ from app.schemas.query import (
 from app.services import (
     connection_service,
     flag_dismissal_service,
+    flagged_row_service,
     flagging,
     query_service,
     result_cache,
@@ -152,6 +153,10 @@ def _execute_and_log(session: Session, query, conn):
         row_count=payload.row_count,
         duration_ms=payload.duration_ms,
     )
+    # Every actual execution updates the stored queue, so a finding outlives
+    # the cache entry that produced it and the flagged view has something to
+    # show without re-running anything.
+    flagged_row_service.sync(session, query, payload.columns, payload.rows, payload.flags)
     return payload
 
 

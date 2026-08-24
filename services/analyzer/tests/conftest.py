@@ -79,6 +79,11 @@ def isolated_environment(tmp_path, monkeypatch):
     # Access logs are proven by tests/test_observability.py; everywhere else
     # they bury the actual assertion failure in pytest's captured output.
     monkeypatch.setenv("FAE_LOG_LEVEL", "WARNING")
+    # The scheduler queries target databases on a timer. A test suite must not
+    # start one: it would run every fixture's queries in the background, at
+    # unpredictable moments, against tables another test is asserting on.
+    # tests/test_scheduler.py drives it directly instead.
+    monkeypatch.setenv("FAE_SCHEDULER_ENABLED", "false")
     get_settings.cache_clear()
     get_fernet.cache_clear()
     app_state.reset_caches()

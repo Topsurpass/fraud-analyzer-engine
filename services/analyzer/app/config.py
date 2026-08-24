@@ -151,6 +151,17 @@ class Settings(BaseSettings):
     # (504) -- which tells the frontend the database is down when it is not.
     socket_timeout_grace_s: int = Field(default=5, gt=0)
 
+    # Scheduler. The only part of the service that queries a customer's
+    # database unprompted, so it is bounded and can be switched off entirely.
+    scheduler_enabled: bool = True
+    #: How often the loop looks for due queries. Not how often a query runs.
+    scheduler_tick_ms: int = Field(default=15_000, gt=0)
+    #: Floor under every query's own interval, so a query saved with a
+    #: one-second interval cannot become a denial of service by a typo.
+    scheduler_min_interval_ms: int = Field(default=60_000, gt=0)
+    #: Ceiling on the backoff a repeatedly failing target reaches.
+    scheduler_max_backoff_ms: int = Field(default=3_600_000, gt=0)
+
     # Polling.
     poll_interval_ms: int = Field(default=5000, gt=0)
 

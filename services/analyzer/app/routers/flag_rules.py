@@ -14,11 +14,15 @@ from app.schemas.flag_rule import (
 )
 from app.services import connection_service
 from app.services import flag_dismissal_service as dismissals
+from app.services import flagged_row_service as flagged_rows
 from app.services import flag_rule_service as svc
 from app.services import saved_query_service
 
 query_scoped = APIRouter(prefix="/queries", tags=["flag-rules"])
 connection_scoped = APIRouter(prefix="/connections", tags=["flag-rules"])
+# Its own prefix rather than nested under /connections: the summary spans every
+# connection, so hanging it off one connection's path would be a lie.
+summary_scoped = APIRouter(prefix="/flagged", tags=["flag-rules"])
 
 
 @query_scoped.get("/{query_id}/flag-rules", response_model=FlagRuleSetRead)
@@ -92,6 +96,11 @@ def dismiss_flagged_rows(
     """
     query = saved_query_service.get_query(session, query_id)
     stored = dismissals.dismiss(session, query, payload.fingerprints)
+    # Delete the engine's stored copy as well, so the queue actually shrinks
+    # rather than being filtered on the way out. The row in the customer's
+    # database is untouched: target connections are opened read-only and this
+    # is the engine's own bookkeeping table.
+    flagged_rows.delete_rows(session, query_id, payload.fingerprints)
     return FlagDismissalResult(query_id=query_id, changed=stored)
 
 
@@ -110,3 +119,35 @@ def restore_flagged_rows(
     query = saved_query_service.get_query(session, query_id)
     removed = dismissals.restore(session, query, fingerprint)
     return FlagDismissalResult(query_id=query_id, changed=removed)
+
+
+@query_scoped.delete("/{query_id}/flagged-rows", response_model=FlagDismissalResult)
+def delete_flagged_rows(
+    query_id: str,
+    fingerprint: list[str] | None = Query(default=None),
+    session: Session = Depends(get_session),
+) -> FlagDismissalResult:
+    """Delete stored findings without recording a dismissal.
+
+    Separate from dismissing on purpose. Dismissing says "reviewed, do not show
+    me this again" and is remembered, so the next scheduled run will not
+    re-flag the row. Deleting only clears what is stored now; if the row still
+    matches when the query next runs it comes back. Use this to clear a queue
+    after changing a rule, when the old findings are noise rather than
+    decisions.
+
+    Either way this only ever removes the engine's own copy.
+    """
+    saved_query_service.get_query(session, query_id)
+    removed = flagged_rows.delete_rows(session, query_id, fingerprint)
+    return FlagDismissalResult(query_id=query_id, changed=removed)
+
+
+@summary_scoped.get("/summary")
+def flagged_summary(session: Session = Depends(get_session)) -> dict:
+    """Flagged totals per connection and per query, in one request.
+
+    What the navigation badges need. A count endpoint per card would be the
+    same data fetched once per thing on screen, and this is read on every page.
+    """
+    return flagged_rows.summary(session)

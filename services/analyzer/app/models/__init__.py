@@ -12,6 +12,7 @@ from app.models.enums import (
 from app.models.execution_log import QueryExecutionLog
 from app.models.flag_dismissal import FlagDismissal
 from app.models.flag_rule import FlagCondition, FlagRule
+from app.models.flagged_row import FlaggedRow
 from app.models.saved_query import DEFAULT_ROW_LIMIT, SavedQuery
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "FlagDismissal",
     "FlagOperator",
     "FlagRule",
+    "FlaggedRow",
     "FlagSeverity",
     "QueryExecutionLog",
     "SavedQuery",
