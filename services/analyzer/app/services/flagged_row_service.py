@@ -28,7 +28,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.models import FlaggedRow, SavedQuery, utcnow
+from app.models import Connection, FlaggedRow, SavedQuery, utcnow
 from app.models.enums import FlagSeverity
 from app.services.flag_dismissal_service import (
     dismissed_fingerprints,
@@ -171,41 +171,71 @@ def delete_rows(
 
 
 def summary(session: Session) -> dict:
-    """Flagged totals per connection and per query, for the navigation badges.
+    """Flagged totals per connection and per query, plus when the newest arrived.
 
-    Everything the sidebar and the connection list need in one request. The
+    Everything the sidebar, the connection list and the notification bell need
+    in one request. The
     alternative is a count endpoint per card, which is the same data fetched
     once per thing on screen.
     """
+    # The connection's name comes along rather than being looked up by the
+    # client. A notification listing "c9a86758" is not a notification, and
+    # joining here costs one statement instead of coupling the caller to
+    # whatever else happens to have loaded the connection list.
     statement = (
         select(
             SavedQuery.connection_id,
+            Connection.name,
             FlaggedRow.query_id,
             FlaggedRow.severity,
             func.count(),
+            func.max(FlaggedRow.first_seen_at),
         )
         .join(SavedQuery, SavedQuery.id == FlaggedRow.query_id)
-        .group_by(SavedQuery.connection_id, FlaggedRow.query_id, FlaggedRow.severity)
+        .join(Connection, Connection.id == SavedQuery.connection_id)
+        .group_by(
+            SavedQuery.connection_id,
+            Connection.name,
+            FlaggedRow.query_id,
+            FlaggedRow.severity,
+        )
     )
+
+    def _newer(current, candidate):
+        if candidate is None:
+            return current
+        return candidate if current is None or candidate > current else current
 
     per_query: dict[str, dict] = {}
     per_connection: dict[str, dict] = {}
-    for connection_id, query_id, severity, total in session.execute(statement):
+    newest = None
+    for connection_id, name, query_id, severity, total, seen in session.execute(
+        statement
+    ):
+        newest = _newer(newest, seen)
+
         query_entry = per_query.setdefault(
             query_id,
             {"query_id": query_id, "connection_id": connection_id, "flagged_count": 0,
-             "severity": FlagSeverity.LOW},
+             "severity": FlagSeverity.LOW, "newest_first_seen_at": None},
         )
         query_entry["flagged_count"] += total
+        query_entry["newest_first_seen_at"] = _newer(
+            query_entry["newest_first_seen_at"], seen
+        )
         if _SEVERITY_RANK[severity] > _SEVERITY_RANK[query_entry["severity"]]:
             query_entry["severity"] = severity
 
         connection_entry = per_connection.setdefault(
             connection_id,
-            {"connection_id": connection_id, "flagged_count": 0,
-             "severity": FlagSeverity.LOW},
+            {"connection_id": connection_id, "connection_name": name,
+             "flagged_count": 0, "severity": FlagSeverity.LOW,
+             "newest_first_seen_at": None},
         )
         connection_entry["flagged_count"] += total
+        connection_entry["newest_first_seen_at"] = _newer(
+            connection_entry["newest_first_seen_at"], seen
+        )
         if _SEVERITY_RANK[severity] > _SEVERITY_RANK[connection_entry["severity"]]:
             connection_entry["severity"] = severity
 
@@ -215,4 +245,9 @@ def summary(session: Session) -> dict:
         ),
         "queries": sorted(per_query.values(), key=lambda e: -e["flagged_count"]),
         "flagged_count": sum(e["flagged_count"] for e in per_connection.values()),
+        # When the most recent finding anywhere first appeared. A notification
+        # needs this rather than the count: dismiss two and gain two and the
+        # count has not moved, but something new has arrived and the reader has
+        # not seen it.
+        "newest_first_seen_at": newest,
     }

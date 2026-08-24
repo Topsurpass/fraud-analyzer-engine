@@ -200,6 +200,9 @@ def test_the_summary_counts_by_connection_and_query(
     )
     assert connection["flagged_count"] == 2
     assert connection["severity"] == "high"
+    # The name travels with the count: a notification listing a uuid is not a
+    # notification.
+    assert connection["connection_name"] == sqlite_connection["name"]
 
     query_entry = next(
         q for q in summary["queries"] if q["query_id"] == flagging_query["id"]
@@ -209,7 +212,12 @@ def test_the_summary_counts_by_connection_and_query(
 
 def test_the_summary_is_empty_with_nothing_flagged(client):
     summary = client.get("/flagged/summary").json()
-    assert summary == {"connections": [], "queries": [], "flagged_count": 0}
+    assert summary == {
+        "connections": [],
+        "queries": [],
+        "flagged_count": 0,
+        "newest_first_seen_at": None,
+    }
 
 
 def test_a_rule_matching_nothing_still_appears_in_the_legend(
@@ -223,3 +231,53 @@ def test_a_rule_matching_nothing_still_appears_in_the_legend(
     client.post(f"/queries/{flagging_query['id']}/run")
     section = _section(client, sqlite_connection["id"])
     assert [(r["name"], r["matched"]) for r in section["rules"]] == [("Impossible", 0)]
+
+
+# ---------------------------------------------------------------------------
+# What the notification bell reads
+#
+# A count alone cannot answer "has anything new arrived": dismiss two, gain
+# two, and the count has not moved while the reader has still missed something.
+# The newest first_seen_at is what makes "new since you last looked" mean
+# anything.
+# ---------------------------------------------------------------------------
+
+
+def test_the_summary_says_when_the_newest_finding_appeared(
+    client, sqlite_connection, flagging_query
+):
+    client.post(f"/queries/{flagging_query['id']}/run")
+    summary = client.get("/flagged/summary").json()
+
+    assert summary["newest_first_seen_at"] is not None
+    section = _section(client, sqlite_connection["id"])
+    assert summary["newest_first_seen_at"] == max(
+        row["first_seen_at"] for row in section["rows"]
+    )
+
+
+def test_each_connection_carries_its_own_newest(
+    client, sqlite_connection, flagging_query
+):
+    client.post(f"/queries/{flagging_query['id']}/run")
+    summary = client.get("/flagged/summary").json()
+    entry = next(
+        c for c in summary["connections"] if c["connection_id"] == sqlite_connection["id"]
+    )
+    assert entry["newest_first_seen_at"] == summary["newest_first_seen_at"]
+
+
+def test_the_newest_is_null_when_nothing_is_flagged(client):
+    assert client.get("/flagged/summary").json()["newest_first_seen_at"] is None
+
+
+def test_re_running_does_not_move_the_newest(client, flagging_query):
+    """first_seen_at is preserved on a re-run, so the bell must not re-alert.
+
+    Otherwise every scheduled run would look like new findings had arrived and
+    the notification would be permanently lit.
+    """
+    client.post(f"/queries/{flagging_query['id']}/run")
+    first = client.get("/flagged/summary").json()["newest_first_seen_at"]
+    client.post(f"/queries/{flagging_query['id']}/run")
+    assert client.get("/flagged/summary").json()["newest_first_seen_at"] == first
