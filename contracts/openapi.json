@@ -27,6 +27,7 @@
               "QUERY_EXECUTION_ERROR",
               "INVALID_CHART_CONFIG",
               "INVALID_CONNECTION_CONFIG",
+              "DB_TLS_REQUIRED",
               "ROW_LIMIT_EXCEEDED",
               "SQL_TOO_LONG",
               "RESULT_TOO_LARGE",
@@ -313,6 +314,21 @@
             ],
             "title": "Sqlite Path"
           },
+          "ssl_mode": {
+            "$ref": "#/components/schemas/SslMode",
+            "default": "require"
+          },
+          "ssl_root_cert": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ssl Root Cert"
+          },
           "username": {
             "anyOf": [
               {
@@ -459,6 +475,20 @@
             ],
             "title": "Sqlite Path"
           },
+          "ssl_mode": {
+            "$ref": "#/components/schemas/SslMode"
+          },
+          "ssl_root_cert": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ssl Root Cert"
+          },
           "status": {
             "$ref": "#/components/schemas/ConnectionStatus"
           },
@@ -488,6 +518,8 @@
           "database",
           "username",
           "sqlite_path",
+          "ssl_mode",
+          "ssl_root_cert",
           "status",
           "last_tested_at",
           "last_test_error",
@@ -632,6 +664,27 @@
               }
             ],
             "title": "Sqlite Path"
+          },
+          "ssl_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SslMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ssl_root_cert": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ssl Root Cert"
           },
           "username": {
             "anyOf": [
@@ -1795,6 +1848,19 @@
         },
         "title": "SavedQueryUpdate",
         "type": "object"
+      },
+      "SslMode": {
+        "description": "How much TLS a target connection insists on.\n\nlibpq's own vocabulary, so the Postgres mapping is the identity function and\nnobody has to hold a translation table in their head while reading a\nconnection row. MySQL has no equivalent parameter and is mapped in\n``app.db.target_registry.mysql_connect_args``.\n\nOrdered weakest to strongest. The two ``verify`` modes are the only ones\nthat authenticate the server rather than merely encrypting the wire, so they\nare the only ones a root certificate applies to.",
+        "enum": [
+          "disable",
+          "allow",
+          "prefer",
+          "require",
+          "verify-ca",
+          "verify-full"
+        ],
+        "title": "SslMode",
+        "type": "string"
       },
       "TableInfo": {
         "properties": {

@@ -13,7 +13,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from app.models.enums import ConnectionStatus, DbType
+from app.models.enums import VERIFYING_SSL_MODES, ConnectionStatus, DbType, SslMode
 from app.schemas.types import UtcDatetime
 
 
@@ -25,6 +25,23 @@ class ConnectionBase(BaseModel):
     database: str | None = Field(default=None, max_length=255)
     username: str | None = Field(default=None, max_length=255)
     sqlite_path: str | None = None
+
+    # Defaults to require, not to libpq's prefer. A target that will not talk
+    # in the clear is the common case for managed Postgres, and a target that
+    # tolerates plaintext should not be downgraded to it by omission.
+    ssl_mode: SslMode = SslMode.REQUIRE
+    ssl_root_cert: str | None = None
+
+    @model_validator(mode="after")
+    def _check_root_cert_is_used(self) -> Self:
+        # A certificate under a non-verifying mode is never read. Storing one
+        # anyway would read as protection that is not happening.
+        if self.ssl_root_cert and self.ssl_mode not in VERIFYING_SSL_MODES:
+            raise ValueError(
+                "'ssl_root_cert' only applies to the verify-ca and verify-full "
+                f"TLS modes, not {self.ssl_mode.value!r}"
+            )
+        return self
 
 
 class ConnectionCreate(ConnectionBase):
@@ -70,6 +87,8 @@ class ConnectionUpdate(BaseModel):
     username: str | None = Field(default=None, max_length=255)
     password: SecretStr | None = None
     sqlite_path: str | None = None
+    ssl_mode: SslMode | None = None
+    ssl_root_cert: str | None = None
 
 
 class ConnectionRead(BaseModel):
@@ -85,6 +104,8 @@ class ConnectionRead(BaseModel):
     database: str | None
     username: str | None
     sqlite_path: str | None
+    ssl_mode: SslMode
+    ssl_root_cert: str | None
     status: ConnectionStatus
     last_tested_at: UtcDatetime | None
     last_test_error: str | None

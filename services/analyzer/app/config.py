@@ -136,6 +136,15 @@ class Settings(BaseSettings):
     query_timeout_s: int = Field(default=10, gt=0)
     connect_timeout_s: int = Field(default=10, gt=0)
 
+    # CA bundle used by the verifying TLS modes when a connection names no
+    # certificate of its own. Empty means "find the system bundle", which is
+    # what a public CA (Neon, RDS, Supabase) needs. Set this when every target
+    # sits behind one internal CA, rather than repeating the path per
+    # connection. Deliberately not "system": libpq accepts that spelling but it
+    # resolves to OpenSSL's compiled-in directory, which is not where the
+    # bundle lives in this image.
+    target_ssl_root_cert: str = Field(default="")
+
     # The client socket must outlast the server-side statement timeout. If they
     # fire together the socket usually wins the race, and a query that merely
     # ran long is reported as a lost connection (502) instead of a timeout

@@ -23,6 +23,7 @@ operators to use.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -42,6 +43,7 @@ from app.config import get_settings
 from app.errors import (
     AppError,
     DbAuthError,
+    DbTlsRequiredError,
     DbPermissionError,
     DbUnreachableError,
     InvalidConfigError,
@@ -49,6 +51,7 @@ from app.errors import (
     QueryTimeoutError,
 )
 from app.models import Connection, DbType
+from app.models.enums import VERIFYING_SSL_MODES, SslMode
 from app.security.crypto import decrypt
 from app.security.sqlite_paths import resolve_sqlite_path
 
@@ -89,9 +92,56 @@ _MYSQL_ERRNO = {
 }
 
 
+#: The "- host: 'x', port: N, hostaddr: 'a':" preamble psycopg puts on each
+#: attempt. Stripped before deduplicating, or the differing address makes two
+#: identical failures look like two different ones.
+_ATTEMPT_PREFIX = re.compile(r"^-\s*host:.*?hostaddr:\s*'[^']*':\s*")
+
+#: Quoted host addresses, masked out of the deduplication key only.
+_QUOTED = re.compile(r'"[^"]*"')
+
+#: psycopg's banner when a host resolved to more than one address. Everything
+#: before it is a repeat of the *last* attempt to fail.
+_MULTI_ATTEMPT_BANNER = "Multiple connection attempts failed"
+
+
 def _clean(orig: BaseException) -> str:
-    """Collapse a driver message to one line, so it fits a JSON error body."""
-    return " ".join(str(orig).split())[:500] or type(orig).__name__
+    """Collapse a driver message to one line, so it fits a JSON error body.
+
+    Managed Postgres resolves to several addresses, and psycopg tries each one
+    and then reports the *last* failure as the headline followed by the full
+    list. When the host has an AAAA record and the container has no IPv6 route,
+    that headline is always "Network is unreachable" for the IPv6 address -
+    while the IPv4 attempts, the ones that actually reached the server, carry
+    the real reason further down. Truncating from the front kept the noise and
+    dropped the answer, so the per-attempt lines are hoisted ahead of it.
+    """
+    text_ = str(orig)
+    if _MULTI_ATTEMPT_BANNER in text_:
+        _, _, listing = text_.partition(_MULTI_ATTEMPT_BANNER)
+        attempts = [
+            " ".join(line.split())
+            for line in listing.splitlines()
+            if line.strip().startswith("-")
+        ]
+        if attempts:
+            # Deduplicated by reason, not by line: several addresses of the same
+            # host usually fail identically, and three copies of one sentence
+            # crowd out the one attempt that differs. The address has to come
+            # off the front first or every line looks unique.
+            seen: list[str] = []
+            keys: set[str] = set()
+            for attempt in attempts:
+                reason = _ATTEMPT_PREFIX.sub("", attempt, count=1)
+                # Each reason quotes its own address, so two identical failures
+                # differ by that alone. Masking it for the key collapses them
+                # while the text kept is still the real, unedited first one.
+                key = _QUOTED.sub('"?"', reason)
+                if key not in keys:
+                    keys.add(key)
+                    seen.append(reason)
+            text_ = " ".join(seen)
+    return " ".join(text_.split())[:500] or type(orig).__name__
 
 
 def _sqlstate_of(orig: BaseException | None) -> str | None:
@@ -169,11 +219,28 @@ def translate_db_error(exc: BaseException, *, timed_out: bool = False) -> AppErr
             return translated
 
     message = str(orig).lower()
+    # Checked before the timeout probe: a TLS refusal is a configuration
+    # problem with one specific fix, and saying so beats any generic mapping.
+    if "connection is insecure" in message or "server does not support ssl" in message:
+        return DbTlsRequiredError(
+            "The target refused an unencrypted connection. Set this "
+            "connection's TLS mode to 'require' or stronger.",
+            {"reason": "tls_required"},
+        )
     if "timeout" in message or "timed out" in message:
         return QueryTimeoutError(_clean(orig))
     if "authentication" in message or "access denied" in message:
         return DbAuthError(_clean(orig))
-    if "could not connect" in message or "connection refused" in message:
+    if (
+        "could not connect" in message
+        or "connection refused" in message
+        # Reported by libpq when an address family has no route at all, which
+        # is the normal case for a AAAA record inside a container with no IPv6.
+        or "network is unreachable" in message
+        or "no route to host" in message
+        or "name or service not known" in message
+        or "failed to resolve host" in message
+    ):
         return DbUnreachableError(_clean(orig))
     if isinstance(exc, (DBAPIError, SQLAlchemyError)) and getattr(
         exc, "connection_invalidated", False
@@ -233,39 +300,102 @@ def _sqlite_creator(path: str):
     return creator
 
 
-def postgres_connect_args() -> dict:
-    """libpq options for a read-only, time-bounded session.
+#: Where a system CA bundle lives, most common first. Only consulted when a
+#: verifying mode is in use and neither the connection nor the settings name a
+#: certificate.
+_CA_BUNDLE_CANDIDATES = (
+    "/etc/ssl/certs/ca-certificates.crt",  # Debian, Ubuntu, Alpine
+    "/etc/pki/tls/certs/ca-bundle.crt",  # RHEL, Fedora, Amazon Linux
+)
+
+
+def resolve_ca_bundle(conn: Connection) -> str | None:
+    """The root certificate a verifying TLS mode should check against.
+
+    Order: the connection's own certificate, then ``FAE_TARGET_SSL_ROOT_CERT``,
+    then whichever system bundle exists. Returns ``None`` for the non-verifying
+    modes, which must not be handed a certificate at all - passing one would
+    imply a check that is not happening.
+    """
+    if conn.ssl_mode not in VERIFYING_SSL_MODES:
+        return None
+    if conn.ssl_root_cert:
+        return conn.ssl_root_cert
+    configured = get_settings().target_ssl_root_cert
+    if configured:
+        return configured
+    for candidate in _CA_BUNDLE_CANDIDATES:
+        if Path(candidate).is_file():
+            return candidate
+    # Nothing found. Returning None lets libpq fail with its own message about
+    # the missing root certificate, which names the path it wanted; inventing
+    # one here would produce a worse error at the same point.
+    return None
+
+
+def postgres_connect_args(conn: Connection) -> dict:
+    """libpq options for a read-only, time-bounded, TLS-configured session.
 
     Applied as connection options rather than a per-transaction
     ``SET TRANSACTION READ ONLY``, so no code path can forget them.
+
+    ``sslmode`` is always sent explicitly. libpq's own default is ``prefer``,
+    which offers plaintext first and accepts it silently, so leaving it unset
+    both breaks targets that require TLS and hides a downgrade on targets that
+    do not.
     """
     settings = get_settings()
     timeout_ms = settings.query_timeout_ms
-    return {
+    args = {
         "connect_timeout": settings.connect_timeout_s,
         "options": (
             f"-c default_transaction_read_only=on "
             f"-c statement_timeout={timeout_ms} "
             f"-c idle_in_transaction_session_timeout={timeout_ms}"
         ),
+        # libpq speaks these spellings natively, so the enum is the mapping.
+        "sslmode": conn.ssl_mode.value,
     }
+    bundle = resolve_ca_bundle(conn)
+    if bundle:
+        args["sslrootcert"] = bundle
+    return args
 
 
-def mysql_connect_args() -> dict:
-    """pymysql socket options.
+def mysql_connect_args(conn: Connection) -> dict:
+    """pymysql socket and TLS options.
 
     ``read_timeout`` is deliberately longer than the server's
     ``max_execution_time``. If they fire together the socket usually wins the
     race and a merely slow query surfaces as errno 2013 "lost connection",
     which maps to 502 DB_UNREACHABLE and tells the frontend the database is
     down. The server must get the chance to return errno 3024 first.
+
+    pymysql has no ``sslmode``, so :class:`~app.models.enums.SslMode` is mapped
+    onto its own flags. The mapping is not one-to-one and cannot be: passing
+    *any* ``ssl`` argument makes pymysql insist on TLS, so there is no way to
+    express "try TLS, fall back to plaintext". ``disable``, ``allow`` and
+    ``prefer`` therefore all mean "send no TLS configuration and let the server
+    decide", which is what this driver did before there was a mode at all.
+    Anything from ``require`` up is enforced.
     """
     settings = get_settings()
-    return {
+    args = {
         "connect_timeout": settings.connect_timeout_s,
         "read_timeout": settings.socket_read_timeout_s,
         "write_timeout": settings.socket_read_timeout_s,
     }
+
+    if conn.ssl_mode in (SslMode.DISABLE, SslMode.ALLOW, SslMode.PREFER):
+        return args
+
+    bundle = resolve_ca_bundle(conn)
+    args["ssl"] = {"ca": bundle} if bundle else {}
+    # require encrypts without checking who is on the other end; verify-ca
+    # checks the certificate; verify-full also checks the hostname matches.
+    args["ssl_verify_cert"] = conn.ssl_mode in VERIFYING_SSL_MODES
+    args["ssl_verify_identity"] = conn.ssl_mode is SslMode.VERIFY_FULL
+    return args
 
 
 def _create_engine_for(conn: Connection) -> Engine:
@@ -297,7 +427,7 @@ def _create_engine_for(conn: Connection) -> Engine:
             max_overflow=settings.target_max_overflow,
             pool_timeout=settings.target_pool_timeout_s,
             pool_recycle=1800,
-            connect_args=postgres_connect_args(),
+            connect_args=postgres_connect_args(conn),
         )
 
     engine = create_engine(
@@ -307,7 +437,7 @@ def _create_engine_for(conn: Connection) -> Engine:
         max_overflow=settings.target_max_overflow,
             pool_timeout=settings.target_pool_timeout_s,
         pool_recycle=1800,
-        connect_args=mysql_connect_args(),
+        connect_args=mysql_connect_args(conn),
     )
 
     @event.listens_for(engine, "connect")

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from app.config import get_settings
 from app.models import Base
@@ -104,3 +104,51 @@ def test_downgrade_to_base_drops_everything(tmp_path, alembic_for):
     command.upgrade(cfg, "head")
     command.downgrade(cfg, "base")
     assert _schema_of(url) == {}
+
+
+def test_ssl_mode_backfills_existing_connections(tmp_path, alembic_for):
+    """A connection saved before 0006 must come out of it with TLS on.
+
+    Backfilling to libpq's effective old default ("prefer") would preserve the
+    bug for every row that already existed - a managed target stays unreachable
+    and a permissive one stays silently downgradable - which is the opposite of
+    what the migration is for.
+    """
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "0005_flag_rules")
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO connections (id, name, db_type, host, database, "
+                "username, status, created_at, updated_at) VALUES "
+                "('c1', 'legacy', 'postgres', 'db.example.test', 'd', 'u', "
+                "'untested', '2026-08-01', '2026-08-01')"
+            )
+        )
+
+    command.upgrade(cfg, "head")
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT ssl_mode, ssl_root_cert FROM connections WHERE id = 'c1'")
+        ).one()
+    assert row[0] == "require"
+    assert row[1] is None
+
+
+def test_ssl_columns_survive_a_downgrade_and_reapply(tmp_path, alembic_for):
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+
+    command.downgrade(cfg, "0005_flag_rules")
+    columns = {c["name"] for c in inspect(create_engine(url)).get_columns("connections")}
+    assert "ssl_mode" not in columns
+    assert "ssl_root_cert" not in columns
+
+    command.upgrade(cfg, "head")
+    columns = {c["name"] for c in inspect(create_engine(url)).get_columns("connections")}
+    assert {"ssl_mode", "ssl_root_cert"} <= columns

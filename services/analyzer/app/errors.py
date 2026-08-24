@@ -22,6 +22,7 @@ class ErrorCode(StrEnum):
     QUERY_EXECUTION_ERROR = "QUERY_EXECUTION_ERROR"
     INVALID_CHART_CONFIG = "INVALID_CHART_CONFIG"
     INVALID_CONNECTION_CONFIG = "INVALID_CONNECTION_CONFIG"
+    DB_TLS_REQUIRED = "DB_TLS_REQUIRED"
     ROW_LIMIT_EXCEEDED = "ROW_LIMIT_EXCEEDED"
     SQL_TOO_LONG = "SQL_TOO_LONG"
     RESULT_TOO_LARGE = "RESULT_TOO_LARGE"
@@ -63,6 +64,7 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.QUERY_EXECUTION_ERROR: 400,
     ErrorCode.INVALID_CHART_CONFIG: 400,
     ErrorCode.INVALID_CONNECTION_CONFIG: 400,
+    ErrorCode.DB_TLS_REQUIRED: 400,
     ErrorCode.ROW_LIMIT_EXCEEDED: 400,
     ErrorCode.SQL_TOO_LONG: 400,
     ErrorCode.RESULT_TOO_LARGE: 400,
@@ -158,6 +160,19 @@ class DuplicateNameError(AppError):
 class InvalidConfigError(AppError):
     def __init__(self, message: str, detail: dict | None = None) -> None:
         super().__init__(ErrorCode.INVALID_CONNECTION_CONFIG, message, detail)
+
+
+class DbTlsRequiredError(AppError):
+    """The target refused the connection because it was not encrypted.
+
+    A configuration problem rather than an outage, so 400 rather than 502: the
+    database is up and answering, it just will not talk in the clear. Separate
+    from INVALID_CONNECTION_CONFIG because the fix is one specific field, and
+    the message says which.
+    """
+
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.DB_TLS_REQUIRED, message, detail)
 
 
 class ResultTooLargeError(AppError):

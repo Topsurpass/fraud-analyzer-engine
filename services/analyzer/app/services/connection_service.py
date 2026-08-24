@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.db import target_registry
 from app.errors import AppError, DuplicateNameError, ErrorCode, NotFoundError
 from app.models import Connection, ConnectionStatus, DbType, utcnow
+from app.models.enums import VERIFYING_SSL_MODES
 from app.schemas.connection import ConnectionCreate, ConnectionUpdate
 from app.security.crypto import encrypt
 
@@ -72,6 +73,8 @@ def create_connection(
         database=payload.database,
         username=payload.username,
         sqlite_path=payload.sqlite_path,
+        ssl_mode=payload.ssl_mode,
+        ssl_root_cert=payload.ssl_root_cert,
         password_encrypted=(
             encrypt(payload.password.get_secret_value()) if payload.password else None
         ),
@@ -113,6 +116,19 @@ def update_connection(
         raise AppError(
             ErrorCode.INVALID_CONNECTION_CONFIG,
             "'sqlite_path' is only valid for a sqlite connection.",
+        )
+
+    # Checked against the merged state, not the payload. A partial update that
+    # sets only a root certificate, or only relaxes the mode, would each pass a
+    # payload-local check and still leave a certificate that nothing reads.
+    merged_mode = data.get("ssl_mode", conn.ssl_mode)
+    merged_cert = data.get("ssl_root_cert", conn.ssl_root_cert)
+    if merged_cert and merged_mode not in VERIFYING_SSL_MODES:
+        raise AppError(
+            ErrorCode.INVALID_CONNECTION_CONFIG,
+            "'ssl_root_cert' only applies to the verify-ca and verify-full TLS "
+            f"modes, not {merged_mode.value!r}. Clear the certificate or raise "
+            "the mode.",
         )
 
     for field, value in data.items():

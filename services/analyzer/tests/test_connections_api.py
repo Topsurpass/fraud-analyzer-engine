@@ -299,3 +299,125 @@ def test_sqlite_path_on_a_postgres_create_is_rejected(client):
     )
     assert r.status_code == 422
     assert "sqlite_path" in r.text
+
+
+# ---------------------------------------------------------------------------
+# TLS mode
+# ---------------------------------------------------------------------------
+
+
+def test_a_new_connection_defaults_to_require(client):
+    r = client.post(
+        "/connections",
+        json={
+            "name": "pg-tls-default",
+            "db_type": "postgres",
+            "host": "127.0.0.1",
+            "port": 1,
+            "database": "fraud",
+            "username": "ro_user",
+        },
+    )
+    assert r.status_code == 201
+    # Not libpq's "prefer": omitting the mode must not mean "accept plaintext".
+    assert r.json()["connection"]["ssl_mode"] == "require"
+
+
+def test_the_mode_round_trips(client):
+    created = client.post(
+        "/connections",
+        json={
+            "name": "pg-verify",
+            "db_type": "postgres",
+            "host": "127.0.0.1",
+            "port": 1,
+            "database": "fraud",
+            "username": "ro_user",
+            "ssl_mode": "verify-full",
+            "ssl_root_cert": "/ca/internal.crt",
+        },
+    )
+    assert created.status_code == 201
+    connection_id = created.json()["connection"]["id"]
+
+    read = client.get(f"/connections/{connection_id}").json()
+    assert read["ssl_mode"] == "verify-full"
+    assert read["ssl_root_cert"] == "/ca/internal.crt"
+
+
+def test_a_certificate_is_rejected_under_a_mode_that_never_reads_it(client):
+    r = client.post(
+        "/connections",
+        json={
+            "name": "pg-pointless-cert",
+            "db_type": "postgres",
+            "host": "127.0.0.1",
+            "port": 1,
+            "database": "fraud",
+            "username": "ro_user",
+            "ssl_mode": "require",
+            "ssl_root_cert": "/ca/internal.crt",
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_relaxing_the_mode_cannot_orphan_a_stored_certificate(client):
+    created = client.post(
+        "/connections",
+        json={
+            "name": "pg-relax",
+            "db_type": "postgres",
+            "host": "127.0.0.1",
+            "port": 1,
+            "database": "fraud",
+            "username": "ro_user",
+            "ssl_mode": "verify-full",
+            "ssl_root_cert": "/ca/internal.crt",
+        },
+    ).json()["connection"]["id"]
+
+    # The payload alone looks harmless; only the merged state shows the
+    # certificate left behind with nothing reading it.
+    r = client.put(f"/connections/{created}", json={"ssl_mode": "require"})
+    assert r.status_code == 400
+    assert r.json()["error_code"] == "INVALID_CONNECTION_CONFIG"
+
+
+def test_the_mode_can_be_lowered_together_with_the_certificate(client):
+    created = client.post(
+        "/connections",
+        json={
+            "name": "pg-lower",
+            "db_type": "postgres",
+            "host": "127.0.0.1",
+            "port": 1,
+            "database": "fraud",
+            "username": "ro_user",
+            "ssl_mode": "verify-full",
+            "ssl_root_cert": "/ca/internal.crt",
+        },
+    ).json()["connection"]["id"]
+
+    r = client.put(
+        f"/connections/{created}",
+        json={"ssl_mode": "require", "ssl_root_cert": None},
+    )
+    assert r.status_code == 200
+    assert r.json()["connection"]["ssl_mode"] == "require"
+
+
+def test_an_unknown_mode_is_refused(client):
+    r = client.post(
+        "/connections",
+        json={
+            "name": "pg-bogus",
+            "db_type": "postgres",
+            "host": "127.0.0.1",
+            "port": 1,
+            "database": "fraud",
+            "username": "ro_user",
+            "ssl_mode": "sort-of",
+        },
+    )
+    assert r.status_code == 422

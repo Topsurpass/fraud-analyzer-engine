@@ -19,6 +19,31 @@ class ConnectionStatus(StrEnum):
     FAILED = "failed"
 
 
+class SslMode(StrEnum):
+    """How much TLS a target connection insists on.
+
+    libpq's own vocabulary, so the Postgres mapping is the identity function and
+    nobody has to hold a translation table in their head while reading a
+    connection row. MySQL has no equivalent parameter and is mapped in
+    ``app.db.target_registry.mysql_connect_args``.
+
+    Ordered weakest to strongest. The two ``verify`` modes are the only ones
+    that authenticate the server rather than merely encrypting the wire, so they
+    are the only ones a root certificate applies to.
+    """
+
+    DISABLE = "disable"
+    ALLOW = "allow"
+    PREFER = "prefer"
+    REQUIRE = "require"
+    VERIFY_CA = "verify-ca"
+    VERIFY_FULL = "verify-full"
+
+
+#: Modes that check the server's certificate, and so can read a root cert.
+VERIFYING_SSL_MODES = frozenset({SslMode.VERIFY_CA, SslMode.VERIFY_FULL})
+
+
 class ChartType(StrEnum):
     LINE = "line"
     BAR = "bar"

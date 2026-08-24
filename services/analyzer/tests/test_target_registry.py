@@ -20,7 +20,23 @@ from app.errors import (
     QueryTimeoutError,
 )
 from app.models import Connection, DbType
+from app.models.enums import SslMode
 from app.security.crypto import encrypt
+
+
+def _pg(db_type: DbType = DbType.POSTGRES, **over) -> Connection:
+    """A network connection with everything the TLS mapping reads."""
+    fields = {
+        "name": "t",
+        "db_type": db_type,
+        "host": "db.example.test",
+        "database": "d",
+        "username": "u",
+        "ssl_mode": SslMode.REQUIRE,
+        "ssl_root_cert": None,
+    }
+    fields.update(over)
+    return Connection(**fields)
 
 
 def sqlite_conn(path: str, cid: str = "c-sqlite") -> Connection:
@@ -301,7 +317,7 @@ def test_mysql_socket_timeout_is_padded_beyond_the_statement_timeout(monkeypatch
     monkeypatch.setenv("FAE_QUERY_TIMEOUT_S", "10")
     get_settings.cache_clear()
 
-    args = reg.mysql_connect_args()
+    args = reg.mysql_connect_args(_pg(DbType.MYSQL))
     assert args["read_timeout"] == 15
     assert args["read_timeout"] > get_settings().query_timeout_s
     assert args["write_timeout"] > get_settings().query_timeout_s
@@ -311,7 +327,7 @@ def test_postgres_connect_args_pin_read_only_and_timeout(monkeypatch):
     monkeypatch.setenv("FAE_QUERY_TIMEOUT_S", "7")
     get_settings.cache_clear()
 
-    options = reg.postgres_connect_args()["options"]
+    options = reg.postgres_connect_args(_pg())["options"]
     assert "default_transaction_read_only=on" in options
     assert "statement_timeout=7000" in options
     assert "idle_in_transaction_session_timeout=7000" in options
@@ -393,3 +409,177 @@ def test_pool_timeout_is_configured_on_target_engines(session, target_sqlite):
 
     engine = target_registry.get_engine(conn)
     assert engine.pool.timeout() == get_settings().target_pool_timeout_s
+
+
+# ---------------------------------------------------------------------------
+# TLS mode -> driver arguments
+#
+# The whole point of the SslMode column is that these two dicts say what they
+# mean instead of letting each driver pick a default. libpq's own default is
+# "prefer", which offers plaintext first and accepts it silently: it makes a
+# target that requires TLS unreachable and downgrades one that merely tolerates
+# plaintext. Both mappings are pure, so the matrix needs no database.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", list(SslMode))
+def test_postgres_sends_every_mode_verbatim(mode):
+    # libpq speaks these spellings natively, so the enum *is* the mapping. A
+    # translation table here would be a place for the two to drift apart.
+    args = reg.postgres_connect_args(_pg(ssl_mode=mode))
+    assert args["sslmode"] == mode.value
+
+
+def test_postgres_never_omits_sslmode():
+    # The bug this column exists for: no sslmode at all means libpq's "prefer".
+    assert "sslmode" in reg.postgres_connect_args(_pg())
+
+
+@pytest.mark.parametrize("mode", [SslMode.VERIFY_CA, SslMode.VERIFY_FULL])
+def test_verifying_modes_carry_the_connection_certificate(mode):
+    args = reg.postgres_connect_args(_pg(ssl_mode=mode, ssl_root_cert="/ca/mine.crt"))
+    assert args["sslrootcert"] == "/ca/mine.crt"
+
+
+@pytest.mark.parametrize(
+    "mode", [SslMode.DISABLE, SslMode.ALLOW, SslMode.PREFER, SslMode.REQUIRE]
+)
+def test_non_verifying_modes_carry_no_certificate(mode):
+    # Sending a root cert under a mode that never checks it would read as a
+    # protection that is not happening.
+    assert "sslrootcert" not in reg.postgres_connect_args(_pg(ssl_mode=mode))
+
+
+def test_verify_full_falls_back_to_the_system_bundle(tmp_path, monkeypatch):
+    bundle = tmp_path / "ca-certificates.crt"
+    bundle.write_text("-----BEGIN CERTIFICATE-----\n")
+    monkeypatch.setattr(reg, "_CA_BUNDLE_CANDIDATES", (str(bundle),))
+    get_settings.cache_clear()
+
+    args = reg.postgres_connect_args(_pg(ssl_mode=SslMode.VERIFY_FULL))
+    assert args["sslrootcert"] == str(bundle)
+
+
+def test_the_setting_outranks_the_system_bundle(tmp_path, monkeypatch):
+    bundle = tmp_path / "system.crt"
+    bundle.write_text("x")
+    monkeypatch.setattr(reg, "_CA_BUNDLE_CANDIDATES", (str(bundle),))
+    monkeypatch.setenv("FAE_TARGET_SSL_ROOT_CERT", "/etc/internal-ca.crt")
+    get_settings.cache_clear()
+
+    args = reg.postgres_connect_args(_pg(ssl_mode=SslMode.VERIFY_FULL))
+    assert args["sslrootcert"] == "/etc/internal-ca.crt"
+
+
+def test_the_connection_outranks_the_setting(monkeypatch):
+    monkeypatch.setenv("FAE_TARGET_SSL_ROOT_CERT", "/etc/internal-ca.crt")
+    get_settings.cache_clear()
+
+    args = reg.postgres_connect_args(
+        _pg(ssl_mode=SslMode.VERIFY_FULL, ssl_root_cert="/ca/mine.crt")
+    )
+    assert args["sslrootcert"] == "/ca/mine.crt"
+
+
+def test_verify_full_without_any_bundle_says_nothing(monkeypatch):
+    # Better than inventing a path: libpq then fails naming the file it wanted.
+    monkeypatch.setattr(reg, "_CA_BUNDLE_CANDIDATES", ())
+    get_settings.cache_clear()
+    assert "sslrootcert" not in reg.postgres_connect_args(_pg(ssl_mode=SslMode.VERIFY_FULL))
+
+
+@pytest.mark.parametrize("mode", [SslMode.DISABLE, SslMode.ALLOW, SslMode.PREFER])
+def test_mysql_leaves_tls_to_the_server_below_require(mode):
+    # pymysql insists on TLS the moment any ssl argument is passed, so there is
+    # no way to express "try, then fall back". Sending nothing is the honest
+    # translation, and is what this driver did before the mode existed.
+    args = reg.mysql_connect_args(_pg(DbType.MYSQL, ssl_mode=mode))
+    assert "ssl" not in args
+
+
+def test_mysql_require_encrypts_without_checking_the_certificate():
+    args = reg.mysql_connect_args(_pg(DbType.MYSQL, ssl_mode=SslMode.REQUIRE))
+    assert args["ssl"] == {}
+    assert args["ssl_verify_cert"] is False
+    assert args["ssl_verify_identity"] is False
+
+
+def test_mysql_verify_ca_checks_the_certificate_but_not_the_hostname():
+    args = reg.mysql_connect_args(
+        _pg(DbType.MYSQL, ssl_mode=SslMode.VERIFY_CA, ssl_root_cert="/ca/mine.crt")
+    )
+    assert args["ssl"] == {"ca": "/ca/mine.crt"}
+    assert args["ssl_verify_cert"] is True
+    assert args["ssl_verify_identity"] is False
+
+
+def test_mysql_verify_full_also_checks_the_hostname():
+    args = reg.mysql_connect_args(
+        _pg(DbType.MYSQL, ssl_mode=SslMode.VERIFY_FULL, ssl_root_cert="/ca/mine.crt")
+    )
+    assert args["ssl_verify_identity"] is True
+
+
+def test_tls_settings_never_disturb_the_read_only_pinning():
+    # The read-only options are the first line of defence and share this dict.
+    args = reg.postgres_connect_args(_pg(ssl_mode=SslMode.VERIFY_FULL))
+    assert "default_transaction_read_only=on" in args["options"]
+
+
+# ---------------------------------------------------------------------------
+# The multi-attempt message
+#
+# Verbatim from a real Neon connection inside the analyzer container. Managed
+# Postgres resolves to several addresses; psycopg tries each and reports the
+# LAST failure as the headline, then lists them all. The host has an AAAA
+# record and the container has no IPv6 route, so the headline is always the
+# IPv6 "Network is unreachable" - while the IPv4 attempts, the ones that
+# actually reached the server, carry the real reason further down.
+#
+# Truncating this from the front kept the noise and dropped the answer, which
+# is how a one-line TLS misconfiguration presented as a network outage.
+# ---------------------------------------------------------------------------
+
+_NEON_TLS_REFUSAL = """connection is bad: connection to server at "2600:1f18:6fa0:b306:5f78:3188:6ba5:10d7", port 5432 failed: Network is unreachable
+\tIs the server running on that host and accepting TCP/IP connections?
+Multiple connection attempts failed. All failures were:
+- host: 'ep-example.aws.neon.tech', port: 5432, hostaddr: '23.21.74.185': connection failed: connection to server at "23.21.74.185", port 5432 failed: ERROR:  connection is insecure (try using `sslmode=require`)
+- host: 'ep-example.aws.neon.tech', port: 5432, hostaddr: '98.89.62.209': connection failed: connection to server at "98.89.62.209", port 5432 failed: ERROR:  connection is insecure (try using `sslmode=require`)
+- host: 'ep-example.aws.neon.tech', port: 5432, hostaddr: '2600:1f18:6fa0:b306:5f78:3188:6ba5:10d7': connection is bad: connection to server at "2600:1f18:6fa0:b306:5f78:3188:6ba5:10d7", port 5432 failed: Network is unreachable
+\tIs the server running on that host and accepting TCP/IP connections?"""
+
+
+def test_a_tls_refusal_is_not_reported_as_a_network_outage():
+    error = reg.translate_db_error(_wrap(OperationalError(_NEON_TLS_REFUSAL, {}, None)))
+    assert error.error_code == ErrorCode.DB_TLS_REQUIRED
+    # The message must name the field to change, not the symptom.
+    assert "TLS mode" in error.message
+    assert "Network is unreachable" not in error.message
+
+
+def test_the_cleaned_message_keeps_the_attempt_that_reached_the_server():
+    cleaned = reg._clean(OperationalError(_NEON_TLS_REFUSAL, {}, None))
+    assert "connection is insecure" in cleaned
+    assert len(cleaned) <= 500
+
+
+def test_identical_attempts_are_not_repeated_three_times():
+    # Three addresses of one host usually fail identically. Three copies of the
+    # same sentence crowd out the one attempt that differs.
+    cleaned = reg._clean(OperationalError(_NEON_TLS_REFUSAL, {}, None))
+    assert cleaned.count("connection is insecure") == 1
+
+
+def test_a_genuine_ipv6_only_failure_still_reports_unreachable():
+    # The fix must not swallow a real routing problem: when every attempt says
+    # the network is unreachable, that IS the answer.
+    message = """connection is bad: connection to server at "2600::1", port 5432 failed: Network is unreachable
+Multiple connection attempts failed. All failures were:
+- host: 'x.example', port: 5432, hostaddr: '2600::1': connection is bad: connection to server at "2600::1", port 5432 failed: Network is unreachable"""
+    error = reg.translate_db_error(_wrap(OperationalError(message, {}, None)))
+    assert error.error_code == ErrorCode.DB_UNREACHABLE
+
+
+def test_a_single_attempt_message_is_untouched():
+    orig = OperationalError('connection to server at "10.0.0.1" failed: Connection refused', {}, None)
+    assert "Connection refused" in reg._clean(orig)
