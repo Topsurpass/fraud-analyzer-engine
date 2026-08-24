@@ -34,6 +34,7 @@ _INTEGRATION_MODULES = {
     "test_query_efficiency",
     "test_result_limits",
     "test_observability",
+    "test_flag_rules_api",
 }
 
 

@@ -71,6 +71,8 @@ def test_migration_creates_the_expected_tables(tmp_path, alembic_for):
         "query_execution_logs",
         "dashboards",
         "dashboard_items",
+        "flag_rules",
+        "flag_conditions",
     }
 
 
@@ -78,7 +80,14 @@ def test_migration_sets_on_delete_cascade(tmp_path, alembic_for):
     url = f"sqlite:///{tmp_path / 'fk.db'}"
     command.upgrade(alembic_for(url), "head")
     inspector = inspect(create_engine(url))
-    for table in ("saved_queries", "query_execution_logs", "dashboard_items"):
+    for table in (
+        "saved_queries",
+        "query_execution_logs",
+        "dashboard_items",
+        # A rule must not outlive its query, nor a condition its rule.
+        "flag_rules",
+        "flag_conditions",
+    ):
         fks = inspector.get_foreign_keys(table)
         assert fks, f"{table} has no foreign key"
         # dashboard_items has two, and both must cascade: a board must not

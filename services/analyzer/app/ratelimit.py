@@ -42,7 +42,14 @@ from app.errors import ErrorCode
 WINDOW_SECONDS = 60
 
 #: Path fragments that mark a request as touching a target database.
-_EXECUTION_MARKERS = ("/run", "/poll", "/query/preview", "/queries", "/test")
+_EXECUTION_MARKERS = (
+    "/run",
+    "/poll",
+    "/query/preview",
+    "/queries",
+    "/test",
+    "/flagged/refresh",
+)
 
 
 def _is_execution(path: str, method: str) -> bool:
@@ -55,7 +62,18 @@ def _is_execution(path: str, method: str) -> bool:
         return True
     if path.endswith("/test"):
         return True
+    # One click here re-runs every rule-bearing query on the connection. It
+    # matches none of the markers above -- no /run, no /queries in the path --
+    # so without this line the single most expensive endpoint in the service
+    # would be charged to the cheap bucket.
+    if path.endswith("/flagged/refresh"):
+        return True
     if "/queries" in path and method in ("POST", "PUT"):
+        # Saving a rule set writes to the app-state database and never reaches
+        # the target, so it does not belong in the bucket that exists to bound
+        # load on a customer's production server.
+        if path.endswith("/flag-rules"):
+            return False
         return True
     return False
 

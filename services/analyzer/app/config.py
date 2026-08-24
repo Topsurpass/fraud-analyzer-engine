@@ -152,6 +152,14 @@ class Settings(BaseSettings):
     # small container is OOM-killed long before eviction triggers.
     cache_max_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
 
+    # Most queries one "refresh flagged" click may re-run against a target
+    # database. The flagged view itself reads cache and runs nothing; refresh
+    # is the only path that executes, and without a bound one click on a
+    # connection with fifty saved queries is fifty statements at once against a
+    # pool of 10 + 5. Queries past the cap keep their cached rows and the
+    # response says it truncated.
+    flagged_refresh_max_queries: int = Field(default=20, gt=0)
+
     # HTTP.
     cors_origins: str = "*"
 

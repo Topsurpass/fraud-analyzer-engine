@@ -829,6 +829,289 @@
         "title": "ExecutionLogRead",
         "type": "object"
       },
+      "FlagConditionBase": {
+        "properties": {
+          "column_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Column Name",
+            "type": "string"
+          },
+          "operator": {
+            "$ref": "#/components/schemas/FlagOperator"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "value2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value2"
+          }
+        },
+        "required": [
+          "column_name",
+          "operator"
+        ],
+        "title": "FlagConditionBase",
+        "type": "object"
+      },
+      "FlagConditionRead": {
+        "properties": {
+          "column_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Column Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "operator": {
+            "$ref": "#/components/schemas/FlagOperator"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "value2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value2"
+          }
+        },
+        "required": [
+          "column_name",
+          "operator",
+          "id",
+          "position"
+        ],
+        "title": "FlagConditionRead",
+        "type": "object"
+      },
+      "FlagOperator": {
+        "description": "Comparisons a flag condition can make against one result column.\n\nDeliberately a closed set rather than a mini expression language. Every\nmember is evaluated in Python against rows the database already returned,\nso nothing here is ever spliced into SQL and none of it can widen what\n``app.security.sql_guard`` allows through.",
+        "enum": [
+          "gt",
+          "gte",
+          "lt",
+          "lte",
+          "eq",
+          "neq",
+          "contains",
+          "not_contains",
+          "starts_with",
+          "in",
+          "not_in",
+          "is_null",
+          "is_not_null",
+          "between"
+        ],
+        "title": "FlagOperator",
+        "type": "string"
+      },
+      "FlagOutcomeRead": {
+        "description": "Only flagged rows appear in ``rows``; unflagged rows are absent.",
+        "properties": {
+          "flagged_count": {
+            "default": 0,
+            "title": "Flagged Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/RowFlagRead"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/RuleHitRead"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "title": "FlagOutcomeRead",
+        "type": "object"
+      },
+      "FlagRuleBase": {
+        "properties": {
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/FlagConditionBase"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Conditions",
+            "type": "array"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/FlagSeverity",
+            "default": "medium"
+          }
+        },
+        "required": [
+          "name",
+          "conditions"
+        ],
+        "title": "FlagRuleBase",
+        "type": "object"
+      },
+      "FlagRuleRead": {
+        "properties": {
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/FlagConditionRead"
+            },
+            "title": "Conditions",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          },
+          "query_id": {
+            "title": "Query Id",
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/FlagSeverity"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "query_id",
+          "name",
+          "severity",
+          "enabled",
+          "position",
+          "conditions",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "FlagRuleRead",
+        "type": "object"
+      },
+      "FlagRuleSetRead": {
+        "properties": {
+          "query_id": {
+            "title": "Query Id",
+            "type": "string"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/FlagRuleRead"
+            },
+            "title": "Rules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "query_id",
+          "rules"
+        ],
+        "title": "FlagRuleSetRead",
+        "type": "object"
+      },
+      "FlagRuleSetUpdate": {
+        "description": "Whole-set replace.\n\nThe editor edits every rule at once, so replacing the set is both what the\nUI actually does and what makes ordering trivial: position is the index in\nthis list, and no separate reorder call has to exist.",
+        "properties": {
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/FlagRuleBase"
+            },
+            "maxItems": 50,
+            "title": "Rules",
+            "type": "array"
+          }
+        },
+        "title": "FlagRuleSetUpdate",
+        "type": "object"
+      },
+      "FlagSeverity": {
+        "description": "How loudly a matched rule should be presented. Ordered low to high.",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "title": "FlagSeverity",
+        "type": "string"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -871,6 +1154,9 @@
             "format": "date-time",
             "title": "Executed At",
             "type": "string"
+          },
+          "flags": {
+            "$ref": "#/components/schemas/FlagOutcomeRead"
           },
           "from_cache": {
             "default": false,
@@ -953,6 +1239,14 @@
       },
       "PreviewRequest": {
         "properties": {
+          "flag_rules": {
+            "items": {
+              "$ref": "#/components/schemas/FlagRuleBase"
+            },
+            "maxItems": 50,
+            "title": "Flag Rules",
+            "type": "array"
+          },
           "row_limit": {
             "anyOf": [
               {
@@ -999,6 +1293,9 @@
             "title": "Executed At",
             "type": "string"
           },
+          "flags": {
+            "$ref": "#/components/schemas/FlagOutcomeRead"
+          },
           "row_count": {
             "title": "Row Count",
             "type": "integer"
@@ -1028,6 +1325,55 @@
         "title": "PreviewResponse",
         "type": "object"
       },
+      "RowFlagRead": {
+        "description": "One flagged row. ``index`` is its position in ``rows``.",
+        "properties": {
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "rule_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rule Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "index",
+          "rule_ids"
+        ],
+        "title": "RowFlagRead",
+        "type": "object"
+      },
+      "RuleHitRead": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "matched": {
+            "title": "Matched",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/FlagSeverity"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "severity",
+          "matched"
+        ],
+        "title": "RuleHitRead",
+        "type": "object"
+      },
       "RunResponse": {
         "properties": {
           "chart": {
@@ -1052,6 +1398,9 @@
             "format": "date-time",
             "title": "Executed At",
             "type": "string"
+          },
+          "flags": {
+            "$ref": "#/components/schemas/FlagOutcomeRead"
           },
           "poll_interval_ms": {
             "title": "Poll Interval Ms",
@@ -2236,6 +2585,296 @@
         "summary": "Update Connection",
         "tags": [
           "connections"
+        ]
+      }
+    },
+    "/connections/{connection_id}/flagged": {
+      "get": {
+        "description": "Flagged rows across every rule-bearing query on this connection.\n\nReads cached results and runs nothing, so opening the view costs the\ntarget database nothing. A query with no cached result is returned marked\n``stale`` rather than silently omitted, so the UI can say \"not run yet\"\ninstead of implying the rules matched nothing.",
+        "operationId": "get_flagged_connections__connection_id__flagged_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Flagged Connections  Connection Id  Flagged Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Get Flagged",
+        "tags": [
+          "flag-rules"
+        ]
+      }
+    },
+    "/connections/{connection_id}/flagged/refresh": {
+      "post": {
+        "description": "Re-run this connection's rule-bearing queries, then flag them.\n\nThe only path here that touches the target database. Bounded by\n``FAE_FLAGGED_REFRESH_MAX_QUERIES`` and counted against the execution rate\nlimit, since one click can otherwise fan out across every saved query on\nthe connection.",
+        "operationId": "refresh_flagged_connections__connection_id__flagged_refresh_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Refresh Flagged Connections  Connection Id  Flagged Refresh Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Refresh Flagged",
+        "tags": [
+          "flag-rules"
         ]
       }
     },
@@ -4679,6 +5318,300 @@
         "summary": "Update Query",
         "tags": [
           "queries"
+        ]
+      }
+    },
+    "/queries/{query_id}/flag-rules": {
+      "get": {
+        "description": "Every rule on a query, in display order.",
+        "operationId": "get_flag_rules_queries__query_id__flag_rules_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "query_id",
+            "required": true,
+            "schema": {
+              "title": "Query Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlagRuleSetRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Get Flag Rules",
+        "tags": [
+          "flag-rules"
+        ]
+      },
+      "put": {
+        "description": "Replace a query's whole rule set.\n\nReplace rather than per-rule CRUD because the editor edits the set as a\nunit: ``position`` is just the index in the submitted list, so reordering\nneeds no endpoint of its own. Sending an empty list removes every rule.",
+        "operationId": "put_flag_rules_queries__query_id__flag_rules_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "query_id",
+            "required": true,
+            "schema": {
+              "title": "Query Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlagRuleSetUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlagRuleSetRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Put Flag Rules",
+        "tags": [
+          "flag-rules"
         ]
       }
     },

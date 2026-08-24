@@ -72,6 +72,14 @@ Two notes on codes that changed behaviour:
     "series_field": null,
     "warnings": []
   },
+  "flags": {
+    "flagged_count": 1,
+    "rows": [{"index": 0, "rule_ids": ["a1b2..."]}],
+    "rules": [
+      {"id": "a1b2...", "name": "Large transfer", "severity": "high", "matched": 1}
+    ],
+    "warnings": []
+  },
   "poll_interval_ms": 5000
 }
 ```
@@ -79,6 +87,13 @@ Two notes on codes that changed behaviour:
 `truncated` is `true` when the result set was larger than the query's
 `row_limit`. `chart.warnings` is non-empty when the chart mapping names a
 column the result does not contain; the rows are still returned.
+
+`flags` is always present and is empty when the query defines no flag rules, so
+a client never has to branch on the key existing. `flags.rows` carries **only
+flagged rows**; `index` is a position in `rows`. `data_hash` covers the flag
+outcome as well as the data, so editing a rule changes the hash even when not a
+single row moved -- without that, polling would answer `changed: false` and the
+edit would never reach the screen.
 
 ## `GET /queries/{id}/poll?since_hash=&force=`
 
@@ -109,12 +124,110 @@ received as `since_hash`. Pass `force=true` to bypass the cache.
   "row_count": 100,
   "truncated": true,
   "columns": ["..."],
-  "rows": [["..."]]
+  "rows": [["..."]],
+  "flags": {"flagged_count": 0, "rows": [], "rules": [], "warnings": []}
 }
 ```
 
 Nothing is persisted and nothing is logged. Capped at `FAE_PREVIEW_ROW_LIMIT`
 (default 100) regardless of what the request asks for.
+
+The request may carry a `flag_rules` array in the same shape as
+`PUT /queries/{id}/flag-rules` below. Those rules are evaluated against the
+preview rows and thrown away, which is what lets an editor answer "would this
+rule catch anything?" before the query is saved. Unsaved rules have no id, so
+each is reported under its index in the submitted array.
+
+## `GET|PUT /queries/{id}/flag-rules`
+
+A flag rule is a named set of conditions that marks rows in that query's result.
+
+```json
+{
+  "rules": [
+    {
+      "name": "Large transfer",
+      "severity": "high",
+      "enabled": true,
+      "conditions": [
+        {"column_name": "amount", "operator": "gt", "value": "500000"},
+        {"column_name": "country", "operator": "neq", "value": "NG"}
+      ]
+    }
+  ]
+}
+```
+
+A rule matches a row when **all** of its conditions match. A row is flagged when
+**any** enabled rule matches. That covers AND and OR without an expression
+language, which is deliberate: conditions are evaluated in Python over rows the
+database already returned, so nothing a user writes is ever spliced into SQL and
+the same evaluation runs on Postgres, MySQL and SQLite. The consequence is that
+flagging only sees rows inside the query's `row_limit`.
+
+`PUT` replaces the whole set; `position` is the index in the submitted array, so
+reordering needs no separate call, and an empty array removes every rule. Rule
+names must be distinct within a query.
+
+Operators: `gt`, `gte`, `lt`, `lte`, `eq`, `neq`, `contains`, `not_contains`,
+`starts_with`, `in`, `not_in`, `is_null`, `is_not_null`, `between`. `is_null` and
+`is_not_null` take no value; `between` takes `value` and `value2`; everything
+else takes `value`. `in`/`not_in` split `value` on commas.
+
+Comparison is numeric when both sides parse as numbers and lexical otherwise,
+which is what makes `amount > 500` work against a `Decimal` that arrives as
+`"500.25"` and `day >= '2026-08-19'` work on an ISO date string. `contains` and
+`starts_with` are case-insensitive; `eq` and `neq` are not, matching `=` in
+Postgres. A NULL cell matches `is_null` and nothing else, following SQL's
+three-valued logic rather than Python's.
+
+A condition naming a column the result does not contain matches nothing and is
+reported in `flags.warnings`; the rows are still returned.
+
+## `GET /connections/{id}/flagged`
+
+Flagged rows across every rule-bearing query on one connection.
+
+```json
+{
+  "connection_id": "...",
+  "queries": [
+    {
+      "query_id": "...",
+      "query_name": "Large transfers",
+      "columns": ["day", "amount"],
+      "rows": [{"index": 1, "rule_ids": ["..."], "values": ["2026-08-19", 900.0]}],
+      "rules": [{"id": "...", "name": "Large", "severity": "high", "matched": 1}],
+      "warnings": [],
+      "flagged_count": 1,
+      "executed_at": "2026-08-24T12:00:00Z",
+      "stale": false,
+      "error_code": null,
+      "error_message": null
+    }
+  ],
+  "flagged_count": 1,
+  "refreshed": false,
+  "refresh_truncated": false
+}
+```
+
+Reads the poll cache and **runs nothing**, so opening this view costs the target
+database nothing. A query with no cached result comes back `stale: true` rather
+than being omitted, so the UI can say "not run yet" instead of implying the
+rules matched nothing. Queries with no rules are omitted entirely.
+
+Only flagged rows are carried, not the whole result: returning every row so the
+client could filter would multiply the payload by the inverse of the flag rate.
+
+## `POST /connections/{id}/flagged/refresh`
+
+Same response shape, but re-runs each query first. The only path here that
+touches the target database, so it counts against the **execution** rate-limit
+bucket and is bounded by `FAE_FLAGGED_REFRESH_MAX_QUERIES` (default 20);
+`refresh_truncated` is `true` when that bound applied. A query that fails comes
+back with `error_code` set and `stale: true` while every other query on the
+connection still reports its flagged rows.
 
 ## `POST /queries/poll`
 

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from app.models.connection import Connection
     from app.models.dashboard import DashboardItem
     from app.models.execution_log import QueryExecutionLog
+    from app.models.flag_rule import FlagRule
 
 DEFAULT_ROW_LIMIT = 1000
 
@@ -57,6 +58,13 @@ class SavedQuery(TimestampMixin, Base):
         back_populates="query",
         cascade="all, delete-orphan",
         passive_deletes=True,
+    )
+    #: Ordered by position so the editor round-trips a rule set unchanged.
+    flag_rules: Mapped[list["FlagRule"]] = relationship(
+        back_populates="query",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="FlagRule.position",
     )
     #: Deleting a query takes it off every dashboard that showed it.
     dashboard_items: Mapped[list["DashboardItem"]] = relationship(

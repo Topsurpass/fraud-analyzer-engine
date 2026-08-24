@@ -22,7 +22,7 @@ from app.schemas.query import (
     SavedQueryRead,
     SavedQueryUpdate,
 )
-from app.services import connection_service, query_service, result_cache
+from app.services import connection_service, flagging, query_service, result_cache
 from app.services import saved_query_service as svc
 
 connection_scoped = APIRouter(prefix="/connections", tags=["queries"])
@@ -247,7 +247,39 @@ def preview_query(
         truncated=result.truncated,
         columns=result.columns,
         rows=result.rows,
+        flags=preview_flags(payload.flag_rules, result.columns, result.rows),
     )
+
+
+def preview_flags(rules, columns: list[str], rows: list[list]) -> dict:
+    """Evaluate unsaved rules against preview rows.
+
+    The rules have no database identity yet, so each is given its index as an
+    id. That is enough for the editor to map a flagged row back to the rule
+    the user is editing, and nothing outside this response ever sees it.
+    """
+    if not rules:
+        return flagging.FlagOutcome().as_dict()
+
+    specs = [
+        flagging.RuleSpec(
+            id=str(position),
+            name=rule.name,
+            severity=rule.severity,
+            enabled=rule.enabled,
+            conditions=tuple(
+                flagging.ConditionSpec(
+                    column_name=condition.column_name,
+                    operator=condition.operator,
+                    value=condition.value,
+                    value2=condition.value2,
+                )
+                for condition in rule.conditions
+            ),
+        )
+        for position, rule in enumerate(rules)
+    ]
+    return flagging.evaluate(specs, columns, rows).as_dict()
 
 
 @query_scoped.post("/poll", response_model=BatchPollResponse)

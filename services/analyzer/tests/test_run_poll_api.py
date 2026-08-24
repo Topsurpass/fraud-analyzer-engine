@@ -19,6 +19,9 @@ RUN_KEYS = {
     "columns",
     "rows",
     "chart",
+    # Always present, empty when the query defines no flag rules, so the
+    # frontend never has to branch on the key existing.
+    "flags",
     "poll_interval_ms",
 }
 

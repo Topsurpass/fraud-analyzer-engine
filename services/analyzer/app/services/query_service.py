@@ -35,6 +35,7 @@ from app.db import target_registry
 from app.errors import AppError, ErrorCode, ResultTooLargeError
 from app.models import ChartType, Connection, SavedQuery
 from app.security.sql_guard import validate_select
+from app.services import flagging
 from app.services.sizing import approx_json_size
 
 
@@ -63,6 +64,9 @@ class RunPayload:
     columns: list[str]
     rows: list[list[Any]]
     chart: dict = field(default_factory=dict)
+    #: Flag-rule outcome. Always present, empty when the query has no rules,
+    #: so the frontend never has to branch on the key existing.
+    flags: dict = field(default_factory=dict)
 
     def as_dict(self, poll_interval_ms: int) -> dict:
         """Build the response body without copying the rows.
@@ -84,6 +88,7 @@ class RunPayload:
             "columns": self.columns,
             "rows": self.rows,
             "chart": self.chart,
+            "flags": self.flags,
             "poll_interval_ms": poll_interval_ms,
         }
 
@@ -139,10 +144,22 @@ def to_jsonable(value: Any) -> Any:
     return str(value)
 
 
-def canonical_hash(columns: list[str], rows: list[list[Any]]) -> str:
-    """Stable sha256 over the exact payload the client will receive."""
+def canonical_hash(
+    columns: list[str],
+    rows: list[list[Any]],
+    flags: dict | None = None,
+) -> str:
+    """Stable sha256 over the exact payload the client will receive.
+
+    ``flags`` is part of the hash, not decoration. Polling asks "has anything
+    changed since this hash", and a flag rule edited while the SQL and the data
+    stay put changes the payload without changing a single row. Hashing rows
+    alone would answer ``changed: false`` and the analyst's new rule would
+    never reach the screen -- the failure would look like the rule was not
+    saved, and reloading would not fix it, because the cache agrees.
+    """
     canonical = json.dumps(
-        {"columns": columns, "rows": rows},
+        {"columns": columns, "rows": rows, "flags": flags or {}},
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -287,21 +304,36 @@ def poll_interval_for(query: SavedQuery) -> int:
 
 
 def run_saved_query(query: SavedQuery, conn: Connection) -> RunPayload:
-    """Execute a saved query and build its full chart-ready payload."""
+    """Execute a saved query, flag its rows, and build the full payload."""
     from app.models import utcnow
 
     result = execute_sql(conn, query.sql_text, row_limit=query.row_limit)
+    flags = evaluate_flags(query.flag_rules, result.columns, result.rows)
     return RunPayload(
         query_id=query.id,
         executed_at=utcnow(),
         duration_ms=result.duration_ms,
         row_count=result.row_count,
         truncated=result.truncated,
-        data_hash=canonical_hash(result.columns, result.rows),
+        data_hash=canonical_hash(result.columns, result.rows, flags),
         columns=result.columns,
         rows=result.rows,
         chart=build_chart(query, result.columns),
+        flags=flags,
     )
+
+
+def evaluate_flags(rules, columns: list[str], rows: list[list[Any]]) -> dict:
+    """Run a query's flag rules over its result, as a plain dict.
+
+    Rules only ever see rows the query already returned, so flagging is bounded
+    by ``row_limit``: a row past the cap cannot be flagged because it was never
+    fetched. ``truncated`` on the payload is what tells the analyst that.
+    """
+    if not rules:
+        return flagging.FlagOutcome().as_dict()
+    specs = flagging.specs_from_models(rules)
+    return flagging.evaluate(specs, columns, rows).as_dict()
 
 
 def dry_run(conn: Connection, sql: str) -> None:

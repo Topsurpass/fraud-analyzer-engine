@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.enums import ChartType
+from app.schemas.flag_rule import FlagOutcomeRead, FlagRuleBase
 from app.schemas.types import UtcDatetime
 
 
@@ -80,6 +81,7 @@ class RunResponse(BaseModel):
     columns: list[str]
     rows: list[list[Any]]
     chart: ChartSpec
+    flags: FlagOutcomeRead = Field(default_factory=FlagOutcomeRead)
     poll_interval_ms: int
 
 
@@ -101,6 +103,11 @@ class PollChanged(RunResponse):
 class PreviewRequest(BaseModel):
     sql_text: str = Field(min_length=1)
     row_limit: int | None = Field(default=None, ge=1)
+    #: Rules to try against the preview rows without saving anything. This is
+    #: what lets the editor answer "would this rule catch anything?" before the
+    #: query exists, which is the difference between writing a rule and
+    #: guessing at one.
+    flag_rules: list[FlagRuleBase] = Field(default_factory=list, max_length=50)
 
 
 class PreviewResponse(BaseModel):
@@ -111,6 +118,7 @@ class PreviewResponse(BaseModel):
     truncated: bool
     columns: list[str]
     rows: list[list[Any]]
+    flags: FlagOutcomeRead = Field(default_factory=FlagOutcomeRead)
 
 
 class ExecutionLogRead(BaseModel):
