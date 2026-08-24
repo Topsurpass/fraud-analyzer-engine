@@ -214,6 +214,9 @@ def test_a_run_without_rules_carries_an_empty_outcome(client, query):
         "rows": [],
         "rules": [],
         "warnings": [],
+        # Part of the documented shape: a client reading it never has to test
+        # for the key's presence before deciding whether to offer "restore".
+        "dismissed_count": 0,
     }
 
 
@@ -726,3 +729,127 @@ def test_deleting_the_query_takes_its_dismissals_with_it(
 
     with Session(get_engine()) as session:
         assert session.query(FlagDismissal).count() == 0
+
+
+# ---------------------------------------------------------------------------
+# A dismissed row stops being marked on its chart too
+#
+# The flagged view is one consumer of a query's flag outcome; every chart
+# polling that query is another. A card still painting a row red after the
+# analyst reviewed it is telling them there is work left that they have
+# already done.
+# ---------------------------------------------------------------------------
+
+
+def test_a_dismissed_row_is_not_flagged_in_the_run_payload(
+    client, query, flagged_section
+):
+    victim = flagged_section["rows"][0]["fingerprint"]
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals", json={"fingerprints": [victim]}
+    )
+
+    run = client.post(f"/queries/{query['id']}/run").json()
+    assert run["flags"]["flagged_count"] == 1
+    assert victim not in [row["fingerprint"] for row in run["flags"]["rows"]]
+    # The rows themselves are untouched: only the flag on one of them is gone.
+    assert len(run["rows"]) == 5
+
+
+def test_the_run_payload_carries_a_fingerprint_per_flagged_row(client, query):
+    client.put(
+        f"/queries/{query['id']}/flag-rules",
+        json={"rules": [rule("Large", "amount", "gt", "500")]},
+    )
+    run = client.post(f"/queries/{query['id']}/run").json()
+    for row in run["flags"]["rows"]:
+        assert len(row["fingerprint"]) == 64
+
+
+def test_dismissing_moves_the_hash_so_a_polling_card_notices(
+    client, query, flagged_section
+):
+    """The part that is easy to miss.
+
+    A card polls with "anything changed since this hash". Dismissing changes
+    what the card should draw without changing a single value in the result,
+    so a hash over the data alone would answer "unchanged" and the row would
+    stay marked until something else happened to move it.
+    """
+    before = client.get(f"/queries/{query['id']}/poll").json()
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": [flagged_section["rows"][0]["fingerprint"]]},
+    )
+    after = client.get(f"/queries/{query['id']}/poll").json()
+
+    assert after["data_hash"] != before["data_hash"]
+    assert after["flags"]["flagged_count"] == 1
+
+
+def test_polling_with_the_new_hash_then_reports_unchanged(
+    client, query, flagged_section
+):
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": [flagged_section["rows"][0]["fingerprint"]]},
+    )
+    current = client.get(f"/queries/{query['id']}/poll").json()["data_hash"]
+    again = client.get(
+        f"/queries/{query['id']}/poll", params={"since_hash": current}
+    ).json()
+    assert again["changed"] is False
+
+
+def test_dismissing_does_not_re_run_the_query(client, query, flagged_section):
+    """A dismissal must be free of the target database.
+
+    Invalidating the cache instead would also blank the flagged section, which
+    reads that cache, until someone hit refresh.
+    """
+    before = len(client.get(f"/queries/{query['id']}/logs").json())
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": [flagged_section["rows"][0]["fingerprint"]]},
+    )
+    served = client.get(f"/queries/{query['id']}/poll").json()
+
+    assert served["from_cache"] is True
+    assert len(client.get(f"/queries/{query['id']}/logs").json()) == before
+
+
+def test_restoring_puts_the_mark_back_on_the_chart(client, query, flagged_section):
+    victim = flagged_section["rows"][0]["fingerprint"]
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals", json={"fingerprints": [victim]}
+    )
+    assert client.get(f"/queries/{query['id']}/poll").json()["flags"]["flagged_count"] == 1
+
+    client.delete(f"/queries/{query['id']}/flag-dismissals")
+    restored = client.get(f"/queries/{query['id']}/poll").json()
+    assert restored["flags"]["flagged_count"] == 2
+    assert victim in [row["fingerprint"] for row in restored["flags"]["rows"]]
+
+
+def test_the_rule_legend_on_a_run_counts_only_what_is_still_flagged(
+    client, query, flagged_section
+):
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals",
+        json={"fingerprints": [flagged_section["rows"][0]["fingerprint"]]},
+    )
+    run = client.post(f"/queries/{query['id']}/run").json()
+    assert run["flags"]["rules"][0]["matched"] == 1
+
+
+def test_a_query_with_no_dismissals_is_untouched(client, query):
+    client.put(
+        f"/queries/{query['id']}/flag-rules",
+        json={"rules": [rule("Large", "amount", "gt", "500")]},
+    )
+    first = client.post(f"/queries/{query['id']}/run").json()
+    second = client.post(f"/queries/{query['id']}/run").json()
+    # No dismissals means the hash must be exactly what it always was, or every
+    # card on the dashboard would redraw for nothing.
+    assert first["data_hash"] == second["data_hash"]
+    assert "+d" not in first["data_hash"]

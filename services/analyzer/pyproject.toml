@@ -38,4 +38,5 @@ markers = [
     "integration: touches a database, an HTTP client, or a migration",
     "live: needs a real PostgreSQL or MySQL server (auto-skips without one)",
     "slow: deliberately burns CPU to assert a performance bound; runs in CI, not on commit",
+    "real_addressing: exercises app.db.addressing itself, so the suite-wide DNS stub is lifted",
 ]

@@ -188,3 +188,31 @@ def sqlite_connection(client, target_sqlite):
     body = response.json()
     assert body["test_ok"] is True, body
     return body["connection"]
+
+
+@pytest.fixture(autouse=True)
+def _no_dns_in_tests(request, monkeypatch):
+    """Keep address pinning from doing real DNS during the suite.
+
+    ``postgres_connect_args`` resolves the target hostname so it can hand libpq
+    only the addresses this machine can reach. Test connections point at names
+    like ``db.example.test`` that do not exist, so without this every test that
+    builds connect args pays a real lookup and a real NXDOMAIN timeout - the
+    gate lane went from two seconds to minutes.
+
+    Returning "no opinion" is also the pre-existing behaviour, so tests that
+    are not about addressing see exactly what they saw before. The addressing
+    tests opt back in by patching the seams themselves.
+    """
+    # The addressing tests are about this function, so stubbing it there would
+    # have them assert the stub.
+    if request.node.get_closest_marker("real_addressing"):
+        return
+
+    from app.db import addressing
+
+    addressing.routable_addresses.cache_clear()
+    monkeypatch.setattr(addressing, "routable_addresses", lambda host, port: ())
+    monkeypatch.setattr(
+        "app.db.target_registry.routable_addresses", lambda host, port: ()
+    )

@@ -1031,6 +1031,11 @@
       "FlagOutcomeRead": {
         "description": "Only flagged rows appear in ``rows``; unflagged rows are absent.",
         "properties": {
+          "dismissed_count": {
+            "default": 0,
+            "title": "Dismissed Count",
+            "type": "integer"
+          },
           "flagged_count": {
             "default": 0,
             "title": "Flagged Count",
@@ -1414,6 +1419,17 @@
       "RowFlagRead": {
         "description": "One flagged row. ``index`` is its position in ``rows``.",
         "properties": {
+          "fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint"
+          },
           "index": {
             "title": "Index",
             "type": "integer"

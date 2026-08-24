@@ -32,6 +32,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
+from cryptography.fernet import InvalidToken
 from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.engine import URL
 from sqlalchemy.engine import Connection as SAConnection
@@ -40,11 +41,12 @@ from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.pool import QueuePool
 
 from app.config import get_settings
+from app.db.addressing import routable_addresses
 from app.errors import (
     AppError,
     DbAuthError,
-    DbTlsRequiredError,
     DbPermissionError,
+    DbTlsRequiredError,
     DbUnreachableError,
     InvalidConfigError,
     QueryExecutionError,
@@ -278,7 +280,20 @@ def build_url(conn: Connection) -> URL:
             f"A {conn.db_type.value} connection requires 'host' and 'database'."
         )
 
-    password = decrypt(conn.password_encrypted) if conn.password_encrypted else None
+    try:
+        password = decrypt(conn.password_encrypted) if conn.password_encrypted else None
+    except InvalidToken as exc:
+        # The stored credential was encrypted under a different FAE_FERNET_KEY.
+        # Fernet's own error is the bare word "InvalidToken", which reaches the
+        # user as a meaningless failure on a connection that looks correct in
+        # every visible field. Say what happened and what fixes it: the
+        # ciphertext is unrecoverable, so the password has to be entered again.
+        raise InvalidConfigError(
+            "This connection's stored password cannot be decrypted, because it "
+            "was saved under a different encryption key. Open the connection "
+            "and enter the password again.",
+            {"connection_id": conn.id, "reason": "fernet_key_changed"},
+        ) from exc
     driver = "postgresql+psycopg" if conn.db_type == DbType.POSTGRES else "mysql+pymysql"
     return URL.create(
         driver,
@@ -372,6 +387,17 @@ def postgres_connect_args(conn: Connection) -> dict:
     bundle = resolve_ca_bundle(conn)
     if bundle:
         args["sslrootcert"] = bundle
+
+    # Pin the addresses when this machine cannot reach every family the name
+    # resolves to. `host` is repeated to match, because libpq pairs the two
+    # lists positionally and refuses a length mismatch -- and because the name
+    # is what the certificate is issued for, so dropping it would break
+    # verify-full and Neon's SNI routing.
+    if conn.host:
+        addresses = routable_addresses(conn.host, conn.port or DEFAULT_PORTS[conn.db_type])
+        if addresses:
+            args["host"] = ",".join([conn.host] * len(addresses))
+            args["hostaddr"] = ",".join(addresses)
     return args
 
 

@@ -35,7 +35,7 @@ from app.db import target_registry
 from app.errors import AppError, ErrorCode, ResultTooLargeError
 from app.models import ChartType, Connection, SavedQuery
 from app.security.sql_guard import validate_select
-from app.services import flagging
+from app.services import flag_dismissal_service, flagging
 from app.services.sizing import approx_json_size
 
 
@@ -333,7 +333,18 @@ def evaluate_flags(rules, columns: list[str], rows: list[list[Any]]) -> dict:
     if not rules:
         return flagging.FlagOutcome().as_dict()
     specs = flagging.specs_from_models(rules)
-    return flagging.evaluate(specs, columns, rows).as_dict()
+    outcome = flagging.evaluate(specs, columns, rows).as_dict()
+
+    # Each flagged row carries a hash of its own values, which is what makes a
+    # dismissal survive the next run. The index cannot: it is a position in one
+    # result and points at a different row after the query runs again. Computed
+    # here, where the rows are already in hand, rather than at each of the three
+    # places that later need it.
+    for flagged in outcome["rows"]:
+        index = flagged["index"]
+        if 0 <= index < len(rows):
+            flagged["fingerprint"] = flag_dismissal_service.row_fingerprint(rows[index])
+    return outcome
 
 
 def dry_run(conn: Connection, sql: str) -> None:

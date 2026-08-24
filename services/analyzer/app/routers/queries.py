@@ -22,7 +22,13 @@ from app.schemas.query import (
     SavedQueryRead,
     SavedQueryUpdate,
 )
-from app.services import connection_service, flagging, query_service, result_cache
+from app.services import (
+    connection_service,
+    flag_dismissal_service,
+    flagging,
+    query_service,
+    result_cache,
+)
 from app.services import saved_query_service as svc
 
 connection_scoped = APIRouter(prefix="/connections", tags=["queries"])
@@ -162,8 +168,11 @@ def run_query(query_id: str, session: Session = Depends(get_session)) -> dict:
     payload = _execute_and_log(session, query, conn)
     interval = query_service.poll_interval_for(query)
     body = _to_run_response(payload, interval)
+    # Cached before filtering, served after: see apply_dismissals.
     result_cache.set(query.id, payload.data_hash, body, ttl_ms=interval)
-    return body
+    return flag_dismissal_service.apply_dismissals(
+        body, flag_dismissal_service.dismissed_fingerprints(session, query.id)
+    )
 
 
 @query_scoped.get("/{query_id}/poll", response_model=PollChanged | PollUnchanged) # pyright: ignore[reportGeneralTypeIssues]
@@ -195,27 +204,36 @@ def _poll_one(
     """
     query = svc.get_query(session, query_id)
     interval = query_service.poll_interval_for(query)
+    # Read once and applied to whichever payload is served. A row the analyst
+    # has reviewed should stop being marked on the chart too, not only in the
+    # flagged view - a card still showing it red is telling them there is work
+    # left that they have already done.
+    dismissed = flag_dismissal_service.dismissed_fingerprints(session, query_id)
 
     cached = None if force else result_cache.get(query_id)
     if cached is not None:
-        if since_hash and cached.data_hash == since_hash:
+        body = flag_dismissal_service.apply_dismissals(cached.payload, dismissed)
+        if since_hash and body["data_hash"] == since_hash:
             return PollUnchanged(
                 query_id=query_id,
-                data_hash=cached.data_hash,
+                data_hash=body["data_hash"],
                 poll_interval_ms=interval,
                 from_cache=True,
             ).model_dump()
-        return {**cached.payload, "changed": True, "from_cache": True}
+        return {**body, "changed": True, "from_cache": True}
 
     conn = connection_service.get_connection(session, query.connection_id)
     payload = _execute_and_log(session, query, conn)
     body = _to_run_response(payload, interval)
+    # Cached unfiltered, on purpose: a later dismissal has to be able to change
+    # what this payload looks like without the query being run again.
     result_cache.set(query_id, payload.data_hash, body, ttl_ms=interval)
+    body = flag_dismissal_service.apply_dismissals(body, dismissed)
 
-    if since_hash and payload.data_hash == since_hash:
+    if since_hash and body["data_hash"] == since_hash:
         return PollUnchanged(
             query_id=query_id,
-            data_hash=payload.data_hash,
+            data_hash=body["data_hash"],
             poll_interval_ms=interval,
             from_cache=False,
         ).model_dump()

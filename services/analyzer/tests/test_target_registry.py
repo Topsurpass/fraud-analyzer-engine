@@ -618,3 +618,90 @@ def test_the_two_tls_directions_are_told_apart():
     assert insecure.detail["reason"] == "tls_required_by_server"
     assert unsupported.detail["reason"] == "tls_unsupported_by_server"
     assert insecure.message != unsupported.message
+
+
+# ---------------------------------------------------------------------------
+# Address pinning
+#
+# The suite-wide fixture in conftest neutralises this, so these tests install
+# their own answer. See tests/test_addressing.py for the policy itself.
+# ---------------------------------------------------------------------------
+
+
+def test_routable_addresses_are_pinned_alongside_the_hostname(monkeypatch):
+    monkeypatch.setattr(
+        "app.db.target_registry.routable_addresses",
+        lambda host, port: ("23.21.74.185", "98.89.62.209"),
+    )
+    args = reg.postgres_connect_args(_pg(host="db.example.test"))
+
+    # libpq pairs the two lists positionally and refuses a length mismatch, so
+    # the name is repeated rather than sent once.
+    assert args["host"] == "db.example.test,db.example.test"
+    assert args["hostaddr"] == "23.21.74.185,98.89.62.209"
+
+
+def test_the_hostname_is_kept_so_tls_still_verifies(monkeypatch):
+    # Connecting by literal address alone would break verify-full and Neon's
+    # SNI routing: the certificate is issued for the name.
+    monkeypatch.setattr(
+        "app.db.target_registry.routable_addresses", lambda host, port: ("10.0.0.1",)
+    )
+    args = reg.postgres_connect_args(
+        _pg(host="db.example.test", ssl_mode=SslMode.VERIFY_FULL)
+    )
+    assert "db.example.test" in args["host"]
+    assert args["sslmode"] == "verify-full"
+
+
+def test_nothing_is_pinned_when_addressing_has_no_opinion(monkeypatch):
+    monkeypatch.setattr(
+        "app.db.target_registry.routable_addresses", lambda host, port: ()
+    )
+    args = reg.postgres_connect_args(_pg(host="db.example.test"))
+    # Falls through to libpq's own resolution, exactly as before.
+    assert "hostaddr" not in args
+    assert "host" not in args
+
+
+def test_the_default_port_is_used_when_the_connection_names_none(monkeypatch):
+    seen = {}
+
+    def spy(host, port):
+        seen["port"] = port
+        return ()
+
+    monkeypatch.setattr("app.db.target_registry.routable_addresses", spy)
+    reg.postgres_connect_args(_pg(host="db.example.test", port=None))
+    assert seen["port"] == 5432
+
+
+def test_an_undecryptable_password_says_what_to_do_about_it(monkeypatch):
+    """Fernet's own error is the bare word "InvalidToken".
+
+    It reaches the user as a meaningless failure on a connection whose every
+    visible field is correct, which is exactly the moment they need to be told
+    that the ciphertext is unrecoverable and the password must be re-entered.
+    """
+    from cryptography.fernet import InvalidToken
+
+    def boom(_token):
+        raise InvalidToken()
+
+    monkeypatch.setattr("app.db.target_registry.decrypt", boom)
+    conn = _pg(host="db.example.test")
+    conn.password_encrypted = "gAAAAA-encrypted-under-another-key"
+
+    with pytest.raises(InvalidConfigError) as caught:
+        reg.build_url(conn)
+
+    assert "enter the password again" in str(caught.value.message).lower()
+    assert caught.value.detail["reason"] == "fernet_key_changed"
+
+
+def test_a_connection_with_no_password_is_unaffected():
+    # Trust auth and .pgpass are legitimate; the absence of a password is not
+    # a decryption failure.
+    conn = _pg(host="db.example.test")
+    conn.password_encrypted = None
+    assert reg.build_url(conn).password is None

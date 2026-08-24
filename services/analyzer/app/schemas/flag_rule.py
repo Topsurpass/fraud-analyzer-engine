@@ -127,6 +127,11 @@ class RowFlagRead(BaseModel):
 
     index: int
     rule_ids: list[str]
+    #: sha256 of the row's values, and how a dismissal addresses it. The index
+    #: cannot: it is a position in one run's result and points at a different
+    #: row after the query runs again. Absent only on a payload cached before
+    #: this field existed.
+    fingerprint: str | None = None
 
 
 class RuleHitRead(BaseModel):
@@ -143,6 +148,9 @@ class FlagOutcomeRead(BaseModel):
     rows: list[RowFlagRead] = Field(default_factory=list)
     rules: list[RuleHitRead] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    #: Rows that matched a rule but have been reviewed and dismissed. They are
+    #: absent from ``rows`` and not counted in ``flagged_count``.
+    dismissed_count: int = 0
 
 
 class FlagDismissalRequest(BaseModel):
