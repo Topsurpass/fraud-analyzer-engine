@@ -7,11 +7,18 @@ from datetime import timedelta
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.errors import AppError, DuplicateNameError, ErrorCode, NotFoundError
-from app.models import Connection, QueryExecutionLog, SavedQuery, utcnow
+from app.models import (
+    ChartType,
+    Connection,
+    QueryChart,
+    QueryExecutionLog,
+    SavedQuery,
+    utcnow,
+)
 from app.schemas.query import SavedQueryCreate, SavedQueryUpdate
 from app.services import query_service, result_cache
 
@@ -30,10 +37,17 @@ def get_query(session: Session, query_id: str) -> SavedQuery:
 
 
 def list_queries(session: Session, connection_id: str) -> list[SavedQuery]:
+    """Every saved query on a connection, with its charts already loaded.
+
+    ``selectinload`` is load-bearing: the read model includes each query's
+    charts, and a connection with twenty queries would otherwise lazy-load
+    twenty chart sets one statement at a time.
+    """
     return list(
         session.scalars(
             select(SavedQuery)
             .where(SavedQuery.connection_id == connection_id)
+            .options(selectinload(SavedQuery.charts))
             .order_by(SavedQuery.created_at)
         )
     )
@@ -52,13 +66,17 @@ def create_query(
         description=payload.description,
         sql_text=payload.sql_text,
         table_hint=payload.table_hint,
-        chart_type=payload.chart_type,
-        x_field=payload.x_field,
-        y_field=payload.y_field,
-        series_field=payload.series_field,
         row_limit=row_limit,
         poll_interval_ms=payload.poll_interval_ms,
     )
+    # A query with no chart renders nothing, and a person who just wrote some
+    # SQL has not asked to configure a chart yet. One table chart is the
+    # honest default: it shows the rows exactly as returned, and it is what
+    # every query had before charts became separable.
+    query.charts.append(
+        QueryChart(name=payload.name[:200], position=0, chart_type=ChartType.TABLE)
+    )
+
     session.add(query)
     try:
         session.commit()
@@ -165,7 +183,12 @@ def list_queries_by_ids(session: Session, query_ids: list[str]) -> list[SavedQue
     found = {
         query.id: query
         for query in session.scalars(
-            select(SavedQuery).where(SavedQuery.id.in_(query_ids))
+            select(SavedQuery)
+            .where(SavedQuery.id.in_(query_ids))
+            # The read model includes each query's charts, so without this the
+            # batch fetch that exists to be one statement becomes one plus one
+            # per query - which is exactly what it was written to avoid.
+            .options(selectinload(SavedQuery.charts))
         )
     }
     return [found[qid] for qid in query_ids if qid in found]

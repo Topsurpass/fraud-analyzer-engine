@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, new_id
@@ -46,6 +46,16 @@ class Connection(TimestampMixin, Base):
     # Only read by the two verifying modes. A public CA covers Neon, RDS and
     # friends; an internal CA has nowhere else to go.
     ssl_root_cert: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: Paused by a person, not by a failure. Separate from ``status`` on
+    #: purpose: status records how the last *test* went, and folding "I turned
+    #: this off" into it would destroy the answer to "was it working when I
+    #: paused it". While paused the scheduler skips this connection's queries
+    #: and its pooled connections are closed, so the engine holds nothing open
+    #: against the target.
+    paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     status: Mapped[ConnectionStatus] = mapped_column(
         enum_column(ConnectionStatus),

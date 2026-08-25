@@ -75,6 +75,7 @@ def test_migration_creates_the_expected_tables(tmp_path, alembic_for):
         "flag_conditions",
         "flag_dismissals",
         "flagged_rows",
+        "query_charts",
     }
 
 

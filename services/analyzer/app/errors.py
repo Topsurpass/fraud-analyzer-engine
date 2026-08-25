@@ -23,6 +23,7 @@ class ErrorCode(StrEnum):
     INVALID_CHART_CONFIG = "INVALID_CHART_CONFIG"
     INVALID_CONNECTION_CONFIG = "INVALID_CONNECTION_CONFIG"
     DB_TLS_REQUIRED = "DB_TLS_REQUIRED"
+    CONNECTION_PAUSED = "CONNECTION_PAUSED"
     ROW_LIMIT_EXCEEDED = "ROW_LIMIT_EXCEEDED"
     SQL_TOO_LONG = "SQL_TOO_LONG"
     RESULT_TOO_LARGE = "RESULT_TOO_LARGE"
@@ -65,6 +66,7 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.INVALID_CHART_CONFIG: 400,
     ErrorCode.INVALID_CONNECTION_CONFIG: 400,
     ErrorCode.DB_TLS_REQUIRED: 400,
+    ErrorCode.CONNECTION_PAUSED: 409,
     ErrorCode.ROW_LIMIT_EXCEEDED: 400,
     ErrorCode.SQL_TOO_LONG: 400,
     ErrorCode.RESULT_TOO_LARGE: 400,
@@ -160,6 +162,19 @@ class DuplicateNameError(AppError):
 class InvalidConfigError(AppError):
     def __init__(self, message: str, detail: dict | None = None) -> None:
         super().__init__(ErrorCode.INVALID_CONNECTION_CONFIG, message, detail)
+
+
+class ConnectionPausedError(AppError):
+    """Someone paused this connection, so nothing may reach the target.
+
+    409 rather than 400 or 503: the request is well formed and the database is
+    presumably fine - it conflicts with a state a person deliberately put this
+    connection into, and the fix is to reconnect rather than to change the
+    request or wait.
+    """
+
+    def __init__(self, message: str, detail: dict | None = None) -> None:
+        super().__init__(ErrorCode.CONNECTION_PAUSED, message, detail)
 
 
 class DbTlsRequiredError(AppError):

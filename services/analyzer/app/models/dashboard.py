@@ -10,16 +10,19 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin, new_id
 
 if TYPE_CHECKING:
-    from app.models.saved_query import SavedQuery
+    from app.models.query_chart import QueryChart
 
 
 class DashboardItem(Base):
-    """One saved query's place on one dashboard.
+    """One chart's place on one dashboard.
 
     An association row rather than a JSON column of ids, so the database can
-    keep the reference honest: deleting a saved query removes it from every
-    dashboard through the foreign key, instead of leaving boards pointing at
-    something that no longer exists.
+    keep the reference honest: deleting a chart removes it from every dashboard
+    through the foreign key, instead of leaving boards pointing at something
+    that no longer exists.
+
+    A *chart* rather than a query, so one query's result can appear on a board
+    twice - as a trend line and as the rows behind it - while the SQL runs once.
     """
 
     __tablename__ = "dashboard_items"
@@ -29,16 +32,16 @@ class DashboardItem(Base):
         ForeignKey("dashboards.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    query_id: Mapped[str] = mapped_column(
+    chart_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("saved_queries.id", ondelete="CASCADE"),
+        ForeignKey("query_charts.id", ondelete="CASCADE"),
         primary_key=True,
     )
     #: Display order within the dashboard. Contiguous from 0 after any write.
     position: Mapped[int] = mapped_column(Integer, nullable=False)
 
     dashboard: Mapped["Dashboard"] = relationship(back_populates="items")
-    query: Mapped["SavedQuery"] = relationship(back_populates="dashboard_items")
+    chart: Mapped["QueryChart"] = relationship(back_populates="dashboard_items")
 
 
 class Dashboard(TimestampMixin, Base):
@@ -56,6 +59,6 @@ class Dashboard(TimestampMixin, Base):
     )
 
     @property
-    def query_ids(self) -> list[str]:
-        """Query ids in display order, which is what the API exposes."""
-        return [item.query_id for item in sorted(self.items, key=lambda i: i.position)]
+    def chart_ids(self) -> list[str]:
+        """Chart ids in display order, which is what the API exposes."""
+        return [item.chart_id for item in sorted(self.items, key=lambda i: i.position)]

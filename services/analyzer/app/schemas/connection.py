@@ -106,6 +106,9 @@ class ConnectionRead(BaseModel):
     sqlite_path: str | None
     ssl_mode: SslMode
     ssl_root_cert: str | None
+    #: Disconnected by a person. Separate from ``status``, which records how
+    #: the last test went and stays as it was.
+    paused: bool = False
     status: ConnectionStatus
     last_tested_at: UtcDatetime | None
     last_test_error: str | None

@@ -44,6 +44,7 @@ from app.config import get_settings
 from app.db.addressing import routable_addresses
 from app.errors import (
     AppError,
+    ConnectionPausedError,
     DbAuthError,
     DbPermissionError,
     DbTlsRequiredError,
@@ -582,6 +583,16 @@ def read_only_connection(
     Any driver exception raised inside the block is translated into the API's
     error taxonomy, so callers never have to know which driver they are on.
     """
+    # Enforced here rather than at each call site. This is the single place
+    # every execution path opens a target connection, so a new endpoint cannot
+    # forget to check and quietly reconnect a database someone disconnected.
+    if getattr(conn, "paused", False):
+        raise ConnectionPausedError(
+            f"Connection {conn.name!r} is disconnected. Reconnect it to run "
+            f"queries against it.",
+            {"connection_id": conn.id},
+        )
+
     timeout_s = timeout_s if timeout_s is not None else get_settings().query_timeout_s
     state = {"timed_out": False}
     raw_sqlite: sqlite3.Connection | None = None

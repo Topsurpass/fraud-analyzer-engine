@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import DuplicateNameError, ErrorCode, NotFoundError
-from app.models import Dashboard, DashboardItem, SavedQuery
+from app.models import Dashboard, DashboardItem, QueryChart
 from app.schemas.dashboard import DashboardCreate, DashboardUpdate
 
 
@@ -30,7 +30,12 @@ def get_dashboard(session: Session, dashboard_id: str) -> Dashboard:
 def list_dashboards(session: Session) -> list[Dashboard]:
     """Every dashboard, with its items already loaded.
 
-    ``selectinload`` is load-bearing, not a micro-optimisation. ``query_ids``
+    ``selectinload`` reaches through to the charts as well, because the read
+    model resolves them. Without that second level a board of twenty cards
+    lazy-loads twenty charts one at a time - the per-card cost the query/chart
+    split exists to remove, moved from the target database to this one.
+
+    It is load-bearing, not a micro-optimisation. ``chart_ids``
     walks ``Dashboard.items``, so serialising a list of N boards lazily emitted
     1 + N statements: five boards measured six round trips. Local SQLite hides
     that entirely; against a managed Postgres at ~10ms per round trip, twenty
@@ -40,13 +45,13 @@ def list_dashboards(session: Session) -> list[Dashboard]:
     return list(
         session.scalars(
             select(Dashboard)
-            .options(selectinload(Dashboard.items))
+            .options(selectinload(Dashboard.items).selectinload(DashboardItem.chart))
             .order_by(Dashboard.created_at)
         )
     )
 
 
-def _validate_query_ids(session: Session, query_ids: list[str]) -> list[str]:
+def _validate_chart_ids(session: Session, chart_ids: list[str]) -> list[str]:
     """Reject unknown ids, and collapse duplicates keeping first position.
 
     A dashboard referencing a query that does not exist would render a card
@@ -55,26 +60,26 @@ def _validate_query_ids(session: Session, query_ids: list[str]) -> list[str]:
     card twice on one board conveys nothing.
     """
     deduped: list[str] = []
-    for query_id in query_ids:
-        if query_id not in deduped:
-            deduped.append(query_id)
+    for chart_id in chart_ids:
+        if chart_id not in deduped:
+            deduped.append(chart_id)
 
     if deduped:
         found = set(
-            session.scalars(select(SavedQuery.id).where(SavedQuery.id.in_(deduped)))
+            session.scalars(select(QueryChart.id).where(QueryChart.id.in_(deduped)))
         )
-        missing = [query_id for query_id in deduped if query_id not in found]
+        missing = [chart_id for chart_id in deduped if chart_id not in found]
         if missing:
             raise NotFoundError(
                 ErrorCode.QUERY_NOT_FOUND,
-                f"No saved query with id {missing[0]!r}.",
-                {"query_ids": missing},
+                f"No chart with id {missing[0]!r}.",
+                {"chart_ids": missing},
             )
 
     return deduped
 
 
-def _apply_items(dashboard: Dashboard, query_ids: list[str]) -> None:
+def _apply_items(dashboard: Dashboard, chart_ids: list[str]) -> None:
     """Replace the arrangement wholesale.
 
     Rebuilding is simpler than diffing and cannot leave a gap or a duplicate
@@ -82,8 +87,8 @@ def _apply_items(dashboard: Dashboard, query_ids: list[str]) -> None:
     display order.
     """
     dashboard.items.clear()
-    for position, query_id in enumerate(query_ids):
-        dashboard.items.append(DashboardItem(query_id=query_id, position=position))
+    for position, chart_id in enumerate(chart_ids):
+        dashboard.items.append(DashboardItem(chart_id=chart_id, position=position))
 
 
 def _commit(session: Session, dashboard: Dashboard, name: str) -> Dashboard:
@@ -102,9 +107,9 @@ def _commit(session: Session, dashboard: Dashboard, name: str) -> Dashboard:
 
 
 def create_dashboard(session: Session, payload: DashboardCreate) -> Dashboard:
-    query_ids = _validate_query_ids(session, payload.query_ids)
+    chart_ids = _validate_chart_ids(session, payload.chart_ids)
     dashboard = Dashboard(name=payload.name)
-    _apply_items(dashboard, query_ids)
+    _apply_items(dashboard, chart_ids)
     session.add(dashboard)
     return _commit(session, dashboard, payload.name)
 
@@ -114,8 +119,8 @@ def update_dashboard(
 ) -> Dashboard:
     data = payload.model_dump(exclude_unset=True)
 
-    if "query_ids" in data and data["query_ids"] is not None:
-        _apply_items(dashboard, _validate_query_ids(session, data["query_ids"]))
+    if "chart_ids" in data and data["chart_ids"] is not None:
+        _apply_items(dashboard, _validate_chart_ids(session, data["chart_ids"]))
     if data.get("name") is not None:
         dashboard.name = data["name"]
 

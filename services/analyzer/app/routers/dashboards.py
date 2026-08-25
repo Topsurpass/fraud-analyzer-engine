@@ -22,7 +22,8 @@ def _read(dashboard) -> DashboardRead:
     return DashboardRead(
         id=dashboard.id,
         name=dashboard.name,
-        query_ids=dashboard.query_ids,
+        chart_ids=dashboard.chart_ids,
+        charts=[item.chart for item in sorted(dashboard.items, key=lambda i: i.position)],
         created_at=dashboard.created_at,
         updated_at=dashboard.updated_at,
     )
@@ -60,7 +61,7 @@ def update_dashboard(
 ) -> DashboardRead:
     """Rename a dashboard, reorder it, or replace what is on it.
 
-    ``query_ids`` replaces the whole arrangement rather than merging into it.
+    ``chart_ids`` replaces the whole arrangement rather than merging into it.
     """
     dashboard = svc.get_dashboard(session, dashboard_id)
     return _read(svc.update_dashboard(session, dashboard, payload))

@@ -44,7 +44,6 @@ def _make_dashboards(client, sqlite_connection, count):
         json={
             "name": f"q-{next(_names)}",
             "sql_text": "SELECT day FROM txns",
-            "chart_type": "table",
         },
     )
     assert created.status_code == 201, created.text
@@ -95,8 +94,16 @@ def test_dashboard_statement_count_is_flat_as_boards_grow(client, sqlite_connect
     assert count_few == count_many, f"{count_few} -> {count_many} as boards grew"
 
 
-def test_batch_query_fetch_is_one_statement(client, sqlite_connection):
-    """A twelve-card board was thirteen round trips before it could paint."""
+def test_batch_query_fetch_does_not_scale_with_the_number_of_queries(
+    client, sqlite_connection
+):
+    """A twelve-card board was thirteen round trips before it could paint.
+
+    Two statements now, not one: the queries, then one selectin load for every
+    chart they own. What matters is that the count is *constant* - it is the
+    same for six queries as for sixty - so this asserts the shape rather than
+    pinning a number that a legitimate eager load would break.
+    """
     ids = []
     for i in range(6):
         created = client.post(
@@ -104,8 +111,7 @@ def test_batch_query_fetch_is_one_statement(client, sqlite_connection):
             json={
                 "name": f"q{i}",
                 "sql_text": "SELECT day FROM txns",
-                "chart_type": "table",
-            },
+                },
         )
         ids.append(created.json()["id"])
 
@@ -115,7 +121,12 @@ def test_batch_query_fetch_is_one_statement(client, sqlite_connection):
     assert response.status_code == 200
     assert len(response.json()) == 6
     selects = [s for s in statements if s.strip().upper().startswith("SELECT")]
-    assert len(selects) == 1, "\n".join(selects)
+    # One for the queries, one for their charts. Anything that grows with the
+    # number of queries is the N+1 this test exists to catch.
+    assert len(selects) <= 2, "\n".join(selects)
+    assert not any("query_charts" in s and "= ?" in s for s in selects), (
+        "charts were loaded one query at a time:\n" + "\n".join(selects)
+    )
 
 
 def test_run_payload_does_not_copy_the_rows():
@@ -138,7 +149,7 @@ def test_run_payload_does_not_copy_the_rows():
         data_hash="sha256:x",
         columns=["n", "s"],
         rows=rows,
-        chart={},
+        charts=[],
     )
 
     body = payload.as_dict(5000)

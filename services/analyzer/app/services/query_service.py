@@ -33,7 +33,7 @@ from sqlalchemy import text
 from app.config import get_settings
 from app.db import target_registry
 from app.errors import AppError, ErrorCode, ResultTooLargeError
-from app.models import ChartType, Connection, SavedQuery
+from app.models import ChartType, Connection, QueryChart, SavedQuery
 from app.security.sql_guard import validate_select
 from app.services import flag_dismissal_service, flagging
 from app.services.sizing import approx_json_size
@@ -63,7 +63,10 @@ class RunPayload:
     data_hash: str
     columns: list[str]
     rows: list[list[Any]]
-    chart: dict = field(default_factory=dict)
+    #: One entry per chart on the query. They all describe the same rows,
+    #: so they travel together on one payload rather than forcing a
+    #: request per chart.
+    charts: list[dict] = field(default_factory=list)
     #: Flag-rule outcome. Always present, empty when the query has no rules,
     #: so the frontend never has to branch on the key existing.
     flags: dict = field(default_factory=dict)
@@ -87,7 +90,7 @@ class RunPayload:
             "data_hash": self.data_hash,
             "columns": self.columns,
             "rows": self.rows,
-            "chart": self.chart,
+            "charts": self.charts,
             "flags": self.flags,
             "poll_interval_ms": poll_interval_ms,
         }
@@ -262,35 +265,48 @@ _REQUIRED_FIELDS: dict[ChartType, tuple[str, ...]] = {
 }
 
 
-def build_chart(query: SavedQuery, columns: list[str]) -> dict:
-    """Echo the chart mapping, warning about fields the result does not contain.
+def build_chart(chart: QueryChart, columns: list[str]) -> dict:
+    """Echo one chart's mapping, warning about fields the result does not contain.
 
     A bad mapping is a warning rather than an error: the rows are still useful,
-    and failing the whole run would hide data the user can see is there.
+    and failing the whole run would hide data the user can see is there. The
+    usual cause is editing the SELECT list after configuring the chart.
     """
     warnings: list[str] = []
     available = set(columns)
 
     for field_name in ("x_field", "y_field", "series_field"):
-        value = getattr(query, field_name)
+        value = getattr(chart, field_name)
         if value and value not in available:
             warnings.append(
                 f"{field_name} {value!r} is not in the result columns {sorted(available)}"
             )
 
-    for field_name in _REQUIRED_FIELDS.get(query.chart_type, ()):
-        if not getattr(query, field_name):
+    for field_name in _REQUIRED_FIELDS.get(chart.chart_type, ()):
+        if not getattr(chart, field_name):
             warnings.append(
-                f"chart_type {query.chart_type.value!r} needs {field_name} to be set"
+                f"chart_type {chart.chart_type.value!r} needs {field_name} to be set"
             )
 
     return {
-        "type": query.chart_type.value,
-        "x_field": query.x_field,
-        "y_field": query.y_field,
-        "series_field": query.series_field,
+        "id": chart.id,
+        "name": chart.name,
+        "type": chart.chart_type.value,
+        "x_field": chart.x_field,
+        "y_field": chart.y_field,
+        "series_field": chart.series_field,
         "warnings": warnings,
     }
+
+
+def build_charts(query: SavedQuery, columns: list[str]) -> list[dict]:
+    """Every chart on the query, against the columns this run returned.
+
+    All of them travel on one payload because they all describe the same rows.
+    That is the whole point of separating charts from queries: the SQL runs
+    once and the browser polls once, however many ways the result is drawn.
+    """
+    return [build_chart(chart, columns) for chart in query.charts]
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +334,7 @@ def run_saved_query(query: SavedQuery, conn: Connection) -> RunPayload:
         data_hash=canonical_hash(result.columns, result.rows, flags),
         columns=result.columns,
         rows=result.rows,
-        chart=build_chart(query, result.columns),
+        charts=build_charts(query, result.columns),
         flags=flags,
     )
 

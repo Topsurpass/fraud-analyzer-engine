@@ -18,7 +18,7 @@ RUN_KEYS = {
     "data_hash",
     "columns",
     "rows",
-    "chart",
+    "charts",
     # Always present, empty when the query defines no flag rules, so the
     # frontend never has to branch on the key existing.
     "flags",
@@ -43,7 +43,6 @@ def saved(client, sqlite_connection):
                 "SELECT day, count(*) AS flagged_count FROM txns "
                 "WHERE flagged = 1 GROUP BY day ORDER BY day"
             ),
-            "chart_type": "line",
             "x_field": "day",
             "y_field": "flagged_count",
         },
@@ -76,13 +75,10 @@ def test_run_returns_the_documented_payload(client, saved):
     assert body["row_count"] == 2
     assert body["truncated"] is False
     assert body["data_hash"].startswith("sha256:")
-    assert body["chart"] == {
-        "type": "line",
-        "x_field": "day",
-        "y_field": "flagged_count",
-        "series_field": None,
-        "warnings": [],
-    }
+    # One entry per chart on the query: they all describe the same rows, so
+    # they travel on one payload rather than forcing a request per chart.
+    assert len(body["charts"]) == 1
+    assert body["charts"][0]["type"] == "table"
     assert body["poll_interval_ms"] == 5000
 
 
@@ -152,17 +148,20 @@ def test_truncation_is_reported(client, sqlite_connection):
 def test_chart_warning_surfaces_without_failing(client, sqlite_connection):
     created = client.post(
         f"/connections/{sqlite_connection['id']}/queries",
-        json={
-            "name": "bad mapping",
-            "sql_text": "SELECT day FROM txns",
-            "chart_type": "line",
-            "x_field": "day",
-            "y_field": "not_a_column",
-        },
+        json={"name": "bad mapping", "sql_text": "SELECT day FROM txns"},
     ).json()
+    client.put(
+        f"/queries/{created['id']}/charts",
+        json={
+            "charts": [
+                {"name": "Trend", "chart_type": "line", "x_field": "day",
+                 "y_field": "not_a_column"}
+            ]
+        },
+    )
     body = client.post(f"/queries/{created['id']}/run").json()
     assert body["row_count"] == 5
-    assert any("not_a_column" in w for w in body["chart"]["warnings"])
+    assert any("not_a_column" in w for w in body["charts"][0]["warnings"])
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +248,24 @@ def test_force_bypasses_the_cache(client, saved, target_sqlite):
 def test_updating_a_query_invalidates_its_cache(client, saved):
     client.post(f"/queries/{saved['id']}/run")
     assert result_cache.get(saved["id"]) is not None
-    client.put(f"/queries/{saved['id']}", json={"chart_type": "bar"})
+    client.put(f"/queries/{saved['id']}", json={"name": "renamed"})
+    assert result_cache.get(saved["id"]) is None
+
+
+def test_editing_a_chart_invalidates_the_cache(client, saved):
+    """The cached payload echoes every chart's mapping.
+
+    Without this an edited chart would keep drawing the old way until the entry
+    aged out - and polling would report nothing changed, because the rows did
+    not.
+    """
+    client.post(f"/queries/{saved['id']}/run")
+    assert result_cache.get(saved["id"]) is not None
+    client.put(
+        f"/queries/{saved['id']}/charts",
+        json={"charts": [{"name": "Bars", "chart_type": "bar", "x_field": "day",
+                          "y_field": "n"}]},
+    )
     assert result_cache.get(saved["id"]) is None
 
 

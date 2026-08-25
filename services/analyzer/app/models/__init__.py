@@ -13,6 +13,7 @@ from app.models.execution_log import QueryExecutionLog
 from app.models.flag_dismissal import FlagDismissal
 from app.models.flag_rule import FlagCondition, FlagRule
 from app.models.flagged_row import FlaggedRow
+from app.models.query_chart import QueryChart
 from app.models.saved_query import DEFAULT_ROW_LIMIT, SavedQuery
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "FlagOperator",
     "FlagRule",
     "FlaggedRow",
+    "QueryChart",
     "FlagSeverity",
     "QueryExecutionLog",
     "SavedQuery",

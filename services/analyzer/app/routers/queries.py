@@ -17,6 +17,8 @@ from app.schemas.query import (
     PollUnchanged,
     PreviewRequest,
     PreviewResponse,
+    QueryChartSetRead,
+    QueryChartSetUpdate,
     RunResponse,
     SavedQueryCreate,
     SavedQueryRead,
@@ -24,6 +26,7 @@ from app.schemas.query import (
 )
 from app.services import (
     connection_service,
+    query_chart_service,
     flag_dismissal_service,
     flagged_row_service,
     flagging,
@@ -340,3 +343,37 @@ def poll_queries(
             )
 
     return {"results": results}
+
+
+@query_scoped.get("/{query_id}/charts", response_model=QueryChartSetRead)
+def get_charts(
+    query_id: str, session: Session = Depends(get_session)
+) -> QueryChartSetRead:
+    """Every way this query's result can be drawn, in display order."""
+    svc.get_query(session, query_id)
+    return QueryChartSetRead(
+        query_id=query_id, charts=query_chart_service.list_charts(session, query_id)
+    )
+
+
+@query_scoped.put("/{query_id}/charts", response_model=QueryChartSetRead)
+def put_charts(
+    query_id: str,
+    payload: QueryChartSetUpdate,
+    session: Session = Depends(get_session),
+) -> QueryChartSetRead:
+    """Replace a query's whole chart set.
+
+    Charts are matched by name, so editing a chart's type or fields keeps its
+    id and every dashboard placing it keeps working. Renaming one reads as
+    removing it and adding another, which is the honest interpretation: a board
+    placing "Trend" cannot know the thing now called "Volume" is the same
+    intent.
+
+    Adding a chart costs nothing at the target database. They all render from
+    one already-fetched result, which is the entire point of separating them
+    from the query.
+    """
+    query = svc.get_query(session, query_id)
+    charts = query_chart_service.replace_charts(session, query, payload.charts)
+    return QueryChartSetRead(query_id=query_id, charts=charts)

@@ -10,7 +10,7 @@ from decimal import Decimal
 import pytest
 
 from app.errors import AppError, ErrorCode, SqlValidationError
-from app.models import ChartType, Connection, DbType, SavedQuery
+from app.models import ChartType, Connection, DbType, QueryChart, SavedQuery
 from app.services.query_service import (
     build_chart,
     canonical_hash,
@@ -235,17 +235,24 @@ def test_hash_changes_when_underlying_data_changes(target_sqlite):
 # ---------------------------------------------------------------------------
 
 
-def _query(**over) -> SavedQuery:
+def _query(**over) -> QueryChart:
+    """A chart, not a query.
+
+    Chart configuration moved off SavedQuery: one query now owns several
+    charts, so that three views of a result cost one execution rather than
+    three saved queries running identical SQL.
+    """
     data = dict(
-        connection_id="c",
-        name="q",
-        sql_text="SELECT 1",
+        id="chart-1",
+        query_id="q",
+        name="Trend",
+        position=0,
         chart_type=ChartType.LINE,
         x_field="day",
         y_field="flagged_count",
     )
     data.update(over)
-    return SavedQuery(**data)
+    return QueryChart(**data)
 
 
 def test_chart_echoes_the_mapping():

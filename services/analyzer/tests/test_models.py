@@ -6,6 +6,7 @@ from app.models import (
     Connection,
     ConnectionStatus,
     DbType,
+    QueryChart,
     QueryExecutionLog,
     SavedQuery,
 )
@@ -34,7 +35,6 @@ def test_saved_query_defaults(session):
     session.add(q)
     session.commit()
     assert q.row_limit == 1000
-    assert q.chart_type == ChartType.TABLE
 
 
 def test_duplicate_query_name_per_connection_rejected(session):
@@ -124,16 +124,17 @@ def test_enum_columns_store_values_not_names(session):
     c = _connection()
     session.add(c)
     session.commit()
-    session.add(
-        SavedQuery(
-            connection_id=c.id, name="q", sql_text="SELECT 1", chart_type=ChartType.LINE
-        )
-    )
+    query = SavedQuery(connection_id=c.id, name="q", sql_text="SELECT 1")
+    session.add(query)
     session.commit()
 
     stored_db_type = session.execute(text("SELECT db_type FROM connections")).scalar()
     stored_status = session.execute(text("SELECT status FROM connections")).scalar()
-    stored_chart = session.execute(text("SELECT chart_type FROM saved_queries")).scalar()
+    # Chart configuration lives on query_charts now, so the enum column under
+    # test is that table's.
+    session.add(QueryChart(query_id=query.id, name="Trend", chart_type=ChartType.LINE))
+    session.commit()
+    stored_chart = session.execute(text("SELECT chart_type FROM query_charts")).scalar()
 
     assert stored_db_type == "sqlite"
     assert stored_status == "untested"
@@ -165,4 +166,4 @@ def test_server_defaults_match_the_stored_spelling():
 
     assert Connection.__table__.c.status.server_default.arg == ConnectionStatus.UNTESTED.value
     assert Connection.__table__.c.status.type.enums == [e.value for e in ConnectionStatus]
-    assert SavedQuery.__table__.c.chart_type.type.enums == [e.value for e in ChartType]
+    assert QueryChart.__table__.c.chart_type.type.enums == [e.value for e in ChartType]

@@ -1,4 +1,11 @@
-"""A named, SELECT-only query bound to one connection, plus its chart mapping."""
+"""A named, SELECT-only query bound to one connection.
+
+Chart configuration lives in :mod:`app.models.query_chart`, not here. When the
+two were the same object, three views of one result meant three saved queries,
+three executions of identical SQL against the target, and three cache entries -
+the result cache is keyed by query id. A query now owns *what to fetch and how
+often*; a chart owns *how to draw it*.
+"""
 
 from __future__ import annotations
 
@@ -8,13 +15,13 @@ from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, new_id
-from app.models.enums import ChartType, enum_column
 
 if TYPE_CHECKING:
     from app.models.connection import Connection
     from app.models.dashboard import DashboardItem
     from app.models.execution_log import QueryExecutionLog
     from app.models.flag_rule import FlagRule
+    from app.models.query_chart import QueryChart
 
 DEFAULT_ROW_LIMIT = 1000
 
@@ -38,16 +45,6 @@ class SavedQuery(TimestampMixin, Base):
     sql_text: Mapped[str] = mapped_column(Text, nullable=False)
     table_hint: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    chart_type: Mapped[ChartType] = mapped_column(
-        enum_column(ChartType),
-        nullable=False,
-        default=ChartType.TABLE,
-        server_default=ChartType.TABLE.value,
-    )
-    x_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    y_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    series_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
     row_limit: Mapped[int] = mapped_column(
         Integer, nullable=False, default=DEFAULT_ROW_LIMIT, server_default="1000"
     )
@@ -66,9 +63,11 @@ class SavedQuery(TimestampMixin, Base):
         passive_deletes=True,
         order_by="FlagRule.position",
     )
-    #: Deleting a query takes it off every dashboard that showed it.
-    dashboard_items: Mapped[list["DashboardItem"]] = relationship(
+    #: Ways of drawing this query's result. Ordered so the editor and every
+    #: dashboard agree on which one is "first".
+    charts: Mapped[list["QueryChart"]] = relationship(
         back_populates="query",
         cascade="all, delete-orphan",
         passive_deletes=True,
+        order_by="QueryChart.position",
     )

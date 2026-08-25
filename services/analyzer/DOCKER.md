@@ -52,9 +52,18 @@ stores its own state in, with the analyzer gated on the database being ready.
 ```bash
 cd services/analyzer
 
-# Generate a Fernet key once. Save it. Reusing the same key across runs is what
-# keeps credentials saved in a previous run readable.
-export FAE_FERNET_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
+# Generate a Fernet key ONCE, into .env, and never again. This command is
+# idempotent: run it every day and it still writes only the first time.
+#
+# Do not `export FAE_FERNET_KEY=$(openssl rand ...)` instead. That mints a new
+# key on every invocation, and a shell-exported value overrides .env for compose
+# interpolation - so starting the stack from a shell that has it and one that
+# does not gives you two different keys. Every credential saved under the other
+# one then fails to decrypt, on a connection whose every visible field looks
+# correct. The engine now says so at startup, naming the connections it cannot
+# read, but the cure is to not create the situation.
+grep -q '^FAE_FERNET_KEY=' .env 2>/dev/null || \
+  echo "FAE_FERNET_KEY=$(openssl rand -base64 32 | tr '+/' '-_')" >> .env
 
 # Port 8000 is contended on a dev box. If it is taken, pick another:
 #   export FAE_HOST_PORT=8080

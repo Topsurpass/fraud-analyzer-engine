@@ -28,6 +28,7 @@
               "INVALID_CHART_CONFIG",
               "INVALID_CONNECTION_CONFIG",
               "DB_TLS_REQUIRED",
+              "CONNECTION_PAUSED",
               "ROW_LIMIT_EXCEEDED",
               "SQL_TOO_LONG",
               "RESULT_TOO_LARGE",
@@ -126,7 +127,16 @@
         "type": "object"
       },
       "ChartSpec": {
+        "description": "One chart's mapping, as echoed back on a run.\n\nCarries its own id and name because a payload now holds several: without\nthem the client cannot tell which chart a spec belongs to, and a dashboard\nplacing one of three has nothing to match on.",
         "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
           "series_field": {
             "anyOf": [
               {
@@ -172,6 +182,8 @@
           }
         },
         "required": [
+          "id",
+          "name",
           "type"
         ],
         "title": "ChartSpec",
@@ -493,6 +505,11 @@
             "title": "Name",
             "type": "string"
           },
+          "paused": {
+            "default": false,
+            "title": "Paused",
+            "type": "boolean"
+          },
           "port": {
             "anyOf": [
               {
@@ -744,18 +761,18 @@
       },
       "DashboardCreate": {
         "properties": {
+          "chart_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Chart Ids",
+            "type": "array"
+          },
           "name": {
             "maxLength": 200,
             "minLength": 1,
             "title": "Name",
             "type": "string"
-          },
-          "query_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Query Ids",
-            "type": "array"
           }
         },
         "required": [
@@ -766,6 +783,20 @@
       },
       "DashboardRead": {
         "properties": {
+          "chart_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Chart Ids",
+            "type": "array"
+          },
+          "charts": {
+            "items": {
+              "$ref": "#/components/schemas/QueryChartRead"
+            },
+            "title": "Charts",
+            "type": "array"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -779,13 +810,6 @@
             "title": "Name",
             "type": "string"
           },
-          "query_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Query Ids",
-            "type": "array"
-          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
@@ -795,7 +819,7 @@
         "required": [
           "id",
           "name",
-          "query_ids",
+          "chart_ids",
           "created_at",
           "updated_at"
         ],
@@ -803,8 +827,22 @@
         "type": "object"
       },
       "DashboardUpdate": {
-        "description": "Every field optional. Omitted fields are left untouched.\n\nPassing ``query_ids`` replaces the whole arrangement rather than merging\ninto it: a dashboard is an ordered list, and a partial merge has no\nwell-defined meaning for order.",
+        "description": "Every field optional. Omitted fields are left untouched.\n\nPassing ``chart_ids`` replaces the whole arrangement rather than merging\ninto it: a dashboard is an ordered list, and a partial merge has no\nwell-defined meaning for order.",
         "properties": {
+          "chart_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chart Ids"
+          },
           "name": {
             "anyOf": [
               {
@@ -817,20 +855,6 @@
               }
             ],
             "title": "Name"
-          },
-          "query_ids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Query Ids"
           }
         },
         "title": "DashboardUpdate",
@@ -1512,8 +1536,12 @@
             "title": "Changed",
             "type": "boolean"
           },
-          "chart": {
-            "$ref": "#/components/schemas/ChartSpec"
+          "charts": {
+            "items": {
+              "$ref": "#/components/schemas/ChartSpec"
+            },
+            "title": "Charts",
+            "type": "array"
           },
           "columns": {
             "items": {
@@ -1577,7 +1605,6 @@
           "data_hash",
           "columns",
           "rows",
-          "chart",
           "poll_interval_ms"
         ],
         "title": "PollChanged",
@@ -1705,6 +1732,177 @@
         "title": "PreviewResponse",
         "type": "object"
       },
+      "QueryChartBase": {
+        "properties": {
+          "chart_type": {
+            "$ref": "#/components/schemas/ChartType",
+            "default": "table"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "series_field": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series Field"
+          },
+          "x_field": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "X Field"
+          },
+          "y_field": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Y Field"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "QueryChartBase",
+        "type": "object"
+      },
+      "QueryChartRead": {
+        "properties": {
+          "chart_type": {
+            "$ref": "#/components/schemas/ChartType"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          },
+          "query_id": {
+            "title": "Query Id",
+            "type": "string"
+          },
+          "series_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series Field"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "x_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "X Field"
+          },
+          "y_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Y Field"
+          }
+        },
+        "required": [
+          "id",
+          "query_id",
+          "name",
+          "position",
+          "chart_type",
+          "x_field",
+          "y_field",
+          "series_field",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "QueryChartRead",
+        "type": "object"
+      },
+      "QueryChartSetRead": {
+        "properties": {
+          "charts": {
+            "items": {
+              "$ref": "#/components/schemas/QueryChartRead"
+            },
+            "title": "Charts",
+            "type": "array"
+          },
+          "query_id": {
+            "title": "Query Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query_id",
+          "charts"
+        ],
+        "title": "QueryChartSetRead",
+        "type": "object"
+      },
+      "QueryChartSetUpdate": {
+        "description": "Whole-set replace, matching the flag-rule editor's shape.\n\nThe editor edits every chart of a query at once, so position is simply the\nindex in this list and no reorder endpoint has to exist. The cap is an\nupper bound rather than an opinion: every chart here renders from one\nalready-fetched result, so the cost is layout rather than database load.",
+        "properties": {
+          "charts": {
+            "items": {
+              "$ref": "#/components/schemas/QueryChartBase"
+            },
+            "maxItems": 20,
+            "title": "Charts",
+            "type": "array"
+          }
+        },
+        "title": "QueryChartSetUpdate",
+        "type": "object"
+      },
       "RowFlagRead": {
         "description": "One flagged row. ``index`` is its position in ``rows``.",
         "properties": {
@@ -1767,8 +1965,12 @@
       },
       "RunResponse": {
         "properties": {
-          "chart": {
-            "$ref": "#/components/schemas/ChartSpec"
+          "charts": {
+            "items": {
+              "$ref": "#/components/schemas/ChartSpec"
+            },
+            "title": "Charts",
+            "type": "array"
           },
           "columns": {
             "items": {
@@ -1827,7 +2029,6 @@
           "data_hash",
           "columns",
           "rows",
-          "chart",
           "poll_interval_ms"
         ],
         "title": "RunResponse",
@@ -1835,10 +2036,6 @@
       },
       "SavedQueryCreate": {
         "properties": {
-          "chart_type": {
-            "$ref": "#/components/schemas/ChartType",
-            "default": "table"
-          },
           "description": {
             "anyOf": [
               {
@@ -1880,18 +2077,6 @@
             ],
             "title": "Row Limit"
           },
-          "series_field": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Series Field"
-          },
           "sql_text": {
             "minLength": 1,
             "title": "Sql Text",
@@ -1908,30 +2093,6 @@
               }
             ],
             "title": "Table Hint"
-          },
-          "x_field": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "X Field"
-          },
-          "y_field": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Y Field"
           }
         },
         "required": [
@@ -1943,8 +2104,12 @@
       },
       "SavedQueryRead": {
         "properties": {
-          "chart_type": {
-            "$ref": "#/components/schemas/ChartType"
+          "charts": {
+            "items": {
+              "$ref": "#/components/schemas/QueryChartRead"
+            },
+            "title": "Charts",
+            "type": "array"
           },
           "connection_id": {
             "title": "Connection Id",
@@ -1989,17 +2154,6 @@
             "title": "Row Limit",
             "type": "integer"
           },
-          "series_field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Series Field"
-          },
           "sql_text": {
             "title": "Sql Text",
             "type": "string"
@@ -2019,28 +2173,6 @@
             "format": "date-time",
             "title": "Updated At",
             "type": "string"
-          },
-          "x_field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "X Field"
-          },
-          "y_field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Y Field"
           }
         },
         "required": [
@@ -2050,10 +2182,6 @@
           "description",
           "sql_text",
           "table_hint",
-          "chart_type",
-          "x_field",
-          "y_field",
-          "series_field",
           "row_limit",
           "poll_interval_ms",
           "created_at",
@@ -2065,16 +2193,6 @@
       "SavedQueryUpdate": {
         "description": "Every field optional. Omitted fields are left untouched.",
         "properties": {
-          "chart_type": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ChartType"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "description": {
             "anyOf": [
               {
@@ -2123,18 +2241,6 @@
             ],
             "title": "Row Limit"
           },
-          "series_field": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Series Field"
-          },
           "sql_text": {
             "anyOf": [
               {
@@ -2158,30 +2264,6 @@
               }
             ],
             "title": "Table Hint"
-          },
-          "x_field": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "X Field"
-          },
-          "y_field": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Y Field"
           }
         },
         "title": "SavedQueryUpdate",
@@ -2992,6 +3074,149 @@
         ]
       }
     },
+    "/connections/{connection_id}/disconnect": {
+      "post": {
+        "description": "Stop using this connection until it is reconnected.\n\nCloses its pooled connections immediately, so the target database sees them\ngo away rather than merely being ignored, and stops the scheduler running\nits queries. Everything else is kept: saved queries, flag rules, and every\nflagged row already found.\n\nRuns against a disconnected connection are refused with CONNECTION_PAUSED\nrather than silently reconnecting - \"disconnected\" that reconnects itself\non the next poll would not be worth having.",
+        "operationId": "disconnect_connection_connections__connection_id__disconnect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Disconnect Connection",
+        "tags": [
+          "connections"
+        ]
+      }
+    },
     "/connections/{connection_id}/flagged": {
       "get": {
         "description": "Flagged rows across every rule-bearing query on this connection.\n\nReads cached results and runs nothing, so opening the view costs the\ntarget database nothing. A query with no cached result is returned marked\n``stale`` rather than silently omitted, so the UI can say \"not run yet\"\ninstead of implying the rules matched nothing.",
@@ -3726,6 +3951,149 @@
         "summary": "Preview Query",
         "tags": [
           "queries"
+        ]
+      }
+    },
+    "/connections/{connection_id}/reconnect": {
+      "post": {
+        "description": "Put a disconnected connection back into service, and test it.\n\nTested rather than trusted: one paused for a week may have had its password\nrotated or its host moved, and reporting \"connected\" without checking only\nmoves the failure to the next scheduled run, where nobody is watching.",
+        "operationId": "reconnect_connection_connections__connection_id__reconnect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionTestResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Reconnect Connection",
+        "tags": [
+          "connections"
         ]
       }
     },
@@ -4719,7 +5087,7 @@
         ]
       },
       "put": {
-        "description": "Rename a dashboard, reorder it, or replace what is on it.\n\n``query_ids`` replaces the whole arrangement rather than merging into it.",
+        "description": "Rename a dashboard, reorder it, or replace what is on it.\n\n``chart_ids`` replaces the whole arrangement rather than merging into it.",
         "operationId": "update_dashboard_dashboards__dashboard_id__put",
         "parameters": [
           {
@@ -5848,6 +6216,300 @@
           }
         },
         "summary": "Update Query",
+        "tags": [
+          "queries"
+        ]
+      }
+    },
+    "/queries/{query_id}/charts": {
+      "get": {
+        "description": "Every way this query's result can be drawn, in display order.",
+        "operationId": "get_charts_queries__query_id__charts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "query_id",
+            "required": true,
+            "schema": {
+              "title": "Query Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryChartSetRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Get Charts",
+        "tags": [
+          "queries"
+        ]
+      },
+      "put": {
+        "description": "Replace a query's whole chart set.\n\nCharts are matched by name, so editing a chart's type or fields keeps its\nid and every dashboard placing it keeps working. Renaming one reads as\nremoving it and adding another, which is the honest interpretation: a board\nplacing \"Trend\" cannot know the thing now called \"Volume\" is the same\nintent.\n\nAdding a chart costs nothing at the target database. They all render from\none already-fetched result, which is the entire point of separating them\nfrom the query.",
+        "operationId": "put_charts_queries__query_id__charts_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "query_id",
+            "required": true,
+            "schema": {
+              "title": "Query Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryChartSetUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryChartSetRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Put Charts",
         "tags": [
           "queries"
         ]

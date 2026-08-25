@@ -160,3 +160,35 @@ def delete_connection(session: Session, conn: Connection) -> None:
     session.delete(conn)
     session.commit()
     target_registry.dispose_engine(connection_id)
+
+
+def pause_connection(session: Session, conn: Connection) -> Connection:
+    """Stop using this connection until someone says otherwise.
+
+    Two effects, and both matter. The flag stops the scheduler picking up this
+    connection's queries and makes every execution path refuse; disposing the
+    engine closes the pooled sockets *now*, so "disconnected" means the target
+    database sees the connections go away rather than merely being ignored.
+
+    ``status`` is untouched on purpose: it records how the last test went, and
+    overwriting it would destroy the answer to "was this working when I paused
+    it".
+    """
+    conn.paused = True
+    session.commit()
+    target_registry.dispose_engine(conn.id)
+    return conn
+
+
+def resume_connection(session: Session, conn: Connection) -> tuple[Connection, AppError | None]:
+    """Put a paused connection back into service, and prove it still works.
+
+    Re-tested rather than trusted: a connection paused for a week may have had
+    its password rotated or its host moved, and reporting "connected" without
+    checking would just move the failure to the next scheduled run, where
+    nobody is watching.
+    """
+    conn.paused = False
+    session.commit()
+    error = test_connection(session, conn)
+    return conn, error

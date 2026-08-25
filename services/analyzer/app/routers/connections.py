@@ -103,3 +103,44 @@ def delete_connection(
     conn = connection_service.get_connection(session, connection_id)
     connection_service.delete_connection(session, conn)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{connection_id}/disconnect", response_model=ConnectionRead)
+def disconnect_connection(
+    connection_id: str, session: Session = Depends(get_session)
+) -> Connection:
+    """Stop using this connection until it is reconnected.
+
+    Closes its pooled connections immediately, so the target database sees them
+    go away rather than merely being ignored, and stops the scheduler running
+    its queries. Everything else is kept: saved queries, flag rules, and every
+    flagged row already found.
+
+    Runs against a disconnected connection are refused with CONNECTION_PAUSED
+    rather than silently reconnecting - "disconnected" that reconnects itself
+    on the next poll would not be worth having.
+    """
+    conn = connection_service.get_connection(session, connection_id)
+    return connection_service.pause_connection(session, conn)
+
+
+@router.post("/{connection_id}/reconnect", response_model=ConnectionTestResult)
+def reconnect_connection(
+    connection_id: str, session: Session = Depends(get_session)
+) -> ConnectionTestResult:
+    """Put a disconnected connection back into service, and test it.
+
+    Tested rather than trusted: one paused for a week may have had its password
+    rotated or its host moved, and reporting "connected" without checking only
+    moves the failure to the next scheduled run, where nobody is watching.
+    """
+    conn = connection_service.get_connection(session, connection_id)
+    conn, error = connection_service.resume_connection(session, conn)
+    return ConnectionTestResult(
+        connection_id=conn.id,
+        status=conn.status,
+        tested_at=conn.last_tested_at or utcnow(),
+        ok=error is None,
+        error=error.message if error else None,
+        error_code=error.error_code.value if error else None,
+    )

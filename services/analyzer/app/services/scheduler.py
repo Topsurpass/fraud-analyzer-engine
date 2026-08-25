@@ -105,6 +105,11 @@ def run_due_once(session: Session) -> int:
         conn = session.get(Connection, query.connection_id)
         if conn is None:  # pragma: no cover - FK makes this unreachable
             continue
+        if conn.paused:
+            # Disconnected on purpose. Skipped rather than failed: this is not
+            # an error to back off from, and it must not fill the log every
+            # tick for as long as someone leaves a connection off.
+            continue
         try:
             payload = query_service.run_saved_query(query, conn)
         except Exception:  # noqa: BLE001 - one bad target must not stop the rest

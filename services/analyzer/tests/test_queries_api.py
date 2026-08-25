@@ -16,9 +16,6 @@ def make_query(client, sqlite_connection):
                 "SELECT day, count(*) AS flagged_count FROM txns "
                 "WHERE flagged = 1 GROUP BY day ORDER BY day"
             ),
-            "chart_type": "line",
-            "x_field": "day",
-            "y_field": "flagged_count",
         }
         payload.update(over)
         return client.post(
@@ -33,8 +30,10 @@ def test_save_valid_query(make_query):
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["name"] == "flagged per day"
-    assert body["chart_type"] == "line"
     assert body["row_limit"] == 1000
+    # Chart configuration is no longer part of a query: it lives on the query's
+    # charts, so one result can be drawn several ways for one execution.
+    assert "chart_type" not in body
 
 
 def test_save_rejects_non_select_and_persists_nothing(make_query, session):
@@ -112,11 +111,75 @@ def test_get_missing_query_is_404(client):
     assert r.json()["error_code"] == "QUERY_NOT_FOUND"
 
 
-def test_update_changes_chart_mapping(make_query, client):
+def test_a_new_query_is_given_one_table_chart(make_query, client):
+    """A query with no chart renders nothing, and someone who just wrote SQL
+    has not asked to configure one. A table shows the rows exactly as returned,
+    which is what every query had before charts became separable."""
     query_id = make_query().json()["id"]
-    r = client.put(f"/queries/{query_id}", json={"chart_type": "bar"})
-    assert r.status_code == 200
-    assert r.json()["chart_type"] == "bar"
+    charts = client.get(f"/queries/{query_id}/charts").json()["charts"]
+    assert len(charts) == 1
+    assert charts[0]["chart_type"] == "table"
+    assert charts[0]["position"] == 0
+
+
+def test_charts_are_configured_separately_from_the_query(make_query, client):
+    query_id = make_query().json()["id"]
+    r = client.put(
+        f"/queries/{query_id}/charts",
+        json={
+            "charts": [
+                {"name": "Trend", "chart_type": "line", "x_field": "day",
+                 "y_field": "flagged_count"},
+                {"name": "Rows", "chart_type": "table"},
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+    charts = r.json()["charts"]
+    assert [c["name"] for c in charts] == ["Trend", "Rows"]
+    assert [c["position"] for c in charts] == [0, 1]
+
+
+def test_editing_a_chart_keeps_its_id_so_dashboards_survive(make_query, client):
+    """Ids are the whole reason replace matches on name.
+
+    A board places a chart by id. Replacing the set by deleting and reinserting
+    would hand every chart a new id and silently empty every board showing one.
+    """
+    query_id = make_query().json()["id"]
+    first = client.put(
+        f"/queries/{query_id}/charts",
+        json={"charts": [{"name": "Trend", "chart_type": "line", "x_field": "day",
+                          "y_field": "flagged_count"}]},
+    ).json()["charts"][0]
+
+    second = client.put(
+        f"/queries/{query_id}/charts",
+        json={"charts": [{"name": "Trend", "chart_type": "bar", "x_field": "day",
+                          "y_field": "flagged_count"}]},
+    ).json()["charts"][0]
+
+    assert second["id"] == first["id"]
+    assert second["chart_type"] == "bar"
+
+
+def test_two_charts_may_not_share_a_name(make_query, client):
+    query_id = make_query().json()["id"]
+    r = client.put(
+        f"/queries/{query_id}/charts",
+        json={"charts": [{"name": "Same"}, {"name": "same"}]},
+    )
+    assert r.status_code == 422
+
+
+def test_removing_a_chart_from_the_set_deletes_it(make_query, client):
+    query_id = make_query().json()["id"]
+    client.put(
+        f"/queries/{query_id}/charts",
+        json={"charts": [{"name": "One"}, {"name": "Two"}]},
+    )
+    r = client.put(f"/queries/{query_id}/charts", json={"charts": [{"name": "Two"}]})
+    assert [c["name"] for c in r.json()["charts"]] == ["Two"]
 
 
 def test_update_revalidates_new_sql(make_query, client):
