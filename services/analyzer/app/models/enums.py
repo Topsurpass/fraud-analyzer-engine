@@ -58,6 +58,11 @@ class ChartType(StrEnum):
     #: queue actually asks.
     COMPARE = "compare"
 
+    #: The same two windows as ``COMPARE``, but totalled per category instead
+    #: of plotted over time. ``COMPARE`` answers "did this move"; this answers
+    #: "which terminal moved", which is the question that names a suspect.
+    MOVERS = "movers"
+
     #: A category against a time bucket, coloured by intensity. Scanning fifty
     #: terminals across twenty-four hours as fifty line charts is impossible;
     #: as one grid the odd row or the odd hour is immediate.

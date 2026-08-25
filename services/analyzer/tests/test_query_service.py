@@ -310,6 +310,30 @@ def test_compare_chart_without_a_bucket_says_so():
     assert any("x_field" in w for w in chart["warnings"])
 
 
+def test_movers_needs_a_category_to_compare_per():
+    """Two windows totalled per category, so all three fields are load-bearing."""
+    chart = build_chart(
+        _query(
+            chart_type=ChartType.MOVERS,
+            x_field="hour",
+            y_field="amount",
+            series_field="terminal_id",
+        ),
+        ["hour", "amount", "terminal_id"],
+    )
+    assert chart["warnings"] == []
+
+
+def test_movers_without_a_category_says_so():
+    """Without a category this is just COMPARE, and the two are not the same
+    chart. Falling back silently would answer a question nobody asked."""
+    chart = build_chart(
+        _query(chart_type=ChartType.MOVERS, x_field="hour", y_field="amount"),
+        ["hour", "amount"],
+    )
+    assert any("series_field" in w for w in chart["warnings"])
+
+
 def test_heatmap_needs_a_category_as_well_as_a_bucket_and_a_measure():
     chart = build_chart(
         _query(

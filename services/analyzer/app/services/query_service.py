@@ -262,6 +262,9 @@ _REQUIRED_FIELDS: dict[ChartType, tuple[str, ...]] = {
     ChartType.PIE: ("x_field", "y_field"),
     # Two windows of one measure: the bucket to split on, and what to plot.
     ChartType.COMPARE: ("x_field", "y_field"),
+    # The bucket to split the windows on, the measure to total, and the
+    # category to total it per.
+    ChartType.MOVERS: ("x_field", "y_field", "series_field"),
     # A row per category, a column per bucket, coloured by the value.
     ChartType.HEATMAP: ("x_field", "y_field", "series_field"),
     ChartType.NUMBER: ("y_field",),

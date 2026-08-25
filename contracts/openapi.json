@@ -197,6 +197,7 @@
           "number",
           "table",
           "compare",
+          "movers",
           "heatmap"
         ],
         "title": "ChartType",
