@@ -260,6 +260,10 @@ _REQUIRED_FIELDS: dict[ChartType, tuple[str, ...]] = {
     ChartType.LINE: ("x_field", "y_field"),
     ChartType.BAR: ("x_field", "y_field"),
     ChartType.PIE: ("x_field", "y_field"),
+    # Two windows of one measure: the bucket to split on, and what to plot.
+    ChartType.COMPARE: ("x_field", "y_field"),
+    # A row per category, a column per bucket, coloured by the value.
+    ChartType.HEATMAP: ("x_field", "y_field", "series_field"),
     ChartType.NUMBER: ("y_field",),
     ChartType.TABLE: (),
 }

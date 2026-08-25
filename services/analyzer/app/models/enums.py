@@ -51,6 +51,18 @@ class ChartType(StrEnum):
     NUMBER = "number"
     TABLE = "table"
 
+    #: The same measure over two consecutive windows, drawn on top of each
+    #: other. An analyst reads the *gap* rather than the level: a terminal
+    #: whose current line has pulled away from the previous one is doing
+    #: something it was not doing an hour ago, which is the question a fraud
+    #: queue actually asks.
+    COMPARE = "compare"
+
+    #: A category against a time bucket, coloured by intensity. Scanning fifty
+    #: terminals across twenty-four hours as fifty line charts is impossible;
+    #: as one grid the odd row or the odd hour is immediate.
+    HEATMAP = "heatmap"
+
 
 class FlagSeverity(StrEnum):
     """How loudly a matched rule should be presented. Ordered low to high."""

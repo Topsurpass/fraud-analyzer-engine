@@ -289,6 +289,49 @@ def test_number_chart_needs_only_y_field():
     assert chart["warnings"] == []
 
 
+def test_compare_chart_needs_a_bucket_and_a_measure():
+    """The period overlay splits one series in half, so it needs both axes.
+
+    No third field: the two windows come from the result's own row order, not
+    from a column naming which window a row belongs to.
+    """
+    chart = build_chart(
+        _query(chart_type=ChartType.COMPARE, x_field="day", y_field="amount"),
+        ["day", "amount"],
+    )
+    assert chart["warnings"] == []
+
+
+def test_compare_chart_without_a_bucket_says_so():
+    chart = build_chart(
+        _query(chart_type=ChartType.COMPARE, x_field=None, y_field="amount"),
+        ["amount"],
+    )
+    assert any("x_field" in w for w in chart["warnings"])
+
+
+def test_heatmap_needs_a_category_as_well_as_a_bucket_and_a_measure():
+    chart = build_chart(
+        _query(
+            chart_type=ChartType.HEATMAP,
+            x_field="hour",
+            y_field="amount",
+            series_field="terminal",
+        ),
+        ["hour", "amount", "terminal"],
+    )
+    assert chart["warnings"] == []
+
+
+def test_heatmap_without_a_category_is_not_silently_a_single_row():
+    """A heatmap with no category column is one stripe, which is not a grid."""
+    chart = build_chart(
+        _query(chart_type=ChartType.HEATMAP, x_field="hour", y_field="amount"),
+        ["hour", "amount"],
+    )
+    assert any("series_field" in w for w in chart["warnings"])
+
+
 def test_series_field_is_checked_too():
     chart = build_chart(_query(series_field="missing"), ["day", "flagged_count"])
     assert any("series_field" in w for w in chart["warnings"])

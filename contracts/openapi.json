@@ -195,7 +195,9 @@
           "bar",
           "pie",
           "number",
-          "table"
+          "table",
+          "compare",
+          "heatmap"
         ],
         "title": "ChartType",
         "type": "string"
