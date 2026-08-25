@@ -134,7 +134,26 @@ class Settings(BaseSettings):
 
     # Execution.
     query_timeout_s: int = Field(default=10, gt=0)
-    connect_timeout_s: int = Field(default=10, gt=0)
+
+    # Serverless Postgres suspends when idle, and the first connection after
+    # that pays a cold start while the compute wakes. Measured against a
+    # suspended Neon instance: TCP is accepted in 0.27s and the *Postgres*
+    # handshake is what waits, so a 10s budget expired and the card reported a
+    # timeout on a database that was merely asleep.
+    #
+    # Read together with target_max_pinned_addresses below: the timeout is per
+    # address, so the worst case for a genuinely dead host is the product of
+    # the two. 15 x 2 keeps that at the 30s it already was while giving a cold
+    # start half again as long to answer.
+    connect_timeout_s: int = Field(default=15, gt=0)
+
+    # How many resolved addresses to hand libpq for one target.
+    #
+    # More is not better. Failover wants a second address; a third only adds
+    # another connect_timeout to the wait before an unreachable host is
+    # reported, and managed Postgres publishes several addresses for the same
+    # proxy rather than several independent endpoints.
+    target_max_pinned_addresses: int = Field(default=2, gt=0)
 
     # CA bundle used by the verifying TLS modes when a connection names no
     # certificate of its own. Empty means "find the system bundle", which is

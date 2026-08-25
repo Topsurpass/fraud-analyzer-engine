@@ -396,6 +396,9 @@ def postgres_connect_args(conn: Connection) -> dict:
     # verify-full and Neon's SNI routing.
     if conn.host:
         addresses = routable_addresses(conn.host, conn.port or DEFAULT_PORTS[conn.db_type])
+        # Bounded: connect_timeout applies per address, so every extra one is
+        # another full timeout before an unreachable host is reported.
+        addresses = addresses[: settings.target_max_pinned_addresses]
         if addresses:
             args["host"] = ",".join([conn.host] * len(addresses))
             args["hostaddr"] = ",".join(addresses)
