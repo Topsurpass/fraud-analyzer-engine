@@ -389,6 +389,46 @@
         "title": "ConnectionCreateResult",
         "type": "object"
       },
+      "ConnectionFlaggedRead": {
+        "properties": {
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "dismissed_count": {
+            "default": 0,
+            "title": "Dismissed Count",
+            "type": "integer"
+          },
+          "flagged_count": {
+            "default": 0,
+            "title": "Flagged Count",
+            "type": "integer"
+          },
+          "queries": {
+            "items": {
+              "$ref": "#/components/schemas/FlaggedQueryRead"
+            },
+            "title": "Queries",
+            "type": "array"
+          },
+          "refresh_truncated": {
+            "default": false,
+            "title": "Refresh Truncated",
+            "type": "boolean"
+          },
+          "refreshed": {
+            "default": false,
+            "title": "Refreshed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "connection_id"
+        ],
+        "title": "ConnectionFlaggedRead",
+        "type": "object"
+      },
       "ConnectionRead": {
         "description": "Safe projection of a connection. Has no field capable of holding a secret.",
         "properties": {
@@ -1202,6 +1242,255 @@
         ],
         "title": "FlagSeverity",
         "type": "string"
+      },
+      "FlaggedQueryRead": {
+        "description": "One query's section of a connection's flagged view.",
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "dismissed_count": {
+            "default": 0,
+            "title": "Dismissed Count",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "executed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executed At"
+          },
+          "flagged_count": {
+            "default": 0,
+            "title": "Flagged Count",
+            "type": "integer"
+          },
+          "query_id": {
+            "title": "Query Id",
+            "type": "string"
+          },
+          "query_name": {
+            "title": "Query Name",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/FlaggedRowRead"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/RuleHitRead"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "stale": {
+            "default": false,
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "query_id",
+          "query_name",
+          "columns"
+        ],
+        "title": "FlaggedQueryRead",
+        "type": "object"
+      },
+      "FlaggedRowRead": {
+        "description": "One stored finding, as the flagged view shows it.",
+        "properties": {
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "title": "First Seen At",
+            "type": "string"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "rule_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rule Ids",
+            "type": "array"
+          },
+          "rule_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Rule Names",
+            "type": "array"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/FlagSeverity"
+          },
+          "values": {
+            "items": {},
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "index",
+          "rule_ids",
+          "rule_names",
+          "values",
+          "fingerprint",
+          "severity",
+          "first_seen_at",
+          "last_seen_at"
+        ],
+        "title": "FlaggedRowRead",
+        "type": "object"
+      },
+      "FlaggedSummaryRead": {
+        "description": "Flagged totals across everything, in one request.\n\nWhat the navigation badges and the notification bell read. ``flagged_count``\nanswers \"is there a queue\"; ``newest_first_seen_at`` answers \"has anything\nnew arrived\", which a count cannot - dismiss two and gain two and the total\nhas not moved.",
+        "properties": {
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/FlaggedTallyRead"
+            },
+            "title": "Connections",
+            "type": "array"
+          },
+          "flagged_count": {
+            "default": 0,
+            "title": "Flagged Count",
+            "type": "integer"
+          },
+          "newest_first_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest First Seen At"
+          },
+          "queries": {
+            "items": {
+              "$ref": "#/components/schemas/FlaggedTallyRead"
+            },
+            "title": "Queries",
+            "type": "array"
+          }
+        },
+        "title": "FlaggedSummaryRead",
+        "type": "object"
+      },
+      "FlaggedTallyRead": {
+        "description": "One line of the flagged summary.",
+        "properties": {
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connection_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Name"
+          },
+          "flagged_count": {
+            "title": "Flagged Count",
+            "type": "integer"
+          },
+          "newest_first_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest First Seen At"
+          },
+          "query_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Id"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/FlagSeverity"
+          }
+        },
+        "required": [
+          "connection_id",
+          "flagged_count",
+          "severity"
+        ],
+        "title": "FlaggedTallyRead",
+        "type": "object"
       },
       "HTTPValidationError": {
         "properties": {
@@ -2723,9 +3012,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Flagged Connections  Connection Id  Flagged Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ConnectionFlaggedRead"
                 }
               }
             },
@@ -2868,9 +3155,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Refresh Flagged Connections  Connection Id  Flagged Refresh Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ConnectionFlaggedRead"
                 }
               }
             },
@@ -4594,9 +4879,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Flagged Summary Flagged Summary Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/FlaggedSummaryRead"
                 }
               }
             },

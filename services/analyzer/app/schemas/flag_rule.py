@@ -13,6 +13,8 @@ reported as a warning at evaluation time instead, which is the same treatment
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.enums import (
@@ -178,3 +180,78 @@ class FlagDismissalResult(BaseModel):
     query_id: str
     #: Rows newly dismissed, or newly restored. Zero means it was already so.
     changed: int
+
+
+class FlaggedTallyRead(BaseModel):
+    """One line of the flagged summary."""
+
+    connection_id: str
+    #: Carried so a notification can name the connection without a second
+    #: request. A notification listing a uuid is not a notification.
+    connection_name: str | None = None
+    query_id: str | None = None
+    flagged_count: int
+    severity: FlagSeverity
+    #: When the newest of these first appeared.
+    newest_first_seen_at: UtcDatetime | None = None
+
+
+class FlaggedSummaryRead(BaseModel):
+    """Flagged totals across everything, in one request.
+
+    What the navigation badges and the notification bell read. ``flagged_count``
+    answers "is there a queue"; ``newest_first_seen_at`` answers "has anything
+    new arrived", which a count cannot - dismiss two and gain two and the total
+    has not moved.
+    """
+
+    connections: list[FlaggedTallyRead] = Field(default_factory=list)
+    queries: list[FlaggedTallyRead] = Field(default_factory=list)
+    flagged_count: int = 0
+    newest_first_seen_at: UtcDatetime | None = None
+
+
+class FlaggedRowRead(BaseModel):
+    """One stored finding, as the flagged view shows it."""
+
+    #: Display ordinal within its section, not a position in any result.
+    index: int
+    rule_ids: list[str]
+    rule_names: list[str]
+    values: list[Any]
+    #: Hash of the values, and how a dismissal addresses it.
+    fingerprint: str
+    severity: FlagSeverity
+    #: Typed, so these carry UTC on the wire. An untyped dict sends them naive
+    #: on the SQLite backend, and `new Date("...")` then reads them as local
+    #: time - see app.schemas.types.
+    first_seen_at: UtcDatetime
+    last_seen_at: UtcDatetime
+
+
+class FlaggedQueryRead(BaseModel):
+    """One query's section of a connection's flagged view."""
+
+    query_id: str
+    query_name: str
+    columns: list[str]
+    rows: list[FlaggedRowRead] = Field(default_factory=list)
+    rules: list[RuleHitRead] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    flagged_count: int = 0
+    dismissed_count: int = 0
+    executed_at: UtcDatetime | None = None
+    #: Nothing stored and nothing ever run, as opposed to "matched nothing".
+    stale: bool = False
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class ConnectionFlaggedRead(BaseModel):
+    connection_id: str
+    queries: list[FlaggedQueryRead] = Field(default_factory=list)
+    flagged_count: int = 0
+    dismissed_count: int = 0
+    refreshed: bool = False
+    #: True when FAE_FLAGGED_REFRESH_MAX_QUERIES capped a refresh.
+    refresh_truncated: bool = False

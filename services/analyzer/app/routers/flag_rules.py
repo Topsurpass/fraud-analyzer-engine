@@ -9,6 +9,8 @@ from app.db.app_state import get_session
 from app.schemas.flag_rule import (
     FlagDismissalRequest,
     FlagDismissalResult,
+    ConnectionFlaggedRead,
+    FlaggedSummaryRead,
     FlagRuleSetRead,
     FlagRuleSetUpdate,
 )
@@ -51,7 +53,7 @@ def put_flag_rules(
     return FlagRuleSetRead(query_id=query_id, rules=rules)
 
 
-@connection_scoped.get("/{connection_id}/flagged")
+@connection_scoped.get("/{connection_id}/flagged", response_model=ConnectionFlaggedRead)
 def get_flagged(connection_id: str, session: Session = Depends(get_session)) -> dict:
     """Flagged rows across every rule-bearing query on this connection.
 
@@ -64,7 +66,9 @@ def get_flagged(connection_id: str, session: Session = Depends(get_session)) -> 
     return svc.flagged_for_connection(session, conn, refresh=False)
 
 
-@connection_scoped.post("/{connection_id}/flagged/refresh")
+@connection_scoped.post(
+    "/{connection_id}/flagged/refresh", response_model=ConnectionFlaggedRead
+)
 def refresh_flagged(
     connection_id: str, session: Session = Depends(get_session)
 ) -> dict:
@@ -143,7 +147,7 @@ def delete_flagged_rows(
     return FlagDismissalResult(query_id=query_id, changed=removed)
 
 
-@summary_scoped.get("/summary")
+@summary_scoped.get("/summary", response_model=FlaggedSummaryRead)
 def flagged_summary(session: Session = Depends(get_session)) -> dict:
     """Flagged totals per connection and per query, in one request.
 

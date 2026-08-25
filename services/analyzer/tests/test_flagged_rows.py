@@ -281,3 +281,34 @@ def test_re_running_does_not_move_the_newest(client, flagging_query):
     first = client.get("/flagged/summary").json()["newest_first_seen_at"]
     client.post(f"/queries/{flagging_query['id']}/run")
     assert client.get("/flagged/summary").json()["newest_first_seen_at"] == first
+
+
+def test_stored_timestamps_carry_utc_on_the_wire(
+    client, sqlite_connection, flagging_query
+):
+    """The bug app.schemas.types exists for, in the flagged view.
+
+    The app-state backend is SQLite in tests and can be SQLite in production,
+    and it drops the timezone. An untyped response then sends a naive string,
+    which `new Date("2026-08-24T23:21:43.565976")` parses as *local* time - so
+    every "first seen" in the dashboard is silently offset by the viewer's UTC
+    offset, on one backend only.
+    """
+    client.post(f"/queries/{flagging_query['id']}/run")
+    section = _section(client, sqlite_connection["id"])
+
+    for row in section["rows"]:
+        assert row["first_seen_at"].endswith("Z"), row["first_seen_at"]
+        assert row["last_seen_at"].endswith("Z")
+    assert section["executed_at"].endswith("Z")
+
+
+def test_the_summary_and_the_view_agree_on_the_timestamp(
+    client, sqlite_connection, flagging_query
+):
+    # Two endpoints describing the same finding must not format it two ways;
+    # the bell compares its stored acknowledgement against one of them.
+    client.post(f"/queries/{flagging_query['id']}/run")
+    newest = client.get("/flagged/summary").json()["newest_first_seen_at"]
+    section = _section(client, sqlite_connection["id"])
+    assert newest == max(row["first_seen_at"] for row in section["rows"])
