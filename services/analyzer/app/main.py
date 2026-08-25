@@ -17,7 +17,7 @@ from sqlalchemy import text
 
 from app.config import get_settings
 from app.db import target_registry
-from app.services import scheduler
+from app.services import refresher, scheduler
 from app.db.app_state import get_engine
 from app.db.migrate import bootstrap_schema
 from app.errors import HTTP_STATUS_BY_CODE, AppError, ErrorCode
@@ -53,6 +53,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             await asyncio.wait_for(task, timeout=10)
         except (TimeoutError, asyncio.CancelledError):  # pragma: no cover
             task.cancel()
+    refresher.shutdown()
     target_registry.dispose_all()
 
 

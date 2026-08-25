@@ -29,6 +29,7 @@ from app.services import (
     query_chart_service,
     flag_dismissal_service,
     flagged_row_service,
+    refresher,
     flagging,
     query_service,
     result_cache,
@@ -218,7 +219,18 @@ def _poll_one(
     # left that they have already done.
     dismissed = flag_dismissal_service.dismissed_fingerprints(session, query_id)
 
+    # A fresh entry answers outright. A stale one answers *and* starts a
+    # refresh behind the response: the reader gets the last known chart
+    # immediately instead of waiting on the target database, and the next poll
+    # picks up the new one when it lands. Only a query nobody has ever run
+    # blocks, and only once.
     cached = None if force else result_cache.get(query_id)
+    if cached is None and not force:
+        stale = result_cache.get_stale(query_id)
+        if stale is not None:
+            refresher.request_refresh(query_id)
+            cached = stale
+
     if cached is not None:
         body = flag_dismissal_service.apply_dismissals(cached.payload, dismissed)
         if since_hash and body["data_hash"] == since_hash:

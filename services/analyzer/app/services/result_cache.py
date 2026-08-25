@@ -48,6 +48,10 @@ class CacheEntry:
         now = time.monotonic() if now is None else now
         return (now - self.stored_at) * 1000 < self.ttl_ms
 
+    def age_ms(self, now: float | None = None) -> int:
+        now = time.monotonic() if now is None else now
+        return int((now - self.stored_at) * 1000)
+
 
 _entries: OrderedDict[str, CacheEntry] = OrderedDict()
 _lock = threading.RLock()
@@ -63,12 +67,43 @@ def _drop_locked(query_id: str) -> None:
 
 
 def get(query_id: str) -> CacheEntry | None:
-    """Return the cached entry if it is still within its TTL, else ``None``."""
+    """Return the cached entry if it is still within its TTL, else ``None``.
+
+    A stale entry is left in place rather than evicted here. ``get_stale`` is
+    what decides whether it is still worth serving, and dropping it on the way
+    past would mean the stale path could never see it - which is exactly the
+    bug this comment exists to stop someone reintroducing.
+    """
     with _lock:
         entry = _entries.get(query_id)
         if entry is None:
             return None
         if not entry.is_fresh():
+            return None
+        _entries.move_to_end(query_id)
+        return entry
+
+
+def get_stale(query_id: str) -> CacheEntry | None:
+    """Return the cached entry even if its TTL has passed.
+
+    What makes a chart appear instantly instead of after a round trip to the
+    customer's database. A poll past the TTL used to run the query inline, so
+    with a five-second TTL and a two-second query roughly half of all polls
+    blocked - and the card sat empty while they did.
+
+    Serving the previous answer and refreshing behind it is the honest trade:
+    the data on screen is at most one interval old, and it says how old through
+    ``executed_at``, where before it was simply absent. Entries past the grace
+    window are dropped, because "an hour ago" is not a useful answer to "what
+    is happening now".
+    """
+    with _lock:
+        entry = _entries.get(query_id)
+        if entry is None:
+            return None
+        grace = get_settings().cache_stale_grace_ms
+        if entry.age_ms() > entry.ttl_ms + grace:
             _drop_locked(query_id)
             return None
         _entries.move_to_end(query_id)

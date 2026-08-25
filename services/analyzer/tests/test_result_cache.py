@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from app.config import get_settings
 from app.services import result_cache
 
 
@@ -28,10 +29,33 @@ def test_entry_expires_after_ttl():
     assert result_cache.get("q1") is None
 
 
-def test_expired_entry_is_evicted_not_just_hidden():
+def test_an_expired_entry_is_kept_for_the_stale_path():
+    """Expiry hides an entry from `get`; it does not throw it away.
+
+    Serving the last known result while a fresh one is fetched behind it is
+    what stops a poll blocking on the target database. Evicting on the way past
+    would mean the stale path could never see the entry it exists to serve.
+    Memory is still bounded: the byte budget evicts least-recently-used entries
+    on write, and `get_stale` drops anything past the grace window.
+    """
     result_cache.set("q1", "sha256:abc", {}, ttl_ms=10)
     time.sleep(0.05)
-    result_cache.get("q1")
+
+    assert result_cache.get("q1") is None
+    assert result_cache.get_stale("q1") is not None
+    assert result_cache.size() == 1
+
+
+def test_an_entry_past_the_grace_window_is_dropped(monkeypatch):
+    monkeypatch.setenv("FAE_CACHE_STALE_GRACE_MS", "1")
+    get_settings.cache_clear()
+
+    result_cache.set("q1", "sha256:abc", {}, ttl_ms=1)
+    time.sleep(0.05)
+
+    # Stale beats nothing, but "long ago" does not answer "what is happening
+    # now", so it is dropped rather than served.
+    assert result_cache.get_stale("q1") is None
     assert result_cache.size() == 0
 
 

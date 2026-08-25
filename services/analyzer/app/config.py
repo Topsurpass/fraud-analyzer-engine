@@ -181,6 +181,16 @@ class Settings(BaseSettings):
     #: Ceiling on the backoff a repeatedly failing target reaches.
     scheduler_max_backoff_ms: int = Field(default=3_600_000, gt=0)
 
+    # How long past its TTL a cached result may still be served while a fresh
+    # one is fetched behind it.
+    #
+    # This is what stops a poll blocking on the target database. With a 5s TTL
+    # and a 2.4s query, half of all polls used to run the query inline and the
+    # card sat empty while they did. Past this window the entry is dropped and
+    # the next poll runs the query for real: stale data is better than no data,
+    # but "an hour ago" is not an answer to "what is happening now".
+    cache_stale_grace_ms: int = Field(default=300_000, gt=0)
+
     # Polling.
     poll_interval_ms: int = Field(default=5000, gt=0)
 

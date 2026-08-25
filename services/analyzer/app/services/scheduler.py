@@ -38,7 +38,12 @@ from sqlalchemy.orm import Session, selectinload
 from app.config import get_settings
 from app.db.app_state import get_engine
 from app.models import Connection, FlagRule, SavedQuery
-from app.services import flagged_row_service, query_service, result_cache
+from app.services import (
+    flagged_row_service,
+    query_service,
+    result_cache,
+    saved_query_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +127,16 @@ def run_due_once(session: Session) -> int:
             _reschedule(query, failed=True)
             continue
 
+        # Recorded like any other execution: the scheduler is the one thing
+        # that queries a customer's database with nobody watching, so it is the
+        # last thing that should be invisible in the execution log.
+        saved_query_service.log_execution(
+            session,
+            query.id,
+            success=True,
+            row_count=payload.row_count,
+            duration_ms=payload.duration_ms,
+        )
         interval = query_service.poll_interval_for(query)
         result_cache.set(
             query.id, payload.data_hash, payload.as_dict(interval), ttl_ms=interval

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import math
 
+import time
+
 import pytest
 
 from app.config import get_settings
@@ -166,5 +168,14 @@ def test_expiry_returns_its_bytes(monkeypatch):
     result_cache.clear()
 
     result_cache.set("q", "h", {"rows": [["a" * 100]]}, ttl_ms=0)
+    # Expired, so `get` will not serve it - but it is kept for the stale path
+    # and still counted, because it is still in memory. Reading past the grace
+    # window is what actually frees it.
     assert result_cache.get("q") is None
+    assert result_cache.total_bytes() > 0
+
+    monkeypatch.setenv("FAE_CACHE_STALE_GRACE_MS", "1")
+    get_settings.cache_clear()
+    time.sleep(0.01)
+    assert result_cache.get_stale("q") is None
     assert result_cache.total_bytes() == 0
