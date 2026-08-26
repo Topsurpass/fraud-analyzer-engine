@@ -94,6 +94,28 @@ def resolve(db: Session, raw_token: str) -> User | None:
     return user
 
 
+def issue_with_id(db: Session, user: User, session_id: str) -> None:
+    """Recreate a session under a digest the caller already holds.
+
+    Used only by the password change, which revokes every session for the user
+    and then restores the one that made the request. Restoring is simpler and
+    less error-prone than a "revoke all except this one" query that has to be
+    kept in step with the revocation rules.
+    """
+    settings = get_settings()
+    now = utcnow()
+    db.add(
+        UserSession(
+            id=session_id,
+            user_id=user.id,
+            created_at=now,
+            expires_at=now + timedelta(hours=settings.session_absolute_hours),
+            last_seen_at=now,
+        )
+    )
+    db.commit()
+
+
 def revoke(db: Session, raw_token: str) -> None:
     """End one session. Silent if it was already gone.
 
@@ -131,4 +153,12 @@ def purge_expired(db: Session) -> int:
     return result.rowcount or 0
 
 
-__all__ = ["digest", "issue", "purge_expired", "resolve", "revoke", "revoke_all_for_user"]
+__all__ = [
+    "digest",
+    "issue",
+    "issue_with_id",
+    "purge_expired",
+    "resolve",
+    "revoke",
+    "revoke_all_for_user",
+]

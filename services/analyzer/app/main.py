@@ -23,7 +23,7 @@ from app.db.migrate import bootstrap_schema
 from app.errors import HTTP_STATUS_BY_CODE, AppError, ErrorCode
 from app.observability import RequestContextMiddleware, configure_logging
 from app.ratelimit import RateLimitMiddleware, RequestSizeLimitMiddleware
-from app.routers import connections, dashboards, flag_rules, introspection, queries
+from app.routers import auth, connections, dashboards, flag_rules, introspection, queries
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +247,7 @@ def ready() -> JSONResponse:
     return JSONResponse(status_code=200, content={"status": "ready"})
 
 
+app.include_router(auth.router)
 app.include_router(connections.router)
 app.include_router(dashboards.router)
 app.include_router(introspection.router)

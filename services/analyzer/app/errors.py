@@ -33,6 +33,13 @@ class ErrorCode(StrEnum):
     DB_AUTH_FAILED = "DB_AUTH_FAILED"
     DB_PERMISSION_DENIED = "DB_PERMISSION_DENIED"
 
+    # --- 401 / 403: the *caller* is the problem ---------------------------
+    INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
+    NOT_AUTHENTICATED = "NOT_AUTHENTICATED"
+    ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
+    PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED"
+    FORBIDDEN = "FORBIDDEN"
+
     # --- 404 ---------------------------------------------------------------
     CONNECTION_NOT_FOUND = "CONNECTION_NOT_FOUND"
     QUERY_NOT_FOUND = "QUERY_NOT_FOUND"
@@ -74,6 +81,11 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.WEAK_PASSWORD: 400,
     ErrorCode.DB_AUTH_FAILED: 401,
     ErrorCode.DB_PERMISSION_DENIED: 403,
+    ErrorCode.INVALID_CREDENTIALS: 401,
+    ErrorCode.NOT_AUTHENTICATED: 401,
+    ErrorCode.ACCOUNT_LOCKED: 403,
+    ErrorCode.PASSWORD_CHANGE_REQUIRED: 403,
+    ErrorCode.FORBIDDEN: 403,
     ErrorCode.CONNECTION_NOT_FOUND: 404,
     ErrorCode.QUERY_NOT_FOUND: 404,
     ErrorCode.TABLE_NOT_FOUND: 404,
