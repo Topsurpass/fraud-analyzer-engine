@@ -32,8 +32,11 @@ Asked and answered before design:
 3. **First admin is created by CLI only.** Nothing reachable over the network
    can mint an admin.
 4. **Accounts are deactivated, never deleted.** Work and attribution survive.
-5. **Admins can publish a chart to every signed-in user.** Publishing is the
-   sharing mechanism the private-work model otherwise lacks.
+5. **Analysts publish their own charts; admins publish anyone's.** Publishing is
+   the sharing mechanism the private-work model otherwise lacks, and it is
+   self-service so it actually gets used.
+6. **Publishing freezes the query behind it.** Whoever published may unpublish,
+   which unfreezes it; an admin may always unpublish.
 
 ## Architecture
 
@@ -78,7 +81,8 @@ networking is a second layer, never the only one.
 | `password_hash` | argon2id |
 | `role` | `admin` \| `analyst` |
 | `is_active` | false blocks login and kills live sessions |
-| `must_change_password` | set on admin-created accounts |
+| `must_change_password` | set on admin-created accounts and on every reset |
+| `temp_password_expires_at` | nullable; set with a temporary password, cleared when the user chooses their own |
 | `failed_login_count`, `locked_until` | per-account lockout |
 | `last_login_at` | for spotting dormant accounts |
 | `created_by` | FK users, nullable (the first admin has no creator) |
@@ -119,6 +123,12 @@ to read.
 | `execution_log` | `+ user_id` (nullable FK users) |
 | `query_charts` | `+ is_public`, `+ published_by`, `+ published_at` |
 
+Whether a query is frozen is *derived* — it has at least one published chart —
+rather than stored as a flag on the query. A stored flag would be a second
+source of truth that could disagree with the charts it describes, and the
+disagreement would surface as either an un-editable query nobody can explain or
+a published chart that silently drifts.
+
 `query_charts` and `flag_rules` inherit ownership through their query and need
 no owner column. Adding one would create two sources of truth that could
 disagree.
@@ -155,7 +165,9 @@ the kind of mistake made while tidying up an account list.
 | Create queries, charts, dashboards, flag rules | ✅ own | ✅ |
 | Read / edit / delete others' work | ❌ | ✅ |
 | See published charts | ✅ | ✅ |
-| Publish / unpublish a chart | ❌ | ✅ |
+| Publish / unpublish own chart | ✅ | ✅ |
+| Publish / unpublish anyone's chart | ❌ | ✅ |
+| Edit a frozen query | ❌ | ✅ |
 | Create accounts, deactivate, reset password, change role | ❌ | ✅ |
 | Audit log; execution log across all users | ❌ | ✅ |
 
@@ -198,8 +210,9 @@ significance changes, and the tests covering it become critical-path.
 
 ## Publishing
 
-`is_public` on `query_charts`, settable by admins only. A published chart is
-readable by every signed-in user and exposes:
+`is_public` on `query_charts`. An analyst may publish a chart they own; an admin
+may publish anyone's. A published chart is readable by every signed-in user and
+exposes:
 
 - the chart spec and the query's **result rows** (without them it cannot render)
 - the query's name and the author's name
@@ -209,24 +222,44 @@ any edit right. The owning analyst can see that their chart is published, which
 matters for trust: work should not become visible to colleagues without its
 author knowing.
 
-### Publish-by-proxy, and the fix
+### Publishing freezes the query
 
-If an admin publishes an analyst's chart and the analyst then edits the query's
-SQL, the analyst changes what everyone sees, with no review. That is a privilege
-escalation wearing ordinary clothes.
+If a chart is published and the analyst then edits the query's SQL, they change
+what every colleague sees with no review. That is a privilege escalation wearing
+ordinary clothes, and it exists whether the analyst published the chart or an
+admin did.
 
-**Editing the SQL or row limit of a query with published charts unpublishes
-them**, writes an audit entry, and tells the analyst why at the moment it
-happens. An admin editing the same query keeps it published — an admin is the
-approving authority, so requiring them to re-approve their own edit is
-ceremony. Chart-configuration changes (fields, chart type, threshold) do not
-unpublish: they change the rendering, not the data.
+**A query with at least one published chart is frozen.** Frozen means `sql_text`
+and `row_limit` cannot change, and neither can the published chart's own field
+mapping — all three change what viewers see. Everything else stays editable:
+the query's name, description and poll interval, its unpublished sibling
+charts, and its flag rules, none of which alter the data being shown. A frozen
+query and a published chart also cannot be deleted while published.
+
+An admin can edit a frozen query. Nobody else can, including its owner.
+
+This replaces an earlier rule in this design that auto-unpublished a chart when
+its SQL changed. The freeze is strictly better: it makes the drift *impossible*
+rather than *corrected after the fact*, and it fails in the direction of
+refusing an edit rather than silently retracting something a colleague was
+relying on. One rule fewer, and the failure mode is a clear error message
+instead of a chart quietly vanishing from someone else's board.
+
+**Unfreezing is unpublishing, and whoever published may do it.** An analyst can
+unpublish a chart they published themselves, edit the query, and republish;
+viewers see the chart leave the board and return changed, which is visible
+rather than silent — and silent change was the actual risk. A chart an *admin*
+published can only be unpublished by an admin, so an admin retains a genuine
+"freeze this" power over anyone's work.
+
+The refusal message names the way out rather than only the rule: an analyst
+blocked from editing is told which of their charts is published and that
+unpublishing it will unfreeze the query.
 
 ## Everything else
 
 - **Passwords:** argon2id. Minimum 12 characters, rejected against a bundled
-  common-password list. Admin-created accounts carry `must_change_password`, so
-  the admin never knows an analyst's working password.
+  common-password list.
 - **Login responses never reveal whether an email exists.** Same message, same
   timing, for unknown email and wrong password.
 - **Per-account lockout** after repeated failures, on top of the existing IP
@@ -241,6 +274,38 @@ unpublish: they change the rendering, not the data.
   `fae reset-password`.
 - **`dev-seed.mjs` and `smoke.mjs`** both need a login step; the smoke lane
   otherwise reports the whole app as broken the moment auth lands.
+
+### Temporary passwords and the first login
+
+An admin never types an analyst's password and never learns their working one.
+
+**Creating an account.** The admin supplies name, email and role. The system
+generates the temporary password — the admin does not choose it, because a
+human-chosen "temp" password is reliably weak and reliably reused across every
+account that person creates. It is displayed exactly once, with a copy control
+and an unambiguous warning that it will not be shown again, and the admin
+conveys it out of band. It is stored only as an argon2id hash, like any other
+password, so it cannot be read back from the database or the API.
+
+**It expires in 72 hours.** An unclaimed credential sitting valid forever in
+somebody's chat history is a standing liability. After it lapses the admin
+issues a new one, which is the same operation as a reset.
+
+**The first login is not a normal session.** Authenticating with a temporary
+password creates a real session, but `require_user` refuses every route except
+"change my own password" with a distinct error code, and the app routes
+straight to the change screen. The restriction is enforced by the engine, not
+by the frontend simply declining to show anything else — a restricted session
+that can call the API freely is not restricted.
+
+**Changing it clears the flag and invalidates every other session** for that
+user. If the temporary password was intercepted in transit and used by someone
+else first, the real owner changing it ends the intruder's session rather than
+running alongside it.
+
+**Resetting** is the same flow: a new temporary password, `must_change_password`
+set, and all of that user's sessions killed immediately — so a reset performed
+because an account is suspected compromised actually ejects whoever is in it.
 
 ### CLI
 
@@ -290,9 +355,20 @@ gain, and is reversible later if wanted.
 - Login does not distinguish unknown email from wrong password.
 - Lockout engages and releases.
 - Password hashing round-trips; the hash never appears in any response body.
-- Publishing: an analyst cannot publish; a published chart is visible to
-  others; the SQL text is not; editing the SQL unpublishes; an admin's edit
-  does not.
+- Publishing: an analyst can publish a chart they own and cannot publish
+  someone else's; an admin can publish anyone's; a published chart is visible
+  to every user while its SQL text is not.
+- Freezing: a query with a published chart refuses an SQL or row-limit edit
+  from its owner and accepts one from an admin; the published chart's field
+  mapping is frozen while its unpublished siblings are not; neither the chart
+  nor the query can be deleted while published.
+- Unfreezing: an analyst can unpublish what they published and then edit; an
+  analyst cannot unpublish what an admin published; an admin can unpublish
+  anything.
+- Temporary passwords: a session carrying `must_change_password` is refused
+  every route but the password change, by the engine rather than the UI;
+  changing it clears the flag and kills that user's other sessions; an expired
+  temporary password no longer authenticates.
 - Migration: upgrade and downgrade; existing rows land with NULL owners.
 - Frontend: the login page, the redirect for an unauthenticated visitor, admin
   navigation hidden from analysts, the forced password change on first login.
@@ -309,7 +385,7 @@ The engine leads, because the frontend types against the regenerated
 2. `/auth/login`, `/auth/logout`, `/auth/me`, and the two dependencies.
 3. Ownership columns and service-layer filtering, endpoint by endpoint.
 4. Admin user-management endpoints and the audit log.
-5. Publishing.
+5. Publishing, and the freeze it implies.
 6. Next.js proxy, cookie handling, login page, route guards.
 7. Admin UI: user list, create, deactivate, reset.
 8. Rename and identity.
