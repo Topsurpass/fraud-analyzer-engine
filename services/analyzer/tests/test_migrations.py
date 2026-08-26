@@ -76,6 +76,8 @@ def test_migration_creates_the_expected_tables(tmp_path, alembic_for):
         "flag_dismissals",
         "flagged_rows",
         "query_charts",
+        "users",
+        "sessions",
     }
 
 
@@ -223,3 +225,62 @@ def test_surge_threshold_survives_a_downgrade_and_reapply(tmp_path, alembic_for)
     command.upgrade(cfg, "head")
     columns = {c["name"] for c in inspect(create_engine(url)).get_columns("query_charts")}
     assert "surge_threshold_pct" in columns
+
+
+def test_users_and_sessions_are_created(tmp_path, alembic_for):
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+
+    tables = set(inspect(create_engine(url)).get_table_names())
+    assert {"users", "sessions"} <= tables
+
+
+def test_a_session_is_removed_with_its_user(tmp_path, alembic_for):
+    """Sessions cascade even though users are never deleted.
+
+    The spec forbids deleting accounts, so this should never fire in practice.
+    It is here because "never happens" and "cannot happen" are different, and a
+    session row pointing at a missing user would authenticate nobody while
+    looking like it authenticates someone.
+    """
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text("PRAGMA foreign_keys=ON"))
+        conn.execute(
+            text(
+                "INSERT INTO users (id, email, full_name, password_hash, role, "
+                "is_active, must_change_password, failed_login_count, "
+                "created_at, updated_at) VALUES ('u1', 'a@b.test', 'A', 'x', "
+                "'admin', 1, 0, 0, '2026-08-26', '2026-08-26')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO sessions (id, user_id, created_at, expires_at, "
+                "last_seen_at) VALUES ('s1', 'u1', '2026-08-26', '2026-08-27', "
+                "'2026-08-26')"
+            )
+        )
+        conn.execute(text("DELETE FROM users WHERE id = 'u1'"))
+        remaining = conn.execute(text("SELECT count(*) FROM sessions")).scalar_one()
+    assert remaining == 0
+
+
+def test_users_and_sessions_survive_a_downgrade_and_reapply(tmp_path, alembic_for):
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+
+    command.downgrade(cfg, "0010_surge_threshold")
+    tables = set(inspect(create_engine(url)).get_table_names())
+    assert "users" not in tables
+    assert "sessions" not in tables
+
+    command.upgrade(cfg, "head")
+    tables = set(inspect(create_engine(url)).get_table_names())
+    assert {"users", "sessions"} <= tables

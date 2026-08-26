@@ -7,6 +7,7 @@ from app.models.enums import (
     DbType,
     FlagOperator,
     FlagSeverity,
+    UserRole,
     enum_column,
 )
 from app.models.execution_log import QueryExecutionLog
@@ -15,6 +16,7 @@ from app.models.flag_rule import FlagCondition, FlagRule
 from app.models.flagged_row import FlaggedRow
 from app.models.query_chart import QueryChart
 from app.models.saved_query import DEFAULT_ROW_LIMIT, SavedQuery
+from app.models.user import User, UserSession
 
 __all__ = [
     "Base",
@@ -35,6 +37,9 @@ __all__ = [
     "QueryExecutionLog",
     "SavedQuery",
     "TimestampMixin",
+    "User",
+    "UserRole",
+    "UserSession",
     "enum_column",
     "new_id",
     "utcnow",

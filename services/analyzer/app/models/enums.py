@@ -84,6 +84,18 @@ class FlagSeverity(StrEnum):
     HIGH = "high"
 
 
+class UserRole(StrEnum):
+    """What a signed-in person may do.
+
+    Two roles on purpose. A third ("viewer", "supervisor") is a permission
+    system in disguise, and the moment roles need combining they should become
+    a permission table rather than a longer enum.
+    """
+
+    ADMIN = "admin"
+    ANALYST = "analyst"
+
+
 class FlagOperator(StrEnum):
     """Comparisons a flag condition can make against one result column.
 
