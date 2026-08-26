@@ -170,3 +170,56 @@ def test_flag_dismissals_cascade_from_their_query(tmp_path, alembic_for):
     # One row cannot be dismissed twice on the same query.
     uniques = {tuple(u["column_names"]) for u in inspector.get_unique_constraints("flag_dismissals")}
     assert ("query_id", "row_fingerprint") in uniques
+
+
+def test_surge_threshold_leaves_existing_charts_unset(tmp_path, alembic_for):
+    """A chart from before 0010 comes out of it following the app default.
+
+    Backfilling the default value into the column would look identical today
+    and behave differently forever after: "unset" would become "pinned to
+    whatever the default happened to be on migration day", and moving the
+    default later would leave every pre-existing chart behind. NULL is the only
+    value that keeps the distinction.
+    """
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "0009_query_charts")
+
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO saved_queries (id, connection_id, name, sql_text, "
+                "row_limit, poll_interval_ms, created_at, updated_at) VALUES "
+                "('q1', 'c1', 'Q', 'SELECT 1', 100, 5000, '2026-08-01', '2026-08-01')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO query_charts (id, query_id, name, position, "
+                "chart_type, created_at, updated_at) VALUES "
+                "('ch1', 'q1', 'Chart', 0, 'line', '2026-08-01', '2026-08-01')"
+            )
+        )
+
+    command.upgrade(cfg, "head")
+
+    with engine.begin() as conn:
+        value = conn.execute(
+            text("SELECT surge_threshold_pct FROM query_charts WHERE id = 'ch1'")
+        ).scalar_one()
+    assert value is None
+
+
+def test_surge_threshold_survives_a_downgrade_and_reapply(tmp_path, alembic_for):
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+
+    command.downgrade(cfg, "0009_query_charts")
+    columns = {c["name"] for c in inspect(create_engine(url)).get_columns("query_charts")}
+    assert "surge_threshold_pct" not in columns
+
+    command.upgrade(cfg, "head")
+    columns = {c["name"] for c in inspect(create_engine(url)).get_columns("query_charts")}
+    assert "surge_threshold_pct" in columns

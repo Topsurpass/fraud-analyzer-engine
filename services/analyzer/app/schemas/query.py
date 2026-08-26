@@ -71,6 +71,10 @@ class ChartSpec(BaseModel):
     x_field: str | None = None
     y_field: str | None = None
     series_field: str | None = None
+    #: Already resolved against the app-wide default by ``build_chart``, so a
+    #: client never has to know what that default is. Optional only so a
+    #: payload cached before the field existed still validates.
+    surge_threshold_pct: float | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -176,6 +180,11 @@ class QueryChartBase(BaseModel):
     x_field: str | None = Field(default=None, max_length=255)
     y_field: str | None = Field(default=None, max_length=255)
     series_field: str | None = Field(default=None, max_length=255)
+    #: Magnitude, so 50 covers a 50% rise and a 50% fall. None follows the
+    #: app-wide default. The upper bound is a typo guard, not an opinion: a
+    #: threshold above 100000% can never fire on real data and is far more
+    #: likely to be a slipped decimal point than an intention.
+    surge_threshold_pct: float | None = Field(default=None, gt=0, le=100_000)
 
 
 class QueryChartRead(BaseModel):
@@ -189,6 +198,7 @@ class QueryChartRead(BaseModel):
     x_field: str | None
     y_field: str | None
     series_field: str | None
+    surge_threshold_pct: float | None
     created_at: UtcDatetime
     updated_at: UtcDatetime
 

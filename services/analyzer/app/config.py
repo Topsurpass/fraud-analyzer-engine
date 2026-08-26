@@ -191,6 +191,15 @@ class Settings(BaseSettings):
     # but "an hour ago" is not an answer to "what is happening now".
     cache_stale_grace_ms: int = Field(default=300_000, gt=0)
 
+    # How far a measure has to move, in percent, before a chart calls it out
+    # for investigation. A magnitude: 50 covers a 50% rise and a 50% fall.
+    #
+    # A percentage rather than an absolute figure because terminals do not
+    # carry comparable volume - one does twenty times another's, so an
+    # absolute jump that is alarming on a quiet terminal is noise on a busy
+    # one. Charts store their own value and fall back to this when unset.
+    default_surge_threshold_pct: float = Field(default=50.0, gt=0, le=100_000)
+
     # Polling.
     poll_interval_ms: int = Field(default=5000, gt=0)
 

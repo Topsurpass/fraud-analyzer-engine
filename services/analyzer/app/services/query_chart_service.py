@@ -58,6 +58,7 @@ def replace_charts(session: Session, query: SavedQuery, charts: list) -> list[Qu
         chart.x_field = spec.x_field
         chart.y_field = spec.y_field
         chart.series_field = spec.series_field
+        chart.surge_threshold_pct = spec.surge_threshold_pct
         built.append(chart)
 
     for key, chart in existing.items():

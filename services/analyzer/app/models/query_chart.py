@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, new_id
@@ -64,6 +64,16 @@ class QueryChart(TimestampMixin, Base):
     x_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     y_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
     series_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    #: Percent change past which a movement is called out for investigation,
+    #: as a magnitude: 50 means "flag a rise of 50% or more, and a fall of 50%
+    #: or more". A percentage rather than an absolute figure because terminals
+    #: carry wildly different volume, and an absolute jump that is alarming on
+    #: a quiet terminal is noise on a busy one.
+    #:
+    #: NULL means "use the app-wide default" and is not the same as storing
+    #: that default: an unset chart follows the default when it changes.
+    surge_threshold_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     query: Mapped["SavedQuery"] = relationship(back_populates="charts")
     #: Deleting a chart takes it off every dashboard that showed it.

@@ -9,6 +9,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.config import get_settings
 from app.errors import AppError, ErrorCode, SqlValidationError
 from app.models import ChartType, Connection, DbType, QueryChart, SavedQuery
 from app.services.query_service import (
@@ -421,3 +422,19 @@ def test_postgres_array_column_serialises(target_sqlite):
     import json
 
     assert json.dumps(to_jsonable([[1, 2], [3]])) == "[[1, 2], [3]]"
+
+
+def test_chart_without_a_threshold_reports_the_app_default():
+    """An unset chart resolves to the default at build time, not in the browser.
+
+    Resolving it here is what makes every reader of one chart see the same
+    number, and what lets the default move without every client agreeing on
+    what it is.
+    """
+    chart = build_chart(_query(surge_threshold_pct=None), ["day", "flagged_count"])
+    assert chart["surge_threshold_pct"] == get_settings().default_surge_threshold_pct
+
+
+def test_chart_with_its_own_threshold_keeps_it():
+    chart = build_chart(_query(surge_threshold_pct=250.0), ["day", "flagged_count"])
+    assert chart["surge_threshold_pct"] == 250.0

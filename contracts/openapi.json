@@ -148,6 +148,17 @@
             ],
             "title": "Series Field"
           },
+          "surge_threshold_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surge Threshold Pct"
+          },
           "type": {
             "$ref": "#/components/schemas/ChartType"
           },
@@ -1760,6 +1771,19 @@
             ],
             "title": "Series Field"
           },
+          "surge_threshold_pct": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 100000.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surge Threshold Pct"
+          },
           "x_field": {
             "anyOf": [
               {
@@ -1828,6 +1852,17 @@
             ],
             "title": "Series Field"
           },
+          "surge_threshold_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surge Threshold Pct"
+          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
@@ -1865,6 +1900,7 @@
           "x_field",
           "y_field",
           "series_field",
+          "surge_threshold_pct",
           "created_at",
           "updated_at"
         ],

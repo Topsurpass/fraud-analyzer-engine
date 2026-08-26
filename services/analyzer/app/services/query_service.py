@@ -304,6 +304,14 @@ def build_chart(chart: QueryChart, columns: list[str]) -> dict:
         "x_field": chart.x_field,
         "y_field": chart.y_field,
         "series_field": chart.series_field,
+        # Resolved here rather than in the browser so every reader of one
+        # chart sees the same threshold, and so the app-wide default can move
+        # without every client having to agree on what it is.
+        "surge_threshold_pct": (
+            chart.surge_threshold_pct
+            if chart.surge_threshold_pct is not None
+            else get_settings().default_surge_threshold_pct
+        ),
         "warnings": warnings,
     }
 
