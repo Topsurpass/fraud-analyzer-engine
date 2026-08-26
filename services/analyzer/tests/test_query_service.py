@@ -334,6 +334,30 @@ def test_movers_without_a_category_says_so():
     assert any("series_field" in w for w in chart["warnings"])
 
 
+def test_compare_grid_needs_a_category_to_panel_by():
+    """A panel per category, so all three fields are load-bearing."""
+    chart = build_chart(
+        _query(
+            chart_type=ChartType.COMPARE_GRID,
+            x_field="hour",
+            y_field="amount",
+            series_field="terminal_id",
+        ),
+        ["hour", "amount", "terminal_id"],
+    )
+    assert chart["warnings"] == []
+
+
+def test_compare_grid_without_a_category_says_so():
+    """Without a category this is one panel, which is just COMPARE. Falling
+    back silently would answer the question the reader already rejected."""
+    chart = build_chart(
+        _query(chart_type=ChartType.COMPARE_GRID, x_field="hour", y_field="amount"),
+        ["hour", "amount"],
+    )
+    assert any("series_field" in w for w in chart["warnings"])
+
+
 def test_heatmap_needs_a_category_as_well_as_a_bucket_and_a_measure():
     chart = build_chart(
         _query(

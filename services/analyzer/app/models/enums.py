@@ -63,6 +63,13 @@ class ChartType(StrEnum):
     #: "which terminal moved", which is the question that names a suspect.
     MOVERS = "movers"
 
+    #: One ``COMPARE`` panel per category, laid out as small multiples.
+    #: ``COMPARE`` gives the shape for everything at once and ``MOVERS`` gives
+    #: two totals per category; this gives the shape *per* category, which is
+    #: the only one of the three that shows a terminal changing its rhythm
+    #: rather than just its level.
+    COMPARE_GRID = "compare_grid"
+
     #: A category against a time bucket, coloured by intensity. Scanning fifty
     #: terminals across twenty-four hours as fifty line charts is impossible;
     #: as one grid the odd row or the odd hour is immediate.
