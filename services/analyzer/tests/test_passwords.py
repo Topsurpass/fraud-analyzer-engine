@@ -45,6 +45,16 @@ def test_verify_returns_false_for_a_hash_it_cannot_parse():
     assert verify_password("anything", "not-a-hash") is False
 
 
+def test_verify_returns_false_for_a_missing_hash():
+    """A user row created before a password was ever set has a null/empty
+    hash column. argon2-cffi raises AttributeError on a falsy hash rather
+    than one of its own exceptions, so this must be guarded explicitly or
+    the same corrupt-row problem above shows up as an unhandled 500 instead
+    of a normal failed login."""
+    assert verify_password("anything", "") is False
+    assert verify_password("anything", None) is False
+
+
 def test_a_short_password_is_refused():
     with pytest.raises(AppError) as caught:
         validate_password_strength("a" * (MIN_PASSWORD_LENGTH - 1))

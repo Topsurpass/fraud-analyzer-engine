@@ -71,6 +71,11 @@ def verify_password(plaintext: str, hashed: str) -> bool:
     which both breaks the account and tells an attacker something is unusual
     about it.
     """
+    # A row with no hash set yet (a user created but never given a password) is
+    # a falsy `hashed`, and argon2-cffi raises AttributeError on it rather than
+    # one of the exceptions below - guard it here so "never raises" stays true.
+    if not hashed:
+        return False
     try:
         return _hasher.verify(hashed, plaintext)
     except (VerifyMismatchError, VerificationError, InvalidHash):
