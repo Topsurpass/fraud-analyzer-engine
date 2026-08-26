@@ -2558,18 +2558,18 @@ def upgrade() -> None:
             "fk_connections_created_by", "users", ["created_by"], ["id"], ondelete="RESTRICT"
         )
 
-    with op.batch_alter_table("execution_logs") as batch:
+    with op.batch_alter_table("query_execution_logs") as batch:
         batch.add_column(sa.Column("user_id", sa.String(length=36), nullable=True))
         batch.create_foreign_key(
-            "fk_execution_logs_user", "users", ["user_id"], ["id"], ondelete="RESTRICT"
+            "fk_query_execution_logs_user", "users", ["user_id"], ["id"], ondelete="RESTRICT"
         )
-    op.create_index("ix_execution_logs_user_id", "execution_logs", ["user_id"])
+    op.create_index("ix_query_execution_logs_user_id", "query_execution_logs", ["user_id"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_execution_logs_user_id", table_name="execution_logs")
-    with op.batch_alter_table("execution_logs") as batch:
-        batch.drop_constraint("fk_execution_logs_user", type_="foreignkey")
+    op.drop_index("ix_query_execution_logs_user_id", table_name="query_execution_logs")
+    with op.batch_alter_table("query_execution_logs") as batch:
+        batch.drop_constraint("fk_query_execution_logs_user", type_="foreignkey")
         batch.drop_column("user_id")
 
     with op.batch_alter_table("connections") as batch:
@@ -2587,8 +2587,9 @@ def downgrade() -> None:
         batch.drop_column("owner_id")
 ```
 
-Confirm the execution-log table name before running: check
-`app/models/execution_log.py` for `__tablename__` and use exactly that string.
+The execution-log table is `query_execution_logs`, not `execution_logs` — the
+model's class name and its table name differ. Verified against
+`app/models/execution_log.py:18`.
 
 - [ ] **Step 5: Add the visibility helpers to the service**
 
