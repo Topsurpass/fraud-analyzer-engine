@@ -34,6 +34,16 @@ class UTCDateTime(TypeDecorator):
     Every column that uses this is written through :func:`utcnow`, so a naive
     value read back is always UTC, and reattaching that tzinfo on load is
     correct rather than a guess.
+
+    Used by :class:`TimestampMixin` (so ``created_at``/``updated_at`` carry it
+    on every model) and directly by ``UserSession`` and the ``User`` lockout
+    columns. This is deliberately the type for every timestamp in the schema,
+    not just the ones some past bug happened to touch: the alternative is a
+    codebase where "does this column compare safely against ``utcnow()``"
+    depends on which columns a previous author's bug report reached, and the
+    next `if some_model.some_timestamp < utcnow()` reintroduces the exact
+    failure this type exists to close - on SQLite only, silent on Postgres,
+    which is the worst kind of latent bug to leave lying around.
     """
 
     impl = DateTime(timezone=True)
@@ -54,11 +64,16 @@ class Base(DeclarativeBase):
 
 
 class TimestampMixin:
+    #: UTCDateTime, not a bare DateTime(timezone=True): every timestamp
+    #: column in this schema goes through this mixin or is written the same
+    #: way, so this is the one place that decides whether "a datetime loaded
+    #: from the database compares cleanly against utcnow()" holds everywhere
+    #: or only on the columns some later bug happened to force it onto.
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, server_default=func.now(), nullable=False
+        UTCDateTime, default=utcnow, server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime,
         default=utcnow,
         onupdate=utcnow,
         server_default=func.now(),

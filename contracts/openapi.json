@@ -32,6 +32,7 @@
               "ROW_LIMIT_EXCEEDED",
               "SQL_TOO_LONG",
               "RESULT_TOO_LARGE",
+              "WEAK_PASSWORD",
               "DB_AUTH_FAILED",
               "DB_PERMISSION_DENIED",
               "CONNECTION_NOT_FOUND",
