@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
@@ -94,23 +94,43 @@ def resolve(db: Session, raw_token: str) -> User | None:
     return user
 
 
-def issue_with_id(db: Session, user: User, session_id: str) -> None:
+def issue_with_id(
+    db: Session,
+    user: User,
+    session_id: str,
+    created_at: datetime,
+    expires_at: datetime,
+) -> None:
     """Recreate a session under a digest the caller already holds.
 
-    Used only by the password change, which revokes every session for the user
-    and then restores the one that made the request. Restoring is simpler and
-    less error-prone than a "revoke all except this one" query that has to be
-    kept in step with the revocation rules.
+    Used only by the password change, which revokes every session for the
+    user and then restores the one that made the request. Restoring is
+    simpler and less error-prone than a "revoke all except this one" query
+    that has to be kept in step with the revocation rules.
+
+    ``created_at`` and ``expires_at`` are the values read off the row before
+    it was revoked, not computed fresh here. This restored row is not a new
+    login: it is the one session spared from a sweep that, along the way,
+    deletes it too. Computing a fresh ``now + session_absolute_hours`` here
+    would silently hand the surviving session a brand new absolute lifetime
+    on every password change - the exact "a session that is used
+    continuously never ends" failure
+    ``test_using_a_session_does_not_extend_its_absolute_expiry`` in
+    ``tests/test_session_service.py`` guards ``resolve()`` against, just
+    reached through a different call site. A password change is proof of the
+    current password, not a fresh login, so it should not reset the clock
+    that bounds how long a token stays valid if it has already leaked.
+    ``last_seen_at`` alone resets to now: using the session to authenticate
+    this very request is genuinely fresh activity, which is exactly what the
+    idle clock measures.
     """
-    settings = get_settings()
-    now = utcnow()
     db.add(
         UserSession(
             id=session_id,
             user_id=user.id,
-            created_at=now,
-            expires_at=now + timedelta(hours=settings.session_absolute_hours),
-            last_seen_at=now,
+            created_at=created_at,
+            expires_at=expires_at,
+            last_seen_at=utcnow(),
         )
     )
     db.commit()

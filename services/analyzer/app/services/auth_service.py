@@ -31,6 +31,18 @@ LOCKOUT_MINUTES = 15
 #: drift apart and start distinguishing themselves by wording.
 _REFUSAL = "Those details are not right."
 
+#: Computed once, here, at import. The unknown-email branch below verifies
+#: the caller's password against this instead of against a real user's hash,
+#: so an unknown address costs the same one verify_password call as every
+#: other failure branch. Hashing a fresh dummy value per request (the first
+#: version of this function did that) is *two* argon2id operations against
+#: every other branch's one -- a verify and the hash it was verifying
+#: against -- which made an unknown address answer measurably *slower* than
+#: a known one. That is the same timing oracle this constant exists to
+#: close, just pointed the other way, and it was confirmed with a live
+#: timing probe (see task-4-report.md) before and after this fix.
+_DUMMY_HASH = passwords.hash_password("timing-equaliser")
+
 
 def authenticate(db: Session, email: str, password: str) -> User:
     """The user behind these credentials, or raise.
@@ -45,10 +57,12 @@ def authenticate(db: Session, email: str, password: str) -> User:
     user = db.scalar(select(User).where(func.lower(User.email) == normalised))
 
     if user is None:
-        # Hash anyway. Returning immediately makes an unknown address answer
-        # measurably faster than a known one, which is the same oracle the
-        # shared message exists to close.
-        passwords.verify_password(password, passwords.hash_password("timing-equaliser"))
+        # Verify anyway, against the precomputed dummy hash above. Returning
+        # immediately makes an unknown address answer measurably faster than
+        # a known one, which is the same oracle the shared message exists to
+        # close -- and hashing a fresh dummy value here instead of reusing
+        # one would overshoot it the other way; see _DUMMY_HASH's comment.
+        passwords.verify_password(password, _DUMMY_HASH)
         raise AppError(ErrorCode.INVALID_CREDENTIALS, _REFUSAL)
 
     if user.locked_until is not None and user.locked_until > now:

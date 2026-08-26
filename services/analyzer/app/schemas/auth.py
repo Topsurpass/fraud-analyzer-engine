@@ -7,38 +7,14 @@ same discipline ``ConnectionRead`` uses for target-database passwords.
 
 from __future__ import annotations
 
-from typing import Annotated
-
-from email_validator import EmailNotValidError, validate_email
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.models.enums import UserRole
 from app.schemas.types import UtcDatetime
 
 
-def _validate_email(value: str) -> str:
-    """Same rules as Pydantic's ``EmailStr``, with ``test_environment=True``.
-
-    Plain ``EmailStr`` rejects any address under a reserved RFC 2606 TLD
-    (``.test``, ``.invalid``, ``.localhost``, ...) as "special-use", which is
-    exactly the TLD this suite's own fixtures use for test accounts
-    (``analyst@b.test``) - that domain can never be a real mailbox, which is
-    the point of reserving it, so refusing it here buys no real-world safety
-    and would make every fixture in this file collide with a real registrar
-    instead. ``check_deliverability`` stays off either way; nothing here does
-    a DNS lookup.
-    """
-    try:
-        return validate_email(value, check_deliverability=False, test_environment=True).normalized
-    except EmailNotValidError as exc:
-        raise ValueError(str(exc)) from exc
-
-
-EmailAddress = Annotated[str, AfterValidator(_validate_email)]
-
-
 class LoginRequest(BaseModel):
-    email: EmailAddress
+    email: EmailStr
     # No length rule here. The policy applies to passwords being *set*, and
     # enforcing it on login would reject a valid old password after the policy
     # tightened, locking out the very people who complied with the old one.

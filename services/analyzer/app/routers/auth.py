@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.app_state import get_session
 from app.errors import AppError, ErrorCode
-from app.models.user import User
+from app.models.user import User, UserSession
 from app.schemas.auth import ChangePasswordRequest, LoginRequest, LoginResponse, UserRead
 from app.services import auth_service, session_service
 
@@ -69,13 +69,28 @@ def change_password(
     user: User = Depends(current_user),
     db: Session = Depends(get_session),
 ) -> Response:
+    # Read this session's own row before anything below touches the table:
+    # revoke_all_for_user deletes it along with every other session for this
+    # user, and its created_at/expires_at are what issue_with_id restores
+    # the row with afterwards. Looked up rather than trusted from a request
+    # header because ``mine`` is a digest, and the row is the only place the
+    # original absolute expiry lives.
+    mine = session_service.digest(_bearer(request))
+    mine_row = db.get(UserSession, mine)
+
     auth_service.change_password(db, user, body.current_password, body.new_password)
 
     # Every session but this one. Being signed out of the browser you just used
     # to change your password is a bug; leaving an intercepted session alive is
-    # a hole.
-    mine = session_service.digest(_bearer(request))
+    # a hole. The one that survives keeps its original absolute expiry rather
+    # than a fresh session_absolute_hours window: a password change proves the
+    # current password, it is not a new login, and resetting the clock here
+    # would let anyone dodge the absolute cap indefinitely by changing their
+    # password on a schedule. See issue_with_id's docstring.
     session_service.revoke_all_for_user(db, user.id)
-    session_service.issue_with_id(db, user, mine)
+    if mine_row is not None:
+        session_service.issue_with_id(
+            db, user, mine, created_at=mine_row.created_at, expires_at=mine_row.expires_at
+        )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
