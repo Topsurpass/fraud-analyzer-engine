@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pytest
 from sqlalchemy.exc import IntegrityError
 
@@ -9,7 +11,12 @@ from app.models import (
     QueryChart,
     QueryExecutionLog,
     SavedQuery,
+    User,
+    UserRole,
+    UserSession,
 )
+from app.models.base import utcnow
+from app.security.passwords import hash_password
 
 
 def _connection(**over) -> Connection:
@@ -167,3 +174,47 @@ def test_server_defaults_match_the_stored_spelling():
     assert Connection.__table__.c.status.server_default.arg == ConnectionStatus.UNTESTED.value
     assert Connection.__table__.c.status.type.enums == [e.value for e in ConnectionStatus]
     assert QueryChart.__table__.c.chart_type.type.enums == [e.value for e in ChartType]
+
+
+def test_a_session_timestamp_read_from_sqlite_stays_comparable_to_now(session):
+    """Regression test for UTCDateTime (app/models/base.py).
+
+    SQLite has no timezone-aware storage: a plain ``DateTime(timezone=True)``
+    formats a datetime to text and hands back a *naive* one on the next real
+    read, as opposed to an object still resident in the session's identity
+    map (which keeps whatever aware Python value was originally assigned).
+    ``session.expire_all()`` forces exactly that real read, the same thing
+    that happens on every request in production once a fresh ``Session`` with
+    an empty identity map loads the row. Before UTCDateTime existed on
+    UserSession's three timestamp columns, the final line below raised
+    ``TypeError: can't compare offset-naive and offset-aware datetimes`` -
+    this is the failure `app.services.session_service.resolve` hits on every
+    single call unless the column type carries this fix.
+    """
+    user = User(
+        email="raw-session@b.test",
+        full_name="Raw",
+        password_hash=hash_password("a-perfectly-fine-password"),
+        role=UserRole.ANALYST,
+    )
+    session.add(user)
+    session.commit()
+
+    now = utcnow()
+    row = UserSession(
+        id="f" * 64,
+        user_id=user.id,
+        created_at=now,
+        expires_at=now + timedelta(hours=1),
+        last_seen_at=now,
+        ip=None,
+        user_agent=None,
+    )
+    session.add(row)
+    session.commit()
+    session.expire_all()
+
+    reloaded = session.get(UserSession, "f" * 64)
+    assert reloaded.expires_at.tzinfo is not None
+    assert reloaded.last_seen_at.tzinfo is not None
+    assert reloaded.expires_at > utcnow()
