@@ -218,3 +218,27 @@ def test_a_session_timestamp_read_from_sqlite_stays_comparable_to_now(session):
     assert reloaded.expires_at.tzinfo is not None
     assert reloaded.last_seen_at.tzinfo is not None
     assert reloaded.expires_at > utcnow()
+
+
+def test_a_users_lockout_timestamps_stay_comparable_to_now(session):
+    """Same regression as above, for the two ``User`` columns login logic
+    will compare against ``utcnow()`` (account lockout, temporary-password
+    expiry). Written in the same task that fixed ``UserSession`` because the
+    defect is in the column type, not in any one table."""
+    user = User(
+        email="locked@b.test",
+        full_name="Locked",
+        password_hash=hash_password("a-perfectly-fine-password"),
+        role=UserRole.ANALYST,
+        locked_until=utcnow() + timedelta(minutes=15),
+        temp_password_expires_at=utcnow() + timedelta(days=1),
+    )
+    session.add(user)
+    session.commit()
+    session.expire_all()
+
+    reloaded = session.get(User, user.id)
+    assert reloaded.locked_until.tzinfo is not None
+    assert reloaded.temp_password_expires_at.tzinfo is not None
+    assert reloaded.locked_until > utcnow()
+    assert reloaded.temp_password_expires_at > utcnow()

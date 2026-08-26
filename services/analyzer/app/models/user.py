@@ -55,17 +55,21 @@ class User(TimestampMixin, Base):
     )
     #: When the issued temporary password stops working. Null once the user has
     #: chosen their own, because a password they picked does not expire.
+    #:
+    #: ``UTCDateTime`` (not a bare ``DateTime(timezone=True)``): this, like
+    #: ``locked_until`` below, exists to be compared against an aware
+    #: ``utcnow()`` by login logic, and SQLite hands back a naive value on a
+    #: real read otherwise - see ``UTCDateTime``'s docstring in
+    #: ``app.models.base``.
     temp_password_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+        UTCDateTime, nullable=True
     )
 
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    locked_until: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_login_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    #: Compared against ``utcnow()`` by login logic; see the note on
+    #: ``temp_password_expires_at`` above.
+    locked_until: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     #: Null for the first admin, who is created by the CLI with nobody logged in.
     created_by: Mapped[str | None] = mapped_column(
