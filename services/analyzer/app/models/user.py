@@ -14,7 +14,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, new_id
+from app.models.base import Base, TimestampMixin, UTCDateTime, new_id
 from app.models.enums import UserRole, enum_column
 
 
@@ -100,11 +100,16 @@ class UserSession(Base):
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: ``UTCDateTime`` rather than a bare ``DateTime(timezone=True)``: every
+    #: comparison in ``session_service`` weighs one of these three columns
+    #: against an aware ``utcnow()``, on every request, so this table is where
+    #: SQLite's naive round-trip (see ``UTCDateTime``'s docstring) would bite
+    #: hardest and first.
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     #: Absolute expiry, fixed at creation and never extended.
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     #: Moved forward on use, for the idle timeout.
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
 
     ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(400), nullable=True)

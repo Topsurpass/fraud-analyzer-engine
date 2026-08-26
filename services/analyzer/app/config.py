@@ -257,6 +257,15 @@ class Settings(BaseSettings):
     # and turns pool exhaustion into a hang rather than an error.
     target_pool_timeout_s: int = Field(default=5, gt=0)
 
+    # Sessions.
+    #
+    # Absolute lifetime is not extended by use: a session that has existed for
+    # twelve hours ends whether or not somebody is still typing, which bounds
+    # how long a stolen cookie is worth anything.
+    session_absolute_hours: int = Field(default=12, gt=0)
+    #: Idle timeout. Shorter than the absolute lifetime, and refreshed on use.
+    session_idle_hours: int = Field(default=8, gt=0)
+
     @field_validator("max_row_limit")
     @classmethod
     def _ceiling_at_least_default(cls, v: int, info) -> int:
