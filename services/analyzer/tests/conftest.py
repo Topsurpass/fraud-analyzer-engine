@@ -37,6 +37,7 @@ _INTEGRATION_MODULES = {
     "test_result_limits",
     "test_observability",
     "test_flag_rules_api",
+    "test_cli",
 }
 
 
