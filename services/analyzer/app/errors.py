@@ -27,6 +27,7 @@ class ErrorCode(StrEnum):
     ROW_LIMIT_EXCEEDED = "ROW_LIMIT_EXCEEDED"
     SQL_TOO_LONG = "SQL_TOO_LONG"
     RESULT_TOO_LARGE = "RESULT_TOO_LARGE"
+    WEAK_PASSWORD = "WEAK_PASSWORD"
 
     # --- 401 / 403: the target DB refused us ------------------------------
     DB_AUTH_FAILED = "DB_AUTH_FAILED"
@@ -70,6 +71,7 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.ROW_LIMIT_EXCEEDED: 400,
     ErrorCode.SQL_TOO_LONG: 400,
     ErrorCode.RESULT_TOO_LARGE: 400,
+    ErrorCode.WEAK_PASSWORD: 400,
     ErrorCode.DB_AUTH_FAILED: 401,
     ErrorCode.DB_PERMISSION_DENIED: 403,
     ErrorCode.CONNECTION_NOT_FOUND: 404,
