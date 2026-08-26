@@ -1373,6 +1373,10 @@ LOCKOUT_MINUTES = 15
 #: drift apart and start distinguishing themselves by wording.
 _REFUSAL = "Those details are not right."
 
+#: Hashed once at import. See the comment at its use site: hashing per call
+#: turns the equaliser into a timing oracle in the opposite direction.
+_DUMMY_HASH = passwords.hash_password("timing-equaliser")
+
 
 def authenticate(db: Session, email: str, password: str) -> User:
     """The user behind these credentials, or raise.
@@ -1387,10 +1391,15 @@ def authenticate(db: Session, email: str, password: str) -> User:
     user = db.scalar(select(User).where(func.lower(User.email) == normalised))
 
     if user is None:
-        # Hash anyway. Returning immediately makes an unknown address answer
-        # measurably faster than a known one, which is the same oracle the
-        # shared message exists to close.
-        passwords.verify_password(password, passwords.hash_password("timing-equaliser"))
+        # Verify against a dummy hash so an unknown address costs the same as a
+        # known one. Returning immediately would make it answer measurably
+        # faster, which is the oracle the shared message exists to close.
+        #
+        # The dummy is hashed ONCE at import, not per call. Hashing here would
+        # make this branch cost two argon2 operations against every other
+        # branch's one, and an unknown address would answer ~250ms *slower* -
+        # the same oracle pointing the other way. Measured, not theorised.
+        passwords.verify_password(password, _DUMMY_HASH)
         raise AppError(ErrorCode.INVALID_CREDENTIALS, _REFUSAL)
 
     if user.locked_until is not None and user.locked_until > now:
