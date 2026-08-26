@@ -16,6 +16,11 @@ That is the same public seam this test uses: it is not reaching past FastAPI's
 back into an internal structure, it is calling the function FastAPI itself
 calls to answer "what does this app actually serve", which is the question
 this test is asking.
+
+This sweep walks ``APIRoute`` objects only. It does not expand ``Mount``
+objects or websocket routes - neither exists in this app today, so the gap is
+latent rather than live, but a future author adding either should not assume
+this test's green run means every path is covered.
 """
 
 from __future__ import annotations
@@ -27,21 +32,23 @@ from app.main import app
 from app.routers.auth import current_user
 from app.security.deps import PUBLIC_PATHS, require_admin, require_user
 
-#: Functions that count as "this route is behind a signed-in session".
+#: Paths guarded by bare ``current_user`` rather than ``require_user``, each
+#: one a named, reviewable exception - not a blanket exemption.
 #:
-#: ``require_user`` and ``require_admin`` are the two every router in
-#: app/routers/ (other than auth.py itself) is built on. ``current_user`` is
-#: included too: it is the dependency ``/auth/me`` and
-#: ``/auth/change-password`` use instead of ``require_user``, deliberately -
-#: see the long comment on ``PUBLIC_PATHS`` in ``app/security/deps.py`` for
-#: why those two routes cannot be routed through the password-change gate
-#: without breaking the one path a locked account has out of it. Accepting
-#: ``current_user`` here does not weaken the sweep: it still refuses an
-#: unauthenticated caller with 401, so no route this test passes is reachable
-#: without a real session. What it does not do is authorise a role, which is
-#: exactly right for those two endpoints - they answer "who is this", not
-#: "is this person allowed to do X".
-_ACCEPTED_GUARDS = {current_user, require_user, require_admin}
+#: ``current_user`` authenticates (401 with no session) but does not enforce
+#: the ``must_change_password`` gate; only ``require_user`` does. Routing
+#: ``/auth/change-password`` through ``require_user`` would trap a user
+#: holding a temporary password with no way to clear the flag - it is the one
+#: endpoint that must stay reachable *because* the gate is up, or the gate has
+#: no way out. ``/auth/me`` needs the same exemption for the read side: a
+#: client restoring a session from a stored token, or an admin who forces the
+#: flag onto a session that predates the change, needs to be able to ask "who
+#: am I, and do I need to change my password" before the gate blocks
+#: everything else. No other route belongs here - accepting ``current_user``
+#: globally would silently pass a future endpoint that authenticates but never
+#: checks the password gate, which is exactly the hole this file exists to
+#: catch.
+_CURRENT_USER_ONLY_PATHS = frozenset({"/auth/me", "/auth/change-password"})
 
 
 def _dependency_functions(route: APIRoute) -> set:
@@ -69,10 +76,19 @@ def test_there_are_routes_to_check():
 @pytest.mark.parametrize("route", _guarded_routes(), ids=lambda r: f"{r.path}")
 def test_every_route_requires_a_signed_in_user(route):
     functions = _dependency_functions(route)
-    assert functions & _ACCEPTED_GUARDS, (
-        f"{route.path} has no authentication dependency. Add require_user or "
-        f"require_admin to its router, or add the path to PUBLIC_PATHS with a "
-        f"comment explaining why it is safe to expose."
+    if route.path in _CURRENT_USER_ONLY_PATHS:
+        assert current_user in functions, (
+            f"{route.path} is on _CURRENT_USER_ONLY_PATHS but does not use "
+            f"current_user. Wire it to current_user, or remove it from the "
+            f"allowlist if it should now go through require_user/require_admin."
+        )
+        return
+    assert require_user in functions or require_admin in functions, (
+        f"{route.path} has no authentication dependency that enforces the "
+        f"password-change gate. Add require_user or require_admin to its "
+        f"router, or - only if it must remain reachable under that gate, the "
+        f"way /auth/me and /auth/change-password are - add the path to "
+        f"_CURRENT_USER_ONLY_PATHS with a comment explaining why."
     )
 
 
@@ -80,4 +96,12 @@ def test_the_public_allowlist_stays_small():
     """Every entry is a decision. Growth here should be noticed."""
     assert PUBLIC_PATHS == frozenset(
         {"/health", "/ready", "/auth/login", "/auth/logout"}
+    )
+
+
+def test_the_current_user_only_allowlist_stays_small():
+    """Same discipline as PUBLIC_PATHS: growth here should be noticed, not
+    absorbed by a broader acceptance rule."""
+    assert _CURRENT_USER_ONLY_PATHS == frozenset(
+        {"/auth/me", "/auth/change-password"}
     )
