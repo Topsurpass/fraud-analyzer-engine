@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, new_id
@@ -20,6 +20,16 @@ from app.models.enums import UserRole, enum_column
 
 class User(TimestampMixin, Base):
     __tablename__ = "users"
+
+    #: Mirrors the migration's CHECK constraint exactly, so
+    #: ``Base.metadata.create_all()`` and ``alembic upgrade head`` emit
+    #: identical DDL and ``verify_schema()`` never sees the two disagree.
+    #: ``ix_users_email`` below is case-sensitive on both SQLite's and
+    #: Postgres's default collations, so without this a mixed-case email and
+    #: its lowercase twin both satisfy uniqueness as two different accounts.
+    __table_args__ = (
+        CheckConstraint("email = lower(email)", name="ck_users_email_lowercase"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
 

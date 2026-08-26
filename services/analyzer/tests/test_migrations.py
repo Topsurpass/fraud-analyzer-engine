@@ -15,6 +15,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.models import Base
@@ -284,3 +285,33 @@ def test_users_and_sessions_survive_a_downgrade_and_reapply(tmp_path, alembic_fo
     command.upgrade(cfg, "head")
     tables = set(inspect(create_engine(url)).get_table_names())
     assert {"users", "sessions"} <= tables
+
+
+def test_a_mixed_case_email_is_rejected_by_the_database(tmp_path, alembic_for):
+    """Guards the case a future write path forgets to normalize.
+
+    ``ix_users_email`` is a case-sensitive unique index on both SQLite and
+    Postgres default collations, so without a CHECK constraint
+    "Kemi@x.test" and "kemi@x.test" both satisfy uniqueness as two separate
+    accounts. Normalizing in Python (``.lower()`` before insert) only holds
+    for as long as every write site remembers to do it -- the next write
+    path (an admin-created user, a bulk import) is exactly the site that
+    forgets. The CHECK constraint makes the bad row impossible to store at
+    all, regardless of which code path attempted it.
+    """
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+
+    engine = create_engine(url)
+    with pytest.raises(IntegrityError, match="ck_users_email_lowercase"):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO users (id, email, full_name, password_hash, "
+                    "role, is_active, must_change_password, "
+                    "failed_login_count, created_at, updated_at) VALUES "
+                    "('u1', 'Kemi@x.test', 'A', 'x', 'admin', 1, 0, 0, "
+                    "'2026-08-26', '2026-08-26')"
+                )
+            )

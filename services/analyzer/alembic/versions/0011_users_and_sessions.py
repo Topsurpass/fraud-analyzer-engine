@@ -58,6 +58,14 @@ def upgrade() -> None:
         ),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        # The unique index below is case-sensitive on both SQLite and
+        # Postgres default collations, so "Kemi@x.test" and "kemi@x.test"
+        # would otherwise both satisfy uniqueness as two different accounts.
+        # A CHECK is enforced at the database layer regardless of which write
+        # path inserted the row, unlike normalizing in Python only, which
+        # holds only until a write site forgets to call .lower(). lower() is
+        # a standard SQL function present on both SQLite and Postgres.
+        sa.CheckConstraint("email = lower(email)", name="ck_users_email_lowercase"),
     )
     op.create_index("ix_users_email", "users", ["email"], unique=True)
 
