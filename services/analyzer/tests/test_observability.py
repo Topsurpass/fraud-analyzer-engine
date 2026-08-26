@@ -92,19 +92,19 @@ def test_ephemeral_storage_warning_names_the_file_in_use(caplog, monkeypatch):
     assert str(get_settings().app_db_sqlite_file) in warning
 
 
-def test_request_id_is_echoed_back(client):
-    response = client.get("/health")
+def test_request_id_is_echoed_back(admin_client):
+    response = admin_client.get("/health")
     assert response.headers[REQUEST_ID_HEADER]
 
 
-def test_inbound_request_id_is_honoured(client):
-    response = client.get("/health", headers={REQUEST_ID_HEADER: "trace-me-42"})
+def test_inbound_request_id_is_honoured(admin_client):
+    response = admin_client.get("/health", headers={REQUEST_ID_HEADER: "trace-me-42"})
     assert response.headers[REQUEST_ID_HEADER] == "trace-me-42"
 
 
-def test_each_request_gets_a_distinct_id(client):
-    first = client.get("/health").headers[REQUEST_ID_HEADER]
-    second = client.get("/health").headers[REQUEST_ID_HEADER]
+def test_each_request_gets_a_distinct_id(admin_client):
+    first = admin_client.get("/health").headers[REQUEST_ID_HEADER]
+    second = admin_client.get("/health").headers[REQUEST_ID_HEADER]
     assert first != second
 
 

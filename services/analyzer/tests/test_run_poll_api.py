@@ -34,8 +34,8 @@ def _clear_cache():
 
 
 @pytest.fixture
-def saved(client, sqlite_connection):
-    r = client.post(
+def saved(admin_client, sqlite_connection):
+    r = admin_client.post(
         f"/connections/{sqlite_connection['id']}/queries",
         json={
             "name": "flagged per day",
@@ -65,8 +65,8 @@ def _insert_row(path: str, day: str = "2026-08-22") -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_run_returns_the_documented_payload(client, saved):
-    r = client.post(f"/queries/{saved['id']}/run")
+def test_run_returns_the_documented_payload(admin_client, saved):
+    r = admin_client.post(f"/queries/{saved['id']}/run")
     assert r.status_code == 200, r.text
     body = r.json()
     assert set(body) == RUN_KEYS
@@ -82,26 +82,26 @@ def test_run_returns_the_documented_payload(client, saved):
     assert body["poll_interval_ms"] == 5000
 
 
-def test_run_twice_gives_the_same_hash(client, saved):
-    first = client.post(f"/queries/{saved['id']}/run").json()
-    second = client.post(f"/queries/{saved['id']}/run").json()
+def test_run_twice_gives_the_same_hash(admin_client, saved):
+    first = admin_client.post(f"/queries/{saved['id']}/run").json()
+    second = admin_client.post(f"/queries/{saved['id']}/run").json()
     assert first["data_hash"] == second["data_hash"]
 
 
-def test_run_reflects_new_data(client, saved, target_sqlite):
-    before = client.post(f"/queries/{saved['id']}/run").json()
+def test_run_reflects_new_data(admin_client, saved, target_sqlite):
+    before = admin_client.post(f"/queries/{saved['id']}/run").json()
     _insert_row(target_sqlite)
-    after = client.post(f"/queries/{saved['id']}/run").json()
+    after = admin_client.post(f"/queries/{saved['id']}/run").json()
     assert after["data_hash"] != before["data_hash"]
     assert after["row_count"] == before["row_count"] + 1
 
 
-def test_run_on_missing_query_is_404(client):
-    assert client.post("/queries/nope/run").status_code == 404
+def test_run_on_missing_query_is_404(admin_client):
+    assert admin_client.post("/queries/nope/run").status_code == 404
 
 
-def test_run_writes_a_success_log(client, saved, session):
-    client.post(f"/queries/{saved['id']}/run")
+def test_run_writes_a_success_log(admin_client, saved, session):
+    admin_client.post(f"/queries/{saved['id']}/run")
     logs = session.query(QueryExecutionLog).all()
     assert len(logs) == 1
     assert logs[0].success is True
@@ -109,14 +109,14 @@ def test_run_writes_a_success_log(client, saved, session):
     assert logs[0].duration_ms is not None
 
 
-def test_failed_run_writes_a_failure_log(client, saved, session, target_sqlite):
+def test_failed_run_writes_a_failure_log(admin_client, saved, session, target_sqlite):
     # Drop the table out from under a saved query to force a real failure.
     writable = sqlite3.connect(target_sqlite)
     writable.execute("DROP TABLE txns")
     writable.commit()
     writable.close()
 
-    r = client.post(f"/queries/{saved['id']}/run")
+    r = admin_client.post(f"/queries/{saved['id']}/run")
     assert r.status_code == 400
     assert r.json()["error_code"] == "QUERY_EXECUTION_ERROR"
 
@@ -126,31 +126,31 @@ def test_failed_run_writes_a_failure_log(client, saved, session, target_sqlite):
     assert log.error_message
 
 
-def test_logs_endpoint_returns_newest_first(client, saved):
-    client.post(f"/queries/{saved['id']}/run")
-    client.post(f"/queries/{saved['id']}/run")
-    r = client.get(f"/queries/{saved['id']}/logs")
+def test_logs_endpoint_returns_newest_first(admin_client, saved):
+    admin_client.post(f"/queries/{saved['id']}/run")
+    admin_client.post(f"/queries/{saved['id']}/run")
+    r = admin_client.get(f"/queries/{saved['id']}/logs")
     assert r.status_code == 200
     assert len(r.json()) == 2
     assert all(entry["success"] for entry in r.json())
 
 
-def test_truncation_is_reported(client, sqlite_connection):
-    created = client.post(
+def test_truncation_is_reported(admin_client, sqlite_connection):
+    created = admin_client.post(
         f"/connections/{sqlite_connection['id']}/queries",
         json={"name": "capped", "sql_text": "SELECT * FROM txns", "row_limit": 2},
     ).json()
-    body = client.post(f"/queries/{created['id']}/run").json()
+    body = admin_client.post(f"/queries/{created['id']}/run").json()
     assert body["row_count"] == 2
     assert body["truncated"] is True
 
 
-def test_chart_warning_surfaces_without_failing(client, sqlite_connection):
-    created = client.post(
+def test_chart_warning_surfaces_without_failing(admin_client, sqlite_connection):
+    created = admin_client.post(
         f"/connections/{sqlite_connection['id']}/queries",
         json={"name": "bad mapping", "sql_text": "SELECT day FROM txns"},
     ).json()
-    client.put(
+    admin_client.put(
         f"/queries/{created['id']}/charts",
         json={
             "charts": [
@@ -159,7 +159,7 @@ def test_chart_warning_surfaces_without_failing(client, sqlite_connection):
             ]
         },
     )
-    body = client.post(f"/queries/{created['id']}/run").json()
+    body = admin_client.post(f"/queries/{created['id']}/run").json()
     assert body["row_count"] == 5
     assert any("not_a_column" in w for w in body["charts"][0]["warnings"])
 
@@ -169,9 +169,9 @@ def test_chart_warning_surfaces_without_failing(client, sqlite_connection):
 # ---------------------------------------------------------------------------
 
 
-def test_poll_with_matching_hash_reports_unchanged(client, saved):
-    run = client.post(f"/queries/{saved['id']}/run").json()
-    r = client.get(f"/queries/{saved['id']}/poll", params={"since_hash": run["data_hash"]})
+def test_poll_with_matching_hash_reports_unchanged(admin_client, saved):
+    run = admin_client.post(f"/queries/{saved['id']}/run").json()
+    r = admin_client.get(f"/queries/{saved['id']}/poll", params={"since_hash": run["data_hash"]})
     assert r.status_code == 200
     body = r.json()
     assert body["changed"] is False
@@ -180,12 +180,12 @@ def test_poll_with_matching_hash_reports_unchanged(client, saved):
     assert "rows" not in body
 
 
-def test_unchanged_poll_does_not_touch_the_target_database(client, saved, session):
-    run = client.post(f"/queries/{saved['id']}/run").json()
+def test_unchanged_poll_does_not_touch_the_target_database(admin_client, saved, session):
+    run = admin_client.post(f"/queries/{saved['id']}/run").json()
     before = session.query(QueryExecutionLog).count()
 
     for _ in range(5):
-        r = client.get(
+        r = admin_client.get(
             f"/queries/{saved['id']}/poll", params={"since_hash": run["data_hash"]}
         )
         assert r.json()["changed"] is False
@@ -195,49 +195,49 @@ def test_unchanged_poll_does_not_touch_the_target_database(client, saved, sessio
     assert session.query(QueryExecutionLog).count() == before
 
 
-def test_poll_with_stale_hash_returns_the_full_payload(client, saved):
-    client.post(f"/queries/{saved['id']}/run")
-    r = client.get(f"/queries/{saved['id']}/poll", params={"since_hash": "sha256:stale"})
+def test_poll_with_stale_hash_returns_the_full_payload(admin_client, saved):
+    admin_client.post(f"/queries/{saved['id']}/run")
+    r = admin_client.get(f"/queries/{saved['id']}/poll", params={"since_hash": "sha256:stale"})
     body = r.json()
     assert body["changed"] is True
     assert body["rows"] == [["2026-08-19", 1], ["2026-08-20", 1]]
     assert set(body) == RUN_KEYS | {"changed", "from_cache"}
 
 
-def test_poll_without_a_hash_returns_the_full_payload(client, saved):
-    r = client.get(f"/queries/{saved['id']}/poll")
+def test_poll_without_a_hash_returns_the_full_payload(admin_client, saved):
+    r = admin_client.get(f"/queries/{saved['id']}/poll")
     assert r.json()["changed"] is True
     assert r.json()["columns"] == ["day", "flagged_count"]
 
 
-def test_poll_on_a_cold_cache_executes(client, saved, session):
-    r = client.get(f"/queries/{saved['id']}/poll")
+def test_poll_on_a_cold_cache_executes(admin_client, saved, session):
+    r = admin_client.get(f"/queries/{saved['id']}/poll")
     assert r.json()["from_cache"] is False
     assert session.query(QueryExecutionLog).count() == 1
 
 
-def test_poll_detects_change_after_cache_expiry(client, saved, target_sqlite):
-    run = client.post(f"/queries/{saved['id']}/run").json()
+def test_poll_detects_change_after_cache_expiry(admin_client, saved, target_sqlite):
+    run = admin_client.post(f"/queries/{saved['id']}/run").json()
     _insert_row(target_sqlite)
 
     # While the cache is warm the old hash still matches, by design.
-    warm = client.get(
+    warm = admin_client.get(
         f"/queries/{saved['id']}/poll", params={"since_hash": run["data_hash"]}
     ).json()
     assert warm["changed"] is False
 
     result_cache.clear()
-    cold = client.get(
+    cold = admin_client.get(
         f"/queries/{saved['id']}/poll", params={"since_hash": run["data_hash"]}
     ).json()
     assert cold["changed"] is True
     assert cold["row_count"] == run["row_count"] + 1
 
 
-def test_force_bypasses_the_cache(client, saved, target_sqlite):
-    run = client.post(f"/queries/{saved['id']}/run").json()
+def test_force_bypasses_the_cache(admin_client, saved, target_sqlite):
+    run = admin_client.post(f"/queries/{saved['id']}/run").json()
     _insert_row(target_sqlite)
-    forced = client.get(
+    forced = admin_client.get(
         f"/queries/{saved['id']}/poll",
         params={"since_hash": run["data_hash"], "force": "true"},
     ).json()
@@ -245,23 +245,23 @@ def test_force_bypasses_the_cache(client, saved, target_sqlite):
     assert forced["from_cache"] is False
 
 
-def test_updating_a_query_invalidates_its_cache(client, saved):
-    client.post(f"/queries/{saved['id']}/run")
+def test_updating_a_query_invalidates_its_cache(admin_client, saved):
+    admin_client.post(f"/queries/{saved['id']}/run")
     assert result_cache.get(saved["id"]) is not None
-    client.put(f"/queries/{saved['id']}", json={"name": "renamed"})
+    admin_client.put(f"/queries/{saved['id']}", json={"name": "renamed"})
     assert result_cache.get(saved["id"]) is None
 
 
-def test_editing_a_chart_invalidates_the_cache(client, saved):
+def test_editing_a_chart_invalidates_the_cache(admin_client, saved):
     """The cached payload echoes every chart's mapping.
 
     Without this an edited chart would keep drawing the old way until the entry
     aged out - and polling would report nothing changed, because the rows did
     not.
     """
-    client.post(f"/queries/{saved['id']}/run")
+    admin_client.post(f"/queries/{saved['id']}/run")
     assert result_cache.get(saved["id"]) is not None
-    client.put(
+    admin_client.put(
         f"/queries/{saved['id']}/charts",
         json={"charts": [{"name": "Bars", "chart_type": "bar", "x_field": "day",
                           "y_field": "n"}]},
@@ -269,12 +269,12 @@ def test_editing_a_chart_invalidates_the_cache(client, saved):
     assert result_cache.get(saved["id"]) is None
 
 
-def test_poll_on_missing_query_is_404(client):
-    assert client.get("/queries/nope/poll").status_code == 404
+def test_poll_on_missing_query_is_404(admin_client):
+    assert admin_client.get("/queries/nope/poll").status_code == 404
 
 
-def test_poll_uses_the_per_query_interval(client, sqlite_connection):
-    created = client.post(
+def test_poll_uses_the_per_query_interval(admin_client, sqlite_connection):
+    created = admin_client.post(
         f"/connections/{sqlite_connection['id']}/queries",
         json={
             "name": "fast",
@@ -282,7 +282,7 @@ def test_poll_uses_the_per_query_interval(client, sqlite_connection):
             "poll_interval_ms": 1500,
         },
     ).json()
-    assert client.get(f"/queries/{created['id']}/poll").json()["poll_interval_ms"] == 1500
+    assert admin_client.get(f"/queries/{created['id']}/poll").json()["poll_interval_ms"] == 1500
 
 
 # ---------------------------------------------------------------------------
@@ -290,10 +290,10 @@ def test_poll_uses_the_per_query_interval(client, sqlite_connection):
 # ---------------------------------------------------------------------------
 
 
-def test_preview_runs_without_saving(client, sqlite_connection, session):
+def test_preview_runs_without_saving(admin_client, sqlite_connection, session):
     from app.models import SavedQuery
 
-    r = client.post(
+    r = admin_client.post(
         f"/connections/{sqlite_connection['id']}/query/preview",
         json={"sql_text": "SELECT day, amount FROM txns ORDER BY id"},
     )
@@ -303,12 +303,12 @@ def test_preview_runs_without_saving(client, sqlite_connection, session):
     assert session.query(SavedQuery).count() == 0
 
 
-def test_preview_is_capped_at_the_preview_limit(client, sqlite_connection, monkeypatch):
+def test_preview_is_capped_at_the_preview_limit(admin_client, sqlite_connection, monkeypatch):
     from app.config import get_settings
 
     monkeypatch.setenv("FAE_PREVIEW_ROW_LIMIT", "2")
     get_settings.cache_clear()
-    r = client.post(
+    r = admin_client.post(
         f"/connections/{sqlite_connection['id']}/query/preview",
         json={"sql_text": "SELECT * FROM txns", "row_limit": 1000},
     )
@@ -316,8 +316,8 @@ def test_preview_is_capped_at_the_preview_limit(client, sqlite_connection, monke
     assert r.json()["truncated"] is True
 
 
-def test_preview_goes_through_the_guard(client, sqlite_connection):
-    r = client.post(
+def test_preview_goes_through_the_guard(admin_client, sqlite_connection):
+    r = admin_client.post(
         f"/connections/{sqlite_connection['id']}/query/preview",
         json={"sql_text": "DROP TABLE txns"},
     )
@@ -325,24 +325,24 @@ def test_preview_goes_through_the_guard(client, sqlite_connection):
     assert r.json()["error_code"] == "NON_SELECT_STATEMENT"
 
 
-def test_preview_writes_no_execution_log(client, sqlite_connection, session):
-    client.post(
+def test_preview_writes_no_execution_log(admin_client, sqlite_connection, session):
+    admin_client.post(
         f"/connections/{sqlite_connection['id']}/query/preview",
         json={"sql_text": "SELECT 1"},
     )
     assert session.query(QueryExecutionLog).count() == 0
 
 
-def test_preview_on_missing_connection_is_404(client):
-    r = client.post("/connections/nope/query/preview", json={"sql_text": "SELECT 1"})
+def test_preview_on_missing_connection_is_404(admin_client):
+    r = admin_client.post("/connections/nope/query/preview", json={"sql_text": "SELECT 1"})
     assert r.status_code == 404
 
 
-def test_poll_reports_unchanged_after_a_cold_execution(client, saved):
+def test_poll_reports_unchanged_after_a_cold_execution(admin_client, saved):
     """The cold path must also honour since_hash, not only the cached path."""
-    run = client.post(f"/queries/{saved['id']}/run").json()
+    run = admin_client.post(f"/queries/{saved['id']}/run").json()
     result_cache.clear()
-    body = client.get(
+    body = admin_client.get(
         f"/queries/{saved['id']}/poll", params={"since_hash": run["data_hash"]}
     ).json()
     assert body["changed"] is False

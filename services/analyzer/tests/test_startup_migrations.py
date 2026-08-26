@@ -34,7 +34,22 @@ def test_startup_creates_the_schema_when_auto_migrate_is_on(unmigrated_db, monke
     from app.main import app
 
     with TestClient(app) as client:
-        r = client.get("/connections")
+        # /connections is behind require_user, same as everywhere else, so
+        # proving the freshly migrated schema is queryable means proving the
+        # users table it just created can hold a login, not just that
+        # ``connections`` exists. This is a local TestClient rather than the
+        # ``admin_client`` fixture on purpose: that fixture's ``client``
+        # dependency builds its schema against the isolated_environment
+        # database, not the deliberately-empty one ``unmigrated_db`` points
+        # FAE_APP_DB_URL at.
+        from tests.test_auth_api import login, make_user
+
+        make_user(email="migrated-admin@example.com")
+        token = login(client, email="migrated-admin@example.com").json()["token"]
+
+        r = client.get(
+            "/connections", headers={"Authorization": f"Bearer {token}"}
+        )
     assert r.status_code == 200, r.text
     assert r.json() == []
 

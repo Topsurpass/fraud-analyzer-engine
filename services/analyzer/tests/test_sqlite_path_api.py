@@ -11,12 +11,12 @@ from app.config import get_settings
 
 
 def test_cannot_register_a_connection_pointing_at_the_app_state_database(
-    client, tmp_path
+    admin_client, tmp_path
 ):
     app_db_path = get_settings().app_db_sqlite_file
     assert app_db_path is not None, "this test needs the sqlite app-state backend"
 
-    response = client.post(
+    response = admin_client.post(
         "/connections",
         json={
             "name": "exfil",
@@ -35,13 +35,13 @@ def test_cannot_register_a_connection_pointing_at_the_app_state_database(
 
 
 def test_credentials_cannot_be_read_back_through_a_target_connection(
-    client, tmp_path
+    admin_client, tmp_path
 ):
     """The full attack, end to end, must not return a single row."""
     app_db_path = get_settings().app_db_sqlite_file
 
     # Give the service a real credential to leak.
-    client.post(
+    admin_client.post(
         "/connections",
         json={
             "name": "victim",
@@ -54,7 +54,7 @@ def test_credentials_cannot_be_read_back_through_a_target_connection(
         },
     )
 
-    created = client.post(
+    created = admin_client.post(
         "/connections",
         json={"name": "exfil", "db_type": "sqlite", "sqlite_path": str(app_db_path)},
     )
@@ -62,7 +62,7 @@ def test_credentials_cannot_be_read_back_through_a_target_connection(
         return  # refused outright, nothing further to probe
 
     connection_id = created.json()["connection"]["id"]
-    stolen = client.post(
+    stolen = admin_client.post(
         f"/connections/{connection_id}/query/preview",
         json={"sql_text": "SELECT name, password_encrypted FROM connections"},
     )
@@ -73,9 +73,9 @@ def test_credentials_cannot_be_read_back_through_a_target_connection(
     )
 
 
-def test_tables_of_the_app_state_database_are_not_listable(client):
+def test_tables_of_the_app_state_database_are_not_listable(admin_client):
     app_db_path = get_settings().app_db_sqlite_file
-    created = client.post(
+    created = admin_client.post(
         "/connections",
         json={"name": "exfil2", "db_type": "sqlite", "sqlite_path": str(app_db_path)},
     )
@@ -83,5 +83,5 @@ def test_tables_of_the_app_state_database_are_not_listable(client):
         return
 
     connection_id = created.json()["connection"]["id"]
-    listed = client.get(f"/connections/{connection_id}/tables")
+    listed = admin_client.get(f"/connections/{connection_id}/tables")
     assert listed.status_code != 200, listed.text

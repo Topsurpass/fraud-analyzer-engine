@@ -16,8 +16,8 @@ from app.services import saved_query_service as svc
 
 
 @pytest.fixture
-def query_id(client, sqlite_connection):
-    created = client.post(
+def query_id(admin_client, sqlite_connection):
+    created = admin_client.post(
         f"/connections/{sqlite_connection['id']}/queries",
         json={"name": "q", "sql_text": "SELECT day FROM txns", "chart_type": "table"},
     )
@@ -109,7 +109,7 @@ def test_a_query_under_quota_is_untouched(session, query_id, monkeypatch):
     assert len(svc.recent_logs(session, query_id, limit=100)) == 3
 
 
-def test_startup_pruning_never_blocks_the_service(client, monkeypatch):
+def test_startup_pruning_never_blocks_the_service(admin_client, monkeypatch):
     """An unprunable log table is housekeeping, not a reason to refuse to serve."""
     import app.main as main
 
@@ -118,4 +118,4 @@ def test_startup_pruning_never_blocks_the_service(client, monkeypatch):
 
     monkeypatch.setattr(svc, "prune_execution_logs", explode)
     main._prune_logs_on_startup()  # must not raise
-    assert client.get("/health").status_code == 200
+    assert admin_client.get("/health").status_code == 200

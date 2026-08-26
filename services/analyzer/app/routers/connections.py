@@ -14,12 +14,25 @@ from app.schemas.connection import (
     ConnectionTestResult,
     ConnectionUpdate,
 )
+from app.security.deps import require_admin, require_user
 from app.services import connection_service
 
-router = APIRouter(prefix="/connections", tags=["connections"])
+# require_user at the router level: connections are admin-managed, but an
+# analyst still has to be able to list and read them to pick one to query
+# against. Every write endpoint below layers require_admin on top.
+router = APIRouter(
+    prefix="/connections",
+    tags=["connections"],
+    dependencies=[Depends(require_user)],
+)
 
 
-@router.post("", response_model=ConnectionCreateResult, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=ConnectionCreateResult,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
+)
 def create_connection(
     payload: ConnectionCreate, session: Session = Depends(get_session)
 ) -> ConnectionCreateResult:
@@ -57,7 +70,11 @@ def get_connection(
     )
 
 
-@router.put("/{connection_id}", response_model=ConnectionCreateResult)
+@router.put(
+    "/{connection_id}",
+    response_model=ConnectionCreateResult,
+    dependencies=[Depends(require_admin)],
+)
 def update_connection(
     connection_id: str,
     payload: ConnectionUpdate,
@@ -74,7 +91,11 @@ def update_connection(
     )
 
 
-@router.post("/{connection_id}/test", response_model=ConnectionTestResult)
+@router.post(
+    "/{connection_id}/test",
+    response_model=ConnectionTestResult,
+    dependencies=[Depends(require_admin)],
+)
 def test_connection(
     connection_id: str, session: Session = Depends(get_session)
 ) -> ConnectionTestResult:
@@ -91,7 +112,11 @@ def test_connection(
     )
 
 
-@router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{connection_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_admin)],
+)
 def delete_connection(
     connection_id: str, session: Session = Depends(get_session)
 ) -> Response:
@@ -105,7 +130,11 @@ def delete_connection(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/{connection_id}/disconnect", response_model=ConnectionRead)
+@router.post(
+    "/{connection_id}/disconnect",
+    response_model=ConnectionRead,
+    dependencies=[Depends(require_admin)],
+)
 def disconnect_connection(
     connection_id: str, session: Session = Depends(get_session)
 ) -> Connection:
@@ -124,7 +153,11 @@ def disconnect_connection(
     return connection_service.pause_connection(session, conn)
 
 
-@router.post("/{connection_id}/reconnect", response_model=ConnectionTestResult)
+@router.post(
+    "/{connection_id}/reconnect",
+    response_model=ConnectionTestResult,
+    dependencies=[Depends(require_admin)],
+)
 def reconnect_connection(
     connection_id: str, session: Session = Depends(get_session)
 ) -> ConnectionTestResult:

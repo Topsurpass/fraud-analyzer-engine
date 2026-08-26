@@ -12,10 +12,10 @@ import pytest
 
 
 @pytest.fixture
-def three_queries(client, sqlite_connection):
+def three_queries(admin_client, sqlite_connection):
     ids = []
     for i in range(3):
-        created = client.post(
+        created = admin_client.post(
             f"/connections/{sqlite_connection['id']}/queries",
             json={
                 "name": f"q{i}",
@@ -28,24 +28,24 @@ def three_queries(client, sqlite_connection):
     return ids
 
 
-def test_batch_fetch_returns_queries_in_the_order_asked_for(client, three_queries):
+def test_batch_fetch_returns_queries_in_the_order_asked_for(admin_client, three_queries):
     reversed_ids = list(reversed(three_queries))
-    response = client.get("/queries", params={"ids": ",".join(reversed_ids)})
+    response = admin_client.get("/queries", params={"ids": ",".join(reversed_ids)})
     assert response.status_code == 200
     assert [q["id"] for q in response.json()] == reversed_ids
 
 
-def test_batch_fetch_skips_unknown_ids(client, three_queries):
+def test_batch_fetch_skips_unknown_ids(admin_client, three_queries):
     """A board that just lost a query should still render what survived."""
-    response = client.get(
+    response = admin_client.get(
         "/queries", params={"ids": f"{three_queries[0]},missing,{three_queries[1]}"}
     )
     assert response.status_code == 200
     assert [q["id"] for q in response.json()] == three_queries[:2]
 
 
-def test_batch_poll_returns_one_result_per_query(client, three_queries):
-    response = client.post(
+def test_batch_poll_returns_one_result_per_query(admin_client, three_queries):
+    response = admin_client.post(
         "/queries/poll",
         json={"queries": [{"query_id": qid} for qid in three_queries]},
     )
@@ -56,12 +56,12 @@ def test_batch_poll_returns_one_result_per_query(client, three_queries):
     assert all(r["changed"] is True for r in results)
 
 
-def test_batch_poll_honours_since_hash_per_query(client, three_queries):
-    first = client.post(
+def test_batch_poll_honours_since_hash_per_query(admin_client, three_queries):
+    first = admin_client.post(
         "/queries/poll", json={"queries": [{"query_id": three_queries[0]}]}
     ).json()["results"][0]
 
-    again = client.post(
+    again = admin_client.post(
         "/queries/poll",
         json={
             "queries": [
@@ -74,7 +74,7 @@ def test_batch_poll_honours_since_hash_per_query(client, three_queries):
     assert again["data_hash"] == first["data_hash"]
 
 
-def test_one_broken_query_does_not_fail_the_whole_batch(client, three_queries, session):
+def test_one_broken_query_does_not_fail_the_whole_batch(admin_client, three_queries, session):
     """Eleven working cards must still render beside one broken one."""
     from app.models import SavedQuery
 
@@ -82,7 +82,7 @@ def test_one_broken_query_does_not_fail_the_whole_batch(client, three_queries, s
     broken.sql_text = "SELECT * FROM table_that_does_not_exist"
     session.commit()
 
-    response = client.post(
+    response = admin_client.post(
         "/queries/poll",
         json={"queries": [{"query_id": qid} for qid in three_queries]},
     )
@@ -95,8 +95,8 @@ def test_one_broken_query_does_not_fail_the_whole_batch(client, three_queries, s
     assert results[three_queries[1]]["error_code"]
 
 
-def test_batch_poll_reports_a_missing_query_without_failing(client, three_queries):
-    response = client.post(
+def test_batch_poll_reports_a_missing_query_without_failing(admin_client, three_queries):
+    response = admin_client.post(
         "/queries/poll",
         json={"queries": [{"query_id": three_queries[0]}, {"query_id": "nope"}]},
     )
@@ -106,10 +106,10 @@ def test_batch_poll_reports_a_missing_query_without_failing(client, three_querie
     assert results[1]["error_code"] == "QUERY_NOT_FOUND"
 
 
-def test_batch_poll_matches_single_poll_semantics(client, three_queries):
+def test_batch_poll_matches_single_poll_semantics(admin_client, three_queries):
     """The two endpoints share one implementation, so they cannot drift."""
-    single = client.get(f"/queries/{three_queries[0]}/poll").json()
-    batched = client.post(
+    single = admin_client.get(f"/queries/{three_queries[0]}/poll").json()
+    batched = admin_client.post(
         "/queries/poll",
         json={"queries": [{"query_id": three_queries[0]}], "force": True},
     ).json()["results"][0]
@@ -119,7 +119,7 @@ def test_batch_poll_matches_single_poll_semantics(client, three_queries):
     assert single["rows"] == batched["rows"]
 
 
-def test_batch_poll_rejects_an_empty_or_oversized_request(client):
-    assert client.post("/queries/poll", json={"queries": []}).status_code == 422
+def test_batch_poll_rejects_an_empty_or_oversized_request(admin_client):
+    assert admin_client.post("/queries/poll", json={"queries": []}).status_code == 422
     too_many = [{"query_id": f"q{i}"} for i in range(101)]
-    assert client.post("/queries/poll", json={"queries": too_many}).status_code == 422
+    assert admin_client.post("/queries/poll", json={"queries": too_many}).status_code == 422

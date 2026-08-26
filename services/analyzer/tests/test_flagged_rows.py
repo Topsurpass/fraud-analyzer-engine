@@ -17,37 +17,37 @@ from tests.test_flag_rules_api import make_query, rule
 
 
 @pytest.fixture
-def flagging_query(client, sqlite_connection):
+def flagging_query(admin_client, sqlite_connection):
     """A query whose rule matches two of the five seeded rows (900.0, 750.25)."""
     created = make_query(
-        client,
+        admin_client,
         sqlite_connection["id"],
         "SELECT day, amount, comment FROM txns",
         name="stored",
     )
-    client.put(
+    admin_client.put(
         f"/queries/{created['id']}/flag-rules",
         json={"rules": [rule("Large", "amount", "gt", "500")]},
     )
     return created
 
 
-def _section(client, connection_id, name="stored"):
-    body = client.get(f"/connections/{connection_id}/flagged").json()
+def _section(admin_client, connection_id, name="stored"):
+    body = admin_client.get(f"/connections/{connection_id}/flagged").json()
     return next(s for s in body["queries"] if s["query_name"] == name)
 
 
 def test_running_the_query_stores_what_it_matched(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
-    client.post(f"/queries/{flagging_query['id']}/run")
-    section = _section(client, sqlite_connection["id"])
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    section = _section(admin_client, sqlite_connection["id"])
     assert section["flagged_count"] == 2
     assert section["stale"] is False
 
 
 def test_the_queue_survives_the_result_cache_expiring(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
     """The reason for storing them at all.
 
@@ -56,78 +56,78 @@ def test_the_queue_survives_the_result_cache_expiring(
     """
     from app.services import result_cache
 
-    client.post(f"/queries/{flagging_query['id']}/run")
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
     result_cache.invalidate(flagging_query["id"])
 
-    section = _section(client, sqlite_connection["id"])
+    section = _section(admin_client, sqlite_connection["id"])
     assert section["flagged_count"] == 2
 
 
 def test_a_finding_keeps_the_time_it_was_first_seen(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
     # "This has been sitting here for three days" is the fact an analyst acts
     # on, and a re-run every poll interval must not reset it.
-    client.post(f"/queries/{flagging_query['id']}/run")
-    first = _section(client, sqlite_connection["id"])["rows"][0]["first_seen_at"]
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    first = _section(admin_client, sqlite_connection["id"])["rows"][0]["first_seen_at"]
 
-    client.post(f"/queries/{flagging_query['id']}/run")
-    again = _section(client, sqlite_connection["id"])["rows"][0]["first_seen_at"]
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    again = _section(admin_client, sqlite_connection["id"])["rows"][0]["first_seen_at"]
     assert again == first
 
 
 def test_re_running_does_not_duplicate_a_finding(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
     for _ in range(3):
-        client.post(f"/queries/{flagging_query['id']}/run")
-    assert _section(client, sqlite_connection["id"])["flagged_count"] == 2
+        admin_client.post(f"/queries/{flagging_query['id']}/run")
+    assert _section(admin_client, sqlite_connection["id"])["flagged_count"] == 2
 
 
 def test_a_row_that_stops_matching_is_removed(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
     # The table is the present, not the history: raise the threshold above one
     # of the two matches and it should leave the queue.
-    client.post(f"/queries/{flagging_query['id']}/run")
-    assert _section(client, sqlite_connection["id"])["flagged_count"] == 2
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    assert _section(admin_client, sqlite_connection["id"])["flagged_count"] == 2
 
-    client.put(
+    admin_client.put(
         f"/queries/{flagging_query['id']}/flag-rules",
         json={"rules": [rule("Large", "amount", "gt", "800")]},
     )
-    client.post(f"/queries/{flagging_query['id']}/run")
-    assert _section(client, sqlite_connection["id"])["flagged_count"] == 1
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    assert _section(admin_client, sqlite_connection["id"])["flagged_count"] == 1
 
 
 def test_removing_every_rule_empties_the_queue(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
-    client.post(f"/queries/{flagging_query['id']}/run")
-    client.put(f"/queries/{flagging_query['id']}/flag-rules", json={"rules": []})
-    client.post(f"/queries/{flagging_query['id']}/run")
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    admin_client.put(f"/queries/{flagging_query['id']}/flag-rules", json={"rules": []})
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
 
-    body = client.get(f"/connections/{sqlite_connection['id']}/flagged").json()
+    body = admin_client.get(f"/connections/{sqlite_connection['id']}/flagged").json()
     # No rules means no section at all, not a section holding stale findings.
     assert body["queries"] == []
 
 
 def test_a_finding_carries_its_own_column_headers(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
     # Stored with the row so it still renders correctly after the SELECT list
     # changes, instead of silently relabelling every earlier finding.
-    client.post(f"/queries/{flagging_query['id']}/run")
-    section = _section(client, sqlite_connection["id"])
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    section = _section(admin_client, sqlite_connection["id"])
     assert section["columns"] == ["day", "amount", "comment"]
 
 
-def test_dismissing_deletes_the_stored_row(client, sqlite_connection, flagging_query):
-    client.post(f"/queries/{flagging_query['id']}/run")
-    section = _section(client, sqlite_connection["id"])
+def test_dismissing_deletes_the_stored_row(admin_client, sqlite_connection, flagging_query):
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    section = _section(admin_client, sqlite_connection["id"])
     victim = section["rows"][0]["fingerprint"]
 
-    client.post(
+    admin_client.post(
         f"/queries/{flagging_query['id']}/flag-dismissals",
         json={"fingerprints": [victim]},
     )
@@ -142,24 +142,24 @@ def test_dismissing_deletes_the_stored_row(client, sqlite_connection, flagging_q
 
 
 def test_a_dismissed_row_is_not_stored_again_by_the_next_run(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
     """Without this the queue refills itself and dismissing means nothing."""
-    client.post(f"/queries/{flagging_query['id']}/run")
-    victim = _section(client, sqlite_connection["id"])["rows"][0]["fingerprint"]
-    client.post(
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    victim = _section(admin_client, sqlite_connection["id"])["rows"][0]["fingerprint"]
+    admin_client.post(
         f"/queries/{flagging_query['id']}/flag-dismissals",
         json={"fingerprints": [victim]},
     )
 
-    client.post(f"/queries/{flagging_query['id']}/run")
-    section = _section(client, sqlite_connection["id"])
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    section = _section(admin_client, sqlite_connection["id"])
     assert section["flagged_count"] == 1
     assert victim not in [row["fingerprint"] for row in section["rows"]]
 
 
 def test_deleting_findings_does_not_suppress_them(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
     """Delete and dismiss are deliberately different.
 
@@ -167,18 +167,18 @@ def test_deleting_findings_does_not_suppress_them(
     stored now - for tidying a queue after a rule change - so a row that still
     matches comes back on the next run.
     """
-    client.post(f"/queries/{flagging_query['id']}/run")
-    removed = client.delete(f"/queries/{flagging_query['id']}/flagged-rows")
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    removed = admin_client.delete(f"/queries/{flagging_query['id']}/flagged-rows")
     assert removed.json()["changed"] == 2
-    assert _section(client, sqlite_connection["id"])["flagged_count"] == 0
+    assert _section(admin_client, sqlite_connection["id"])["flagged_count"] == 0
 
-    client.post(f"/queries/{flagging_query['id']}/run")
-    assert _section(client, sqlite_connection["id"])["flagged_count"] == 2
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    assert _section(admin_client, sqlite_connection["id"])["flagged_count"] == 2
 
 
-def test_deleting_the_query_takes_its_findings(client, flagging_query):
-    client.post(f"/queries/{flagging_query['id']}/run")
-    client.delete(f"/queries/{flagging_query['id']}")
+def test_deleting_the_query_takes_its_findings(admin_client, flagging_query):
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    admin_client.delete(f"/queries/{flagging_query['id']}")
 
     from app.db.app_state import get_engine
     from app.models import FlaggedRow
@@ -189,10 +189,10 @@ def test_deleting_the_query_takes_its_findings(client, flagging_query):
 
 
 def test_the_summary_counts_by_connection_and_query(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
-    client.post(f"/queries/{flagging_query['id']}/run")
-    summary = client.get("/flagged/summary").json()
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    summary = admin_client.get("/flagged/summary").json()
 
     assert summary["flagged_count"] == 2
     connection = next(
@@ -210,8 +210,8 @@ def test_the_summary_counts_by_connection_and_query(
     assert query_entry["flagged_count"] == 2
 
 
-def test_the_summary_is_empty_with_nothing_flagged(client):
-    summary = client.get("/flagged/summary").json()
+def test_the_summary_is_empty_with_nothing_flagged(admin_client):
+    summary = admin_client.get("/flagged/summary").json()
     assert summary == {
         "connections": [],
         "queries": [],
@@ -221,15 +221,15 @@ def test_the_summary_is_empty_with_nothing_flagged(client):
 
 
 def test_a_rule_matching_nothing_still_appears_in_the_legend(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
     # "Large transfer 0" is the answer to "did my rule stop working".
-    client.put(
+    admin_client.put(
         f"/queries/{flagging_query['id']}/flag-rules",
         json={"rules": [rule("Impossible", "amount", "gt", "999999")]},
     )
-    client.post(f"/queries/{flagging_query['id']}/run")
-    section = _section(client, sqlite_connection["id"])
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    section = _section(admin_client, sqlite_connection["id"])
     assert [(r["name"], r["matched"]) for r in section["rules"]] == [("Impossible", 0)]
 
 
@@ -244,47 +244,47 @@ def test_a_rule_matching_nothing_still_appears_in_the_legend(
 
 
 def test_the_summary_says_when_the_newest_finding_appeared(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
-    client.post(f"/queries/{flagging_query['id']}/run")
-    summary = client.get("/flagged/summary").json()
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    summary = admin_client.get("/flagged/summary").json()
 
     assert summary["newest_first_seen_at"] is not None
-    section = _section(client, sqlite_connection["id"])
+    section = _section(admin_client, sqlite_connection["id"])
     assert summary["newest_first_seen_at"] == max(
         row["first_seen_at"] for row in section["rows"]
     )
 
 
 def test_each_connection_carries_its_own_newest(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
-    client.post(f"/queries/{flagging_query['id']}/run")
-    summary = client.get("/flagged/summary").json()
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    summary = admin_client.get("/flagged/summary").json()
     entry = next(
         c for c in summary["connections"] if c["connection_id"] == sqlite_connection["id"]
     )
     assert entry["newest_first_seen_at"] == summary["newest_first_seen_at"]
 
 
-def test_the_newest_is_null_when_nothing_is_flagged(client):
-    assert client.get("/flagged/summary").json()["newest_first_seen_at"] is None
+def test_the_newest_is_null_when_nothing_is_flagged(admin_client):
+    assert admin_client.get("/flagged/summary").json()["newest_first_seen_at"] is None
 
 
-def test_re_running_does_not_move_the_newest(client, flagging_query):
+def test_re_running_does_not_move_the_newest(admin_client, flagging_query):
     """first_seen_at is preserved on a re-run, so the bell must not re-alert.
 
     Otherwise every scheduled run would look like new findings had arrived and
     the notification would be permanently lit.
     """
-    client.post(f"/queries/{flagging_query['id']}/run")
-    first = client.get("/flagged/summary").json()["newest_first_seen_at"]
-    client.post(f"/queries/{flagging_query['id']}/run")
-    assert client.get("/flagged/summary").json()["newest_first_seen_at"] == first
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    first = admin_client.get("/flagged/summary").json()["newest_first_seen_at"]
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    assert admin_client.get("/flagged/summary").json()["newest_first_seen_at"] == first
 
 
 def test_stored_timestamps_carry_utc_on_the_wire(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
     """The bug app.schemas.types exists for, in the flagged view.
 
@@ -294,8 +294,8 @@ def test_stored_timestamps_carry_utc_on_the_wire(
     every "first seen" in the dashboard is silently offset by the viewer's UTC
     offset, on one backend only.
     """
-    client.post(f"/queries/{flagging_query['id']}/run")
-    section = _section(client, sqlite_connection["id"])
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    section = _section(admin_client, sqlite_connection["id"])
 
     for row in section["rows"]:
         assert row["first_seen_at"].endswith("Z"), row["first_seen_at"]
@@ -304,11 +304,11 @@ def test_stored_timestamps_carry_utc_on_the_wire(
 
 
 def test_the_summary_and_the_view_agree_on_the_timestamp(
-    client, sqlite_connection, flagging_query
+    admin_client, sqlite_connection, flagging_query
 ):
     # Two endpoints describing the same finding must not format it two ways;
     # the bell compares its stored acknowledgement against one of them.
-    client.post(f"/queries/{flagging_query['id']}/run")
-    newest = client.get("/flagged/summary").json()["newest_first_seen_at"]
-    section = _section(client, sqlite_connection["id"])
+    admin_client.post(f"/queries/{flagging_query['id']}/run")
+    newest = admin_client.get("/flagged/summary").json()["newest_first_seen_at"]
+    section = _section(admin_client, sqlite_connection["id"])
     assert newest == max(row["first_seen_at"] for row in section["rows"])

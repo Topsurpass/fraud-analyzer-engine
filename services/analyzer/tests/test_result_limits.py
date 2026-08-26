@@ -60,13 +60,13 @@ def test_decimal_nan_survives_as_a_string():
 
 
 def test_wide_result_is_refused_before_it_is_materialised(
-    client, sqlite_connection, monkeypatch
+    admin_client, sqlite_connection, monkeypatch
 ):
     """One row can be a gigabyte. SELECT repeat('x', 1e9) is the shape."""
     monkeypatch.setenv("FAE_MAX_RESULT_BYTES", "2000")
     get_settings.cache_clear()
 
-    response = client.post(
+    response = admin_client.post(
         f"/connections/{sqlite_connection['id']}/query/preview",
         json={"sql_text": "SELECT replace(hex(zeroblob(5000)), '0', 'x') AS big"},
     )
@@ -74,11 +74,11 @@ def test_wide_result_is_refused_before_it_is_materialised(
     assert response.json()["error_code"] == ErrorCode.RESULT_TOO_LARGE.value
 
 
-def test_a_result_inside_the_budget_is_returned(client, sqlite_connection, monkeypatch):
+def test_a_result_inside_the_budget_is_returned(admin_client, sqlite_connection, monkeypatch):
     monkeypatch.setenv("FAE_MAX_RESULT_BYTES", str(1024 * 1024))
     get_settings.cache_clear()
 
-    response = client.post(
+    response = admin_client.post(
         f"/connections/{sqlite_connection['id']}/query/preview",
         json={"sql_text": "SELECT day, amount FROM txns"},
     )

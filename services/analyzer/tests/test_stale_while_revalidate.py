@@ -21,9 +21,9 @@ from tests.test_flag_rules_api import make_query
 
 
 @pytest.fixture
-def query(client, sqlite_connection):
+def query(admin_client, sqlite_connection):
     return make_query(
-        client, sqlite_connection["id"], "SELECT day, amount FROM txns", name="watched"
+        admin_client, sqlite_connection["id"], "SELECT day, amount FROM txns", name="watched"
     )
 
 
@@ -40,11 +40,11 @@ def _expire(query_id: str) -> None:
     entry.stored_at -= (entry.ttl_ms / 1000) + 1
 
 
-def test_a_poll_past_the_ttl_still_answers_with_data(client, query):
-    client.post(f"/queries/{query['id']}/run")
+def test_a_poll_past_the_ttl_still_answers_with_data(admin_client, query):
+    admin_client.post(f"/queries/{query['id']}/run")
     _expire(query["id"])
 
-    body = client.get(f"/queries/{query['id']}/poll").json()
+    body = admin_client.get(f"/queries/{query['id']}/poll").json()
 
     # The whole point: rows now, not after a round trip to the target.
     assert body["row_count"] > 0
@@ -52,94 +52,94 @@ def test_a_poll_past_the_ttl_still_answers_with_data(client, query):
     _wait_for_refresh()
 
 
-def test_the_stale_answer_triggers_a_refresh(client, query):
-    client.post(f"/queries/{query['id']}/run")
-    before = len(client.get(f"/queries/{query['id']}/logs").json())
+def test_the_stale_answer_triggers_a_refresh(admin_client, query):
+    admin_client.post(f"/queries/{query['id']}/run")
+    before = len(admin_client.get(f"/queries/{query['id']}/logs").json())
     _expire(query["id"])
 
-    client.get(f"/queries/{query['id']}/poll")
+    admin_client.get(f"/queries/{query['id']}/poll")
     _wait_for_refresh()
 
-    assert len(client.get(f"/queries/{query['id']}/logs").json()) == before + 1
+    assert len(admin_client.get(f"/queries/{query['id']}/logs").json()) == before + 1
 
 
-def test_many_polls_of_one_stale_query_cause_one_execution(client, query):
+def test_many_polls_of_one_stale_query_cause_one_execution(admin_client, query):
     """Twenty cards watching one query must not become twenty executions.
 
     Expiry is exactly when a stampede is worst: every card asks at the same
     moment, and the database is already the slow part.
     """
-    client.post(f"/queries/{query['id']}/run")
-    before = len(client.get(f"/queries/{query['id']}/logs").json())
+    admin_client.post(f"/queries/{query['id']}/run")
+    before = len(admin_client.get(f"/queries/{query['id']}/logs").json())
     _expire(query["id"])
 
     for _ in range(10):
-        client.get(f"/queries/{query['id']}/poll")
+        admin_client.get(f"/queries/{query['id']}/poll")
     _wait_for_refresh()
 
-    assert len(client.get(f"/queries/{query['id']}/logs").json()) == before + 1
+    assert len(admin_client.get(f"/queries/{query['id']}/logs").json()) == before + 1
 
 
-def test_the_refresh_actually_lands_in_the_cache(client, query):
-    client.post(f"/queries/{query['id']}/run")
+def test_the_refresh_actually_lands_in_the_cache(admin_client, query):
+    admin_client.post(f"/queries/{query['id']}/run")
     _expire(query["id"])
-    client.get(f"/queries/{query['id']}/poll")
+    admin_client.get(f"/queries/{query['id']}/poll")
     _wait_for_refresh()
 
     # Fresh again, so the next poll is a plain cache hit.
     assert result_cache.get(query["id"]) is not None
 
 
-def test_a_query_nobody_has_run_still_blocks_once(client, query):
+def test_a_query_nobody_has_run_still_blocks_once(admin_client, query):
     # There is nothing to serve, so this one has to wait - and only this one.
-    body = client.get(f"/queries/{query['id']}/poll").json()
+    body = admin_client.get(f"/queries/{query['id']}/poll").json()
     assert body["row_count"] > 0
     assert body["from_cache"] is False
 
 
-def test_a_forced_refresh_never_serves_stale(client, query):
+def test_a_forced_refresh_never_serves_stale(admin_client, query):
     # Someone pressing Refresh is asking for a fresh read; handing them the old
     # answer would make the button look broken.
-    client.post(f"/queries/{query['id']}/run")
+    admin_client.post(f"/queries/{query['id']}/run")
     _expire(query["id"])
-    body = client.get(f"/queries/{query['id']}/poll", params={"force": True}).json()
+    body = admin_client.get(f"/queries/{query['id']}/poll", params={"force": True}).json()
     assert body["from_cache"] is False
 
 
-def test_an_entry_past_the_grace_window_is_not_served(client, query, monkeypatch):
+def test_an_entry_past_the_grace_window_is_not_served(admin_client, query, monkeypatch):
     """Stale beats nothing, but "an hour ago" does not answer "what now"."""
     monkeypatch.setenv("FAE_CACHE_STALE_GRACE_MS", "1")
     from app.config import get_settings
 
     get_settings.cache_clear()
 
-    client.post(f"/queries/{query['id']}/run")
+    admin_client.post(f"/queries/{query['id']}/run")
     _expire(query["id"])
     assert result_cache.get_stale(query["id"]) is None
 
 
 def test_a_disconnected_connection_is_not_refreshed_behind_your_back(
-    client, sqlite_connection, query
+    admin_client, sqlite_connection, query
 ):
     """Disconnected means disconnected, including for background work."""
-    client.post(f"/queries/{query['id']}/run")
-    before = len(client.get(f"/queries/{query['id']}/logs").json())
-    client.post(f"/connections/{sqlite_connection['id']}/disconnect")
+    admin_client.post(f"/queries/{query['id']}/run")
+    before = len(admin_client.get(f"/queries/{query['id']}/logs").json())
+    admin_client.post(f"/connections/{sqlite_connection['id']}/disconnect")
     _expire(query["id"])
 
     refresher.request_refresh(query["id"])
     _wait_for_refresh()
 
-    assert len(client.get(f"/queries/{query['id']}/logs").json()) == before
+    assert len(admin_client.get(f"/queries/{query['id']}/logs").json()) == before
 
 
-def test_a_failing_refresh_does_not_take_the_request_with_it(client, query, monkeypatch):
+def test_a_failing_refresh_does_not_take_the_request_with_it(admin_client, query, monkeypatch):
     def explode(*_args, **_kwargs):
         raise RuntimeError("target is down")
 
     monkeypatch.setattr("app.services.query_service.run_saved_query", explode)
 
-    client.post(f"/queries/{query['id']}/run") if False else None
+    admin_client.post(f"/queries/{query['id']}/run") if False else None
     refresher.request_refresh(query["id"])
     _wait_for_refresh()
     # No exception escaped, and the tracker is clean for the next attempt.

@@ -50,13 +50,13 @@ def test_ready_fails_when_the_app_state_database_is_unreachable(client, monkeypa
 
 
 def test_startup_names_the_connections_whose_password_cannot_be_read(
-    client, target_sqlite, caplog
+    admin_client, target_sqlite, caplog
 ):
     import logging
 
     from app.main import _report_unreadable_credentials
 
-    client.post(
+    admin_client.post(
         "/connections",
         json={
             "name": "pg-unreadable",

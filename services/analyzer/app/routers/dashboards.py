@@ -12,9 +12,14 @@ from sqlalchemy.orm import Session
 
 from app.db.app_state import get_session
 from app.schemas.dashboard import DashboardCreate, DashboardRead, DashboardUpdate
+from app.security.deps import require_user
 from app.services import dashboard_service as svc
 
-router = APIRouter(prefix="/dashboards", tags=["dashboards"])
+router = APIRouter(
+    prefix="/dashboards",
+    tags=["dashboards"],
+    dependencies=[Depends(require_user)],
+)
 
 
 def _read(dashboard) -> DashboardRead:

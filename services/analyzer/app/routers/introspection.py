@@ -7,9 +7,14 @@ from sqlalchemy.orm import Session
 
 from app.db.app_state import get_session
 from app.schemas.connection import ColumnList, TableList
+from app.security.deps import require_user
 from app.services import connection_service, introspection_service
 
-router = APIRouter(prefix="/connections", tags=["introspection"])
+router = APIRouter(
+    prefix="/connections",
+    tags=["introspection"],
+    dependencies=[Depends(require_user)],
+)
 
 
 @router.get("/{connection_id}/tables", response_model=TableList)

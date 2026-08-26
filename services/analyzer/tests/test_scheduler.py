@@ -35,11 +35,11 @@ def session():
 
 
 @pytest.fixture
-def watched(client, sqlite_connection):
+def watched(admin_client, sqlite_connection):
     created = make_query(
-        client, sqlite_connection["id"], "SELECT day, amount FROM txns", name="watched"
+        admin_client, sqlite_connection["id"], "SELECT day, amount FROM txns", name="watched"
     )
-    client.put(
+    admin_client.put(
         f"/queries/{created['id']}/flag-rules",
         json={"rules": [rule("Large", "amount", "gt", "500")]},
     )
@@ -50,32 +50,32 @@ def _stored(session) -> int:
     return session.query(FlaggedRow).count()
 
 
-def test_a_due_query_runs_and_stores_its_findings(client, watched, session):
+def test_a_due_query_runs_and_stores_its_findings(admin_client, watched, session):
     assert scheduler.run_due_once(session) == 1
     assert _stored(session) == 2
 
 
-def test_a_query_without_rules_is_never_run(client, sqlite_connection, session):
+def test_a_query_without_rules_is_never_run(admin_client, sqlite_connection, session):
     # It produces nothing to review, so running it on a timer would be load
     # with no output.
-    make_query(client, sqlite_connection["id"], "SELECT day FROM txns", name="plain")
+    make_query(admin_client, sqlite_connection["id"], "SELECT day FROM txns", name="plain")
     assert scheduler.run_due_once(session) == 0
 
 
 def test_a_query_is_not_run_again_until_its_interval_elapses(
-    client, watched, session
+    admin_client, watched, session
 ):
     assert scheduler.run_due_once(session) == 1
     assert scheduler.run_due_once(session) == 0
 
 
-def test_the_interval_has_a_floor(client, sqlite_connection, monkeypatch):
+def test_the_interval_has_a_floor(admin_client, sqlite_connection, monkeypatch):
     """A one-second interval must not become a denial of service."""
     monkeypatch.setenv("FAE_SCHEDULER_MIN_INTERVAL_MS", "60000")
     get_settings.cache_clear()
 
     created = make_query(
-        client,
+        admin_client,
         sqlite_connection["id"],
         "SELECT day FROM txns",
         name="eager",
@@ -89,13 +89,13 @@ def test_the_interval_has_a_floor(client, sqlite_connection, monkeypatch):
 
 
 def test_a_longer_interval_than_the_floor_is_respected(
-    client, sqlite_connection, monkeypatch
+    admin_client, sqlite_connection, monkeypatch
 ):
     monkeypatch.setenv("FAE_SCHEDULER_MIN_INTERVAL_MS", "1000")
     get_settings.cache_clear()
 
     created = make_query(
-        client,
+        admin_client,
         sqlite_connection["id"],
         "SELECT day FROM txns",
         name="patient",
@@ -108,7 +108,7 @@ def test_a_longer_interval_than_the_floor_is_respected(
 
 
 def test_a_failing_target_backs_off_instead_of_retrying_at_full_rate(
-    client, watched, session, monkeypatch
+    admin_client, watched, session, monkeypatch
 ):
     def explode(*_args, **_kwargs):
         raise RuntimeError("target is down")
@@ -128,19 +128,19 @@ def test_a_failing_target_backs_off_instead_of_retrying_at_full_rate(
 
 
 def test_one_broken_target_does_not_stop_the_others(
-    client, sqlite_connection, session, monkeypatch
+    admin_client, sqlite_connection, session, monkeypatch
 ):
     good = make_query(
-        client, sqlite_connection["id"], "SELECT day, amount FROM txns", name="good"
+        admin_client, sqlite_connection["id"], "SELECT day, amount FROM txns", name="good"
     )
-    client.put(
+    admin_client.put(
         f"/queries/{good['id']}/flag-rules",
         json={"rules": [rule("Large", "amount", "gt", "500")]},
     )
     bad = make_query(
-        client, sqlite_connection["id"], "SELECT day, amount FROM txns", name="bad"
+        admin_client, sqlite_connection["id"], "SELECT day, amount FROM txns", name="bad"
     )
-    client.put(
+    admin_client.put(
         f"/queries/{bad['id']}/flag-rules",
         json={"rules": [rule("Large", "amount", "gt", "500")]},
     )
@@ -158,7 +158,7 @@ def test_one_broken_target_does_not_stop_the_others(
     assert _stored(session) == 2
 
 
-def test_backoff_clears_after_a_success(client, watched, session, monkeypatch):
+def test_backoff_clears_after_a_success(admin_client, watched, session, monkeypatch):
     def explode(*_args, **_kwargs):
         raise RuntimeError("down")
 
@@ -172,7 +172,7 @@ def test_backoff_clears_after_a_success(client, watched, session, monkeypatch):
     assert watched["id"] not in scheduler._backoff
 
 
-def test_backoff_is_capped(client, watched, session, monkeypatch):
+def test_backoff_is_capped(admin_client, watched, session, monkeypatch):
     monkeypatch.setenv("FAE_SCHEDULER_MAX_BACKOFF_MS", "5000")
     get_settings.cache_clear()
 
@@ -189,13 +189,13 @@ def test_backoff_is_capped(client, watched, session, monkeypatch):
 
 
 def test_a_dismissed_row_is_not_re_flagged_by_a_scheduled_run(
-    client, watched, session
+    admin_client, watched, session
 ):
     """The scheduler is exactly what would refill a queue somebody cleared."""
     scheduler.run_due_once(session)
     stored = session.query(FlaggedRow).all()
     victim = stored[0].row_fingerprint
-    client.post(
+    admin_client.post(
         f"/queries/{watched['id']}/flag-dismissals", json={"fingerprints": [victim]}
     )
 
@@ -205,7 +205,7 @@ def test_a_dismissed_row_is_not_re_flagged_by_a_scheduled_run(
     assert victim not in [row.row_fingerprint for row in session.query(FlaggedRow).all()]
 
 
-def test_reset_forgets_every_schedule(client, watched, session):
+def test_reset_forgets_every_schedule(admin_client, watched, session):
     scheduler.run_due_once(session)
     assert scheduler.run_due_once(session) == 0
     scheduler.reset()

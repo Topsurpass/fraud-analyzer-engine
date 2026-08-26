@@ -14,17 +14,24 @@ from app.schemas.flag_rule import (
     FlagRuleSetRead,
     FlagRuleSetUpdate,
 )
+from app.security.deps import require_user
 from app.services import connection_service
 from app.services import flag_dismissal_service as dismissals
 from app.services import flagged_row_service as flagged_rows
 from app.services import flag_rule_service as svc
 from app.services import saved_query_service
 
-query_scoped = APIRouter(prefix="/queries", tags=["flag-rules"])
-connection_scoped = APIRouter(prefix="/connections", tags=["flag-rules"])
+query_scoped = APIRouter(
+    prefix="/queries", tags=["flag-rules"], dependencies=[Depends(require_user)]
+)
+connection_scoped = APIRouter(
+    prefix="/connections", tags=["flag-rules"], dependencies=[Depends(require_user)]
+)
 # Its own prefix rather than nested under /connections: the summary spans every
 # connection, so hanging it off one connection's path would be a lie.
-summary_scoped = APIRouter(prefix="/flagged", tags=["flag-rules"])
+summary_scoped = APIRouter(
+    prefix="/flagged", tags=["flag-rules"], dependencies=[Depends(require_user)]
+)
 
 
 @query_scoped.get("/{query_id}/flag-rules", response_model=FlagRuleSetRead)

@@ -24,6 +24,7 @@ from app.schemas.query import (
     SavedQueryRead,
     SavedQueryUpdate,
 )
+from app.security.deps import require_user
 from app.services import (
     connection_service,
     query_chart_service,
@@ -36,8 +37,12 @@ from app.services import (
 )
 from app.services import saved_query_service as svc
 
-connection_scoped = APIRouter(prefix="/connections", tags=["queries"])
-query_scoped = APIRouter(prefix="/queries", tags=["queries"])
+connection_scoped = APIRouter(
+    prefix="/connections", tags=["queries"], dependencies=[Depends(require_user)]
+)
+query_scoped = APIRouter(
+    prefix="/queries", tags=["queries"], dependencies=[Depends(require_user)]
+)
 
 
 # ---------------------------------------------------------------------------

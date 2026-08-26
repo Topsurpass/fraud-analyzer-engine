@@ -17,6 +17,7 @@ from app.config import get_settings
 #: Everything else is the fast gate lane, meant to run on every commit.
 _INTEGRATION_MODULES = {
     "test_auth_api",
+    "test_role_enforcement",
     "test_connections_api",
     "test_dashboards_api",
     "test_introspection_api",
@@ -184,9 +185,47 @@ def client(app_db):
 
 
 @pytest.fixture
-def sqlite_connection(client, target_sqlite):
-    """A created, tested-OK connection pointed at the temp SQLite target."""
-    response = client.post(
+def admin_client(client, app_db):
+    """A TestClient carrying an admin session.
+
+    Existing tests predate authentication and assert behaviour rather than
+    permissions, so they run as an admin. The permission rules themselves are
+    covered by tests/test_role_enforcement.py, which uses both roles
+    deliberately.
+
+    Mutates and returns the same ``client`` object rather than building a
+    second one: every other fixture in this file (``sqlite_connection``,
+    anything built on ``client``) already depends on ``client`` specifically,
+    and ``client`` is function-scoped, so mutating its headers here cannot
+    leak a session into another test.
+    """
+    from tests.test_auth_api import login, make_user
+    from app.models.enums import UserRole
+
+    # ``.test`` is one of the four RFC 2606 reserved TLDs (alongside
+    # ``.example``, ``.invalid``, ``.localhost``) and pydantic's ``EmailStr``
+    # hard-rejects it via email-validator's special-use-domain check, even
+    # with deliverability checking off - so this has to use a domain that
+    # actually resolves the request-body validation on POST /auth/login,
+    # not just the ORM's own lowercase CHECK constraint. ``example.com`` is
+    # the same domain the rest of the suite's fixtures already use.
+    make_user(email="suite-admin@example.com", role=UserRole.ADMIN)
+    token = login(client, email="suite-admin@example.com").json()["token"]
+    client.headers.update({"Authorization": f"Bearer {token}"})
+    return client
+
+
+@pytest.fixture
+def sqlite_connection(admin_client, target_sqlite):
+    """A created, tested-OK connection pointed at the temp SQLite target.
+
+    Creating a connection is an admin-only write (see
+    app/routers/connections.py), so this rides on admin_client rather than the
+    bare client - every test that pulls in sqlite_connection gets an
+    authenticated admin session as a side effect, which is what it needs to
+    make the POST below succeed in the first place.
+    """
+    response = admin_client.post(
         "/connections",
         json={"name": "target", "db_type": "sqlite", "sqlite_path": target_sqlite},
     )

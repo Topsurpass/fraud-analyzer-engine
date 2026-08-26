@@ -37,9 +37,9 @@ def count_statements():
 _names = itertools.count()
 
 
-def _make_dashboards(client, sqlite_connection, count):
+def _make_dashboards(admin_client, sqlite_connection, count):
     """Create `count` boards, each holding one freshly named saved query."""
-    created = client.post(
+    created = admin_client.post(
         f"/connections/{sqlite_connection['id']}/queries",
         json={
             "name": f"q-{next(_names)}",
@@ -49,7 +49,7 @@ def _make_dashboards(client, sqlite_connection, count):
     assert created.status_code == 201, created.text
     query = created.json()
     for _ in range(count):
-        response = client.post(
+        response = admin_client.post(
             "/dashboards",
             json={"name": f"board-{next(_names)}", "query_ids": [query["id"]]},
         )
@@ -58,36 +58,41 @@ def _make_dashboards(client, sqlite_connection, count):
 
 
 def test_listing_dashboards_does_not_scale_statements_with_board_count(
-    client, sqlite_connection
+    admin_client, sqlite_connection
 ):
     """The N+1 this replaced: five boards measured six statements.
 
     query_ids walks Dashboard.items, so a lazy load emitted one SELECT per
     board on a view the frontend loads on every page.
     """
-    _make_dashboards(client, sqlite_connection, 5)
+    _make_dashboards(admin_client, sqlite_connection, 5)
 
     with count_statements() as statements:
-        response = client.get("/dashboards")
+        response = admin_client.get("/dashboards")
     assert response.status_code == 200
     assert len(response.json()) == 5
 
     selects = [s for s in statements if s.strip().upper().startswith("SELECT")]
-    assert len(selects) == 2, (
-        f"expected 2 statements regardless of board count, got "
-        f"{len(selects)}:\n" + "\n".join(selects)
+    # 2 for require_user resolving the caller (one session lookup, one user
+    # lookup - see session_service.resolve) plus the 2 this test actually
+    # exists to pin down. The auth pair is fixed per request, not per board,
+    # so it belongs on this side of the assertion rather than invalidating
+    # the "flat regardless of board count" guarantee the test is for.
+    assert len(selects) == 4, (
+        f"expected 2 auth statements + 2 for the listing regardless of board "
+        f"count, got {len(selects)}:\n" + "\n".join(selects)
     )
 
 
-def test_dashboard_statement_count_is_flat_as_boards_grow(client, sqlite_connection):
+def test_dashboard_statement_count_is_flat_as_boards_grow(admin_client, sqlite_connection):
     """Two boards and ten boards must cost the same number of round trips."""
-    _make_dashboards(client, sqlite_connection, 2)
+    _make_dashboards(admin_client, sqlite_connection, 2)
     with count_statements() as few:
-        client.get("/dashboards")
+        admin_client.get("/dashboards")
 
-    _make_dashboards(client, sqlite_connection, 8)
+    _make_dashboards(admin_client, sqlite_connection, 8)
     with count_statements() as many:
-        client.get("/dashboards")
+        admin_client.get("/dashboards")
 
     count_few = len([s for s in few if s.strip().upper().startswith("SELECT")])
     count_many = len([s for s in many if s.strip().upper().startswith("SELECT")])
@@ -95,7 +100,7 @@ def test_dashboard_statement_count_is_flat_as_boards_grow(client, sqlite_connect
 
 
 def test_batch_query_fetch_does_not_scale_with_the_number_of_queries(
-    client, sqlite_connection
+    admin_client, sqlite_connection
 ):
     """A twelve-card board was thirteen round trips before it could paint.
 
@@ -106,7 +111,7 @@ def test_batch_query_fetch_does_not_scale_with_the_number_of_queries(
     """
     ids = []
     for i in range(6):
-        created = client.post(
+        created = admin_client.post(
             f"/connections/{sqlite_connection['id']}/queries",
             json={
                 "name": f"q{i}",
@@ -116,14 +121,15 @@ def test_batch_query_fetch_does_not_scale_with_the_number_of_queries(
         ids.append(created.json()["id"])
 
     with count_statements() as statements:
-        response = client.get("/queries", params={"ids": ",".join(ids)})
+        response = admin_client.get("/queries", params={"ids": ",".join(ids)})
 
     assert response.status_code == 200
     assert len(response.json()) == 6
     selects = [s for s in statements if s.strip().upper().startswith("SELECT")]
-    # One for the queries, one for their charts. Anything that grows with the
-    # number of queries is the N+1 this test exists to catch.
-    assert len(selects) <= 2, "\n".join(selects)
+    # One for the queries, one for their charts, plus 2 fixed for require_user
+    # resolving the caller (session lookup, user lookup). Anything past that
+    # fixed total of 4 is the N+1 this test exists to catch.
+    assert len(selects) <= 4, "\n".join(selects)
     assert not any("query_charts" in s and "= ?" in s for s in selects), (
         "charts were loaded one query at a time:\n" + "\n".join(selects)
     )
@@ -158,7 +164,7 @@ def test_run_payload_does_not_copy_the_rows():
 
 
 def test_column_listing_does_not_scan_the_catalog_on_the_happy_path(
-    client, sqlite_connection, monkeypatch
+    admin_client, sqlite_connection, monkeypatch
 ):
     """The old code listed every table and view just to build a 404.
 
@@ -176,14 +182,14 @@ def test_column_listing_does_not_scan_the_catalog_on_the_happy_path(
 
     monkeypatch.setattr(reflection.Inspector, "get_table_names", spy)
 
-    response = client.get(f"/connections/{sqlite_connection['id']}/tables/txns/columns")
+    response = admin_client.get(f"/connections/{sqlite_connection['id']}/tables/txns/columns")
     assert response.status_code == 200
     assert calls == [], "the catalog was listed on a successful column lookup"
 
 
-def test_unknown_table_still_returns_a_precise_404(client, sqlite_connection):
+def test_unknown_table_still_returns_a_precise_404(admin_client, sqlite_connection):
     """The listing is still consulted, but only where its cost buys something."""
-    response = client.get(
+    response = admin_client.get(
         f"/connections/{sqlite_connection['id']}/tables/nope/columns"
     )
     assert response.status_code == 404
