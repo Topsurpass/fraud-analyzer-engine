@@ -466,3 +466,35 @@ def test_a_password_change_keeps_the_surviving_sessions_provenance(client, app_d
         assert after.user_agent == original_agent
     finally:
         db.close()
+
+
+def test_a_promoted_colleague_does_not_lock_the_admin_who_was_exempt(client, app_db):
+    """The exemption has to leave no debt behind it.
+
+    Skipping only the *lock* while exempt let ``failed_login_count`` free-run:
+    it climbed past MAX_FAILED_LOGINS and was cleared by nothing but a
+    successful login. The moment a second active admin appeared the exemption
+    lifted with the count already over the threshold, so the founding admin's
+    next mistype locked them out instantly - triggered by onboarding a
+    colleague, with nothing visible connecting cause to effect. The increment
+    itself is skipped now, the same way it is skipped while a lock is live.
+    """
+    boss = make_user(email="boss@example.com", role=UserRole.ADMIN)
+    for _ in range(MAX_FAILED_LOGINS):
+        login(client, email="boss@example.com", password="wrong-but-long-enough")
+
+    # Onboarding a colleague lifts the exemption.
+    make_user(email="deputy@example.com", role=UserRole.ADMIN)
+    login(client, email="boss@example.com", password="wrong-but-long-enough")
+
+    response = login(client, email="boss@example.com")
+    assert response.status_code == 200, response.text
+
+    # And the reason it holds: no debt was carried out of the exempt period.
+    db = get_sessionmaker()()
+    try:
+        stored = db.get(User, boss.id)
+        assert stored.locked_until is None
+        assert stored.failed_login_count == 0
+    finally:
+        db.close()

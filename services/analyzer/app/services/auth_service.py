@@ -113,15 +113,27 @@ def authenticate(db: Session, email: str, password: str) -> User:
     # guesses therefore separated a registered address from an unregistered
     # one, which is precisely the oracle this module's docstring says is shut.
     if not passwords.verify_password(password, user.password_hash):
-        # Not incremented while already locked. An attacker who can push the
-        # lock forward with every wrong guess holds the account shut for as
-        # long as they care to keep guessing, which turns a defence into a
-        # weapon. A lock runs out on its own clock.
-        if not locked:
+        # Not counted at all in either of the two cases where the count can
+        # never be acted on, because a counter that keeps rising while nothing
+        # can consume it is a debt that falls due later, on somebody else's
+        # unrelated action.
+        #
+        # Already locked: an attacker who can push the lock forward with every
+        # wrong guess holds the account shut for as long as they care to keep
+        # guessing, which turns a defence into a weapon. A lock runs out on its
+        # own clock.
+        #
+        # Exempt as the last active admin: the count is skipped rather than
+        # merely left unacted-on. Incrementing it here let it free-run past
+        # MAX_FAILED_LOGINS, cleared by nothing but a successful login - so the
+        # moment a second admin was created and the exemption lifted, the
+        # founding admin's next mistype locked them out instantly. Onboarding a
+        # colleague is not a plausible cause for anybody to look at when
+        # diagnosing that, which is what makes it worse than the lock it came
+        # from.
+        if not locked and not _is_last_active_admin(db, user):
             user.failed_login_count += 1
-            if user.failed_login_count >= MAX_FAILED_LOGINS and not _is_last_active_admin(
-                db, user
-            ):
+            if user.failed_login_count >= MAX_FAILED_LOGINS:
                 user.locked_until = now + timedelta(minutes=LOCKOUT_MINUTES)
                 user.failed_login_count = 0
             db.commit()
