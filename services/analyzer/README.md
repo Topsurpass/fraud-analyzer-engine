@@ -226,7 +226,7 @@ Interactive docs at http://127.0.0.1:8000/docs. Run the tests with
 
 ## Accounts
 
-Every endpoint except `/health` and `/auth/login` needs a signed-in user.
+Every endpoint except `/health`, `/ready`, `/auth/login`, and `/auth/logout` needs a signed-in user.
 
 Create the first administrator. This is the only way an admin account comes
 into existence: it is a CLI command, not an HTTP endpoint, because no admin
@@ -238,7 +238,7 @@ access to the machine running the app rather than network access to it.
 
 Under Docker:
 
-    docker compose exec analyzer uv run fae create-admin
+    docker compose exec analyzer fae create-admin
 
 The command prints the database it is about to write to. If that is not the
 database you expect, you are in the wrong directory: the settings are read from
