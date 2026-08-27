@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, false
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, new_id
@@ -67,6 +67,11 @@ class Connection(TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     last_test_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: The administrator who added this database.
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
 
     queries: Mapped[list["SavedQuery"]] = relationship(
         back_populates="connection",

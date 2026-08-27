@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.db.app_state import get_session
+from app.models.user import User
 from app.schemas.flag_rule import (
     FlagDismissalRequest,
     FlagDismissalResult,
@@ -36,10 +37,13 @@ summary_scoped = APIRouter(
 
 @query_scoped.get("/{query_id}/flag-rules", response_model=FlagRuleSetRead)
 def get_flag_rules(
-    query_id: str, session: Session = Depends(get_session)
+    query_id: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
 ) -> FlagRuleSetRead:
     """Every rule on a query, in display order."""
-    rules = svc.rules_for_query(session, query_id)
+    saved_query_service.get_owned(session, query_id, user)
+    rules = svc.list_rules(session, query_id)
     return FlagRuleSetRead(query_id=query_id, rules=rules)
 
 
@@ -47,6 +51,7 @@ def get_flag_rules(
 def put_flag_rules(
     query_id: str,
     payload: FlagRuleSetUpdate,
+    user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> FlagRuleSetRead:
     """Replace a query's whole rule set.
@@ -55,7 +60,7 @@ def put_flag_rules(
     unit: ``position`` is just the index in the submitted list, so reordering
     needs no endpoint of its own. Sending an empty list removes every rule.
     """
-    query = saved_query_service.get_query(session, query_id)
+    query = saved_query_service.get_owned(session, query_id, user)
     rules = svc.replace_rules(session, query, payload.rules)
     return FlagRuleSetRead(query_id=query_id, rules=rules)
 
@@ -94,6 +99,7 @@ def refresh_flagged(
 def dismiss_flagged_rows(
     query_id: str,
     payload: FlagDismissalRequest,
+    user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> FlagDismissalResult:
     """Mark flagged rows as reviewed so they stop appearing.
@@ -105,7 +111,7 @@ def dismiss_flagged_rows(
     Dismissing a row that is already dismissed is a no-op rather than a
     conflict -- two tabs open on the same queue is normal use.
     """
-    query = saved_query_service.get_query(session, query_id)
+    query = saved_query_service.get_owned(session, query_id, user)
     stored = dismissals.dismiss(session, query, payload.fingerprints)
     # Delete the engine's stored copy as well, so the queue actually shrinks
     # rather than being filtered on the way out. The row in the customer's
@@ -119,6 +125,7 @@ def dismiss_flagged_rows(
 def restore_flagged_rows(
     query_id: str,
     fingerprint: list[str] | None = Query(default=None),
+    user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> FlagDismissalResult:
     """Undo dismissals: the named rows, or all of them when none are named.
@@ -127,7 +134,7 @@ def restore_flagged_rows(
     the engine stores their hashes, not the rows -- so there is no other way
     back to one.
     """
-    query = saved_query_service.get_query(session, query_id)
+    query = saved_query_service.get_owned(session, query_id, user)
     removed = dismissals.restore(session, query, fingerprint)
     return FlagDismissalResult(query_id=query_id, changed=removed)
 
@@ -136,6 +143,7 @@ def restore_flagged_rows(
 def delete_flagged_rows(
     query_id: str,
     fingerprint: list[str] | None = Query(default=None),
+    user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> FlagDismissalResult:
     """Delete stored findings without recording a dismissal.
@@ -149,7 +157,7 @@ def delete_flagged_rows(
 
     Either way this only ever removes the engine's own copy.
     """
-    saved_query_service.get_query(session, query_id)
+    saved_query_service.get_owned(session, query_id, user)
     removed = flagged_rows.delete_rows(session, query_id, fingerprint)
     return FlagDismissalResult(query_id=query_id, changed=removed)
 

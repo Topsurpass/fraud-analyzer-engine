@@ -57,7 +57,7 @@ def test_connection(session: Session, conn: Connection) -> AppError | None:
 
 
 def create_connection(
-    session: Session, payload: ConnectionCreate
+    session: Session, payload: ConnectionCreate, created_by: str | None = None
 ) -> tuple[Connection, AppError | None]:
     """Persist a connection and test it immediately.
 
@@ -79,6 +79,7 @@ def create_connection(
             encrypt(payload.password.get_secret_value()) if payload.password else None
         ),
         status=ConnectionStatus.UNTESTED,
+        created_by=created_by,
     )
     session.add(conn)
     try:

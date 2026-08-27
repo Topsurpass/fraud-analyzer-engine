@@ -142,6 +142,9 @@ class ExecutionLogRead(BaseModel):
     success: bool
     error_code: str | None
     error_message: str | None
+    #: Who caused this run. None for a scheduled or background refresh - see
+    #: the identical note on QueryExecutionLog.user_id.
+    user_id: str | None = None
 
 
 class BatchPollItem(BaseModel):

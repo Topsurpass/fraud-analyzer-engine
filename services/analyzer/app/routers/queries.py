@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.db.app_state import get_session
 from app.errors import AppError
 from app.models import utcnow
+from app.models.user import User
 from app.schemas.query import (
     BatchPollRequest,
     BatchPollResponse,
@@ -58,6 +59,7 @@ query_scoped = APIRouter(
 def create_query(
     connection_id: str,
     payload: SavedQueryCreate,
+    user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> SavedQueryRead:
     """Save a query.
@@ -67,28 +69,39 @@ def create_query(
     is always one that actually runs.
     """
     conn = connection_service.get_connection(session, connection_id)
-    return SavedQueryRead.model_validate(svc.create_query(session, conn, payload))
+    return SavedQueryRead.model_validate(
+        svc.create_query(session, conn, payload, owner_id=user.id)
+    )
 
 
 @connection_scoped.get("/{connection_id}/queries", response_model=list[SavedQueryRead]) # pyright: ignore[reportIndexIssue]
 def list_queries(
-    connection_id: str, session: Session = Depends(get_session)
+    connection_id: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
 ) -> list[SavedQueryRead]:
-    """List every saved query on a connection."""
+    """List every saved query on this connection that the caller may see."""
     connection_service.get_connection(session, connection_id)
     return [
-        SavedQueryRead.model_validate(q) for q in svc.list_queries(session, connection_id)
+        SavedQueryRead.model_validate(q)
+        for q in svc.list_queries(session, connection_id, user)
     ]
 
 
 @query_scoped.get("", response_model=list[SavedQueryRead])  # pyright: ignore[reportIndexIssue]
 def list_queries_by_ids(
-    ids: str = Query(
-        description="Comma-separated saved-query ids, in the order you want them back."
+    ids: str | None = Query(
+        default=None,
+        description=(
+            "Comma-separated saved-query ids, in the order you want them back. "
+            "Omit to list every query visible to the caller."
+        ),
     ),
+    user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> list[SavedQueryRead]:
-    """Resolve many saved queries in one request.
+    """Resolve many saved queries in one request, or list every query the
+    caller may see when no ``ids`` are given.
 
     A dashboard card resolves to a saved query and a board may span several
     connections, so the per-connection listing cannot serve one. Without this
@@ -96,32 +109,50 @@ def list_queries_by_ids(
     round trips before it can paint anything.
 
     Unknown ids are omitted rather than raising: a board that just lost a query
-    should still render the cards that survived.
+    should still render the cards that survived. An id belonging to somebody
+    else's query is omitted the same way - see ``list_queries_by_ids`` in the
+    service for why that is the right answer for a batch endpoint.
     """
+    if ids is None:
+        return [
+            SavedQueryRead.model_validate(q)
+            for q in svc.list_visible_queries(session, user)
+        ]
     requested = [part.strip() for part in ids.split(",") if part.strip()]
     return [
         SavedQueryRead.model_validate(q)
-        for q in svc.list_queries_by_ids(session, requested)
+        for q in svc.list_queries_by_ids(session, requested, user)
     ]
 
 
 @query_scoped.get("/{query_id}", response_model=SavedQueryRead)
-def get_query(query_id: str, session: Session = Depends(get_session)) -> SavedQueryRead:
-    return SavedQueryRead.model_validate(svc.get_query(session, query_id))
+def get_query(
+    query_id: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> SavedQueryRead:
+    return SavedQueryRead.model_validate(svc.get_owned(session, query_id, user))
 
 
 @query_scoped.put("/{query_id}", response_model=SavedQueryRead)
 def update_query(
-    query_id: str, payload: SavedQueryUpdate, session: Session = Depends(get_session)
+    query_id: str,
+    payload: SavedQueryUpdate,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
 ) -> SavedQueryRead:
     """Update a saved query. New SQL is re-validated and re-dry-run."""
-    query = svc.get_query(session, query_id)
+    query = svc.get_owned(session, query_id, user)
     return SavedQueryRead.model_validate(svc.update_query(session, query, payload))
 
 
 @query_scoped.delete("/{query_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_query(query_id: str, session: Session = Depends(get_session)) -> Response:
-    svc.delete_query(session, svc.get_query(session, query_id))
+def delete_query(
+    query_id: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> Response:
+    svc.delete_query(session, svc.get_owned(session, query_id, user))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -129,10 +160,11 @@ def delete_query(query_id: str, session: Session = Depends(get_session)) -> Resp
 def list_logs(
     query_id: str,
     limit: int = Query(default=20, ge=1, le=200),
+    user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> list[ExecutionLogRead]:
     """Recent execution attempts, newest first. Useful for debugging a chart."""
-    svc.get_query(session, query_id)
+    svc.get_owned(session, query_id, user)
     return [
         ExecutionLogRead.model_validate(entry)
         for entry in svc.recent_logs(session, query_id, limit)
@@ -148,12 +180,20 @@ def _to_run_response(payload, poll_interval_ms: int) -> dict:
     return payload.as_dict(poll_interval_ms)
 
 
-def _execute_and_log(session: Session, query, conn):
-    """Run a saved query, recording the attempt either way."""
+def _execute_and_log(session: Session, query, conn, user: User):
+    """Run a saved query, recording the attempt either way.
+
+    ``user`` is who asked for this run, threaded all the way down to the log
+    row so "who ran this" is answerable later. It is never None for these two
+    call sites - both sit behind ``require_user`` - which is what tells the
+    two of them apart from the scheduler and the stale-cache refresher, which
+    call ``log_execution`` directly with no user because nobody asked for
+    those interactively.
+    """
     try:
         payload = query_service.run_saved_query(query, conn)
     except AppError as error:
-        svc.log_execution(session, query.id, success=False, error=error)
+        svc.log_execution(session, query.id, success=False, error=error, user_id=user.id)
         raise
     svc.log_execution(
         session,
@@ -161,6 +201,7 @@ def _execute_and_log(session: Session, query, conn):
         success=True,
         row_count=payload.row_count,
         duration_ms=payload.duration_ms,
+        user_id=user.id,
     )
     # Every actual execution updates the stored queue, so a finding outlives
     # the cache entry that produced it and the flagged view has something to
@@ -170,16 +211,20 @@ def _execute_and_log(session: Session, query, conn):
 
 
 @query_scoped.post("/{query_id}/run", response_model=RunResponse)
-def run_query(query_id: str, session: Session = Depends(get_session)) -> dict:
+def run_query(
+    query_id: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> dict:
     """Execute a saved query now.
 
     Always hits the target database and refreshes the poll cache, so this is
     the way to force a fresh read.
     """
-    query = svc.get_query(session, query_id)
+    query = svc.get_owned(session, query_id, user)
     conn = connection_service.get_connection(session, query.connection_id)
 
-    payload = _execute_and_log(session, query, conn)
+    payload = _execute_and_log(session, query, conn, user)
     interval = query_service.poll_interval_for(query)
     body = _to_run_response(payload, interval)
     # Cached before filtering, served after: see apply_dismissals.
@@ -194,6 +239,7 @@ def poll_query(
     query_id: str,
     since_hash: str | None = Query(default=None),
     force: bool = Query(default=False, description="Bypass the cache"),
+    user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> dict:
     """Cheap endpoint for a dashboard's interval loop.
@@ -205,18 +251,18 @@ def poll_query(
     Returns ``changed: false`` when the current hash equals ``since_hash``, and
     the full payload otherwise.
     """
-    return _poll_one(session, query_id, since_hash, force)
+    return _poll_one(session, query_id, since_hash, force, user)
 
 
 def _poll_one(
-    session: Session, query_id: str, since_hash: str | None, force: bool
+    session: Session, query_id: str, since_hash: str | None, force: bool, user: User
 ) -> dict:
     """The whole poll decision for one query.
 
     Shared by the single and batch endpoints so the two cannot drift apart on
     caching, hashing, or logging behaviour.
     """
-    query = svc.get_query(session, query_id)
+    query = svc.get_owned(session, query_id, user)
     interval = query_service.poll_interval_for(query)
     # Read once and applied to whichever payload is served. A row the analyst
     # has reviewed should stop being marked on the chart too, not only in the
@@ -248,7 +294,7 @@ def _poll_one(
         return {**body, "changed": True, "from_cache": True}
 
     conn = connection_service.get_connection(session, query.connection_id)
-    payload = _execute_and_log(session, query, conn)
+    payload = _execute_and_log(session, query, conn, user)
     body = _to_run_response(payload, interval)
     # Cached unfiltered, on purpose: a later dismissal has to be able to change
     # what this payload looks like without the query being run again.
@@ -327,7 +373,9 @@ def preview_flags(rules, columns: list[str], rows: list[list]) -> dict:
 
 @query_scoped.post("/poll", response_model=BatchPollResponse)
 def poll_queries(
-    payload: BatchPollRequest, session: Session = Depends(get_session)
+    payload: BatchPollRequest,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
 ) -> dict:
     """Poll many saved queries in one request.
 
@@ -339,14 +387,16 @@ def poll_queries(
     request per board per tick instead of one per card.
 
     A failure is reported per query rather than failing the batch, so one card
-    with broken SQL cannot blank out the eleven beside it.
+    with broken SQL cannot blank out the eleven beside it. That includes a
+    card belonging to somebody else: QUERY_NOT_FOUND lands in that card's slot
+    in the results, not as a 404 for the whole batch.
     """
     results: list[dict] = []
 
     for item in payload.queries:
         try:
             results.append(
-                _poll_one(session, item.query_id, item.since_hash, payload.force)
+                _poll_one(session, item.query_id, item.since_hash, payload.force, user)
             )
         except AppError as error:
             results.append(
@@ -364,10 +414,12 @@ def poll_queries(
 
 @query_scoped.get("/{query_id}/charts", response_model=QueryChartSetRead)
 def get_charts(
-    query_id: str, session: Session = Depends(get_session)
+    query_id: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
 ) -> QueryChartSetRead:
     """Every way this query's result can be drawn, in display order."""
-    svc.get_query(session, query_id)
+    svc.get_owned(session, query_id, user)
     return QueryChartSetRead(
         query_id=query_id, charts=query_chart_service.list_charts(session, query_id)
     )
@@ -377,6 +429,7 @@ def get_charts(
 def put_charts(
     query_id: str,
     payload: QueryChartSetUpdate,
+    user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> QueryChartSetRead:
     """Replace a query's whole chart set.
@@ -391,6 +444,6 @@ def put_charts(
     one already-fetched result, which is the entire point of separating them
     from the query.
     """
-    query = svc.get_query(session, query_id)
+    query = svc.get_owned(session, query_id, user)
     charts = query_chart_service.replace_charts(session, query, payload.charts)
     return QueryChartSetRead(query_id=query_id, charts=charts)

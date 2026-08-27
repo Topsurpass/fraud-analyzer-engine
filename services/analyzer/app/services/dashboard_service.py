@@ -7,12 +7,14 @@ boards, and a query deleted anywhere disappears from all of them.
 
 from __future__ import annotations
 
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import DuplicateNameError, ErrorCode, NotFoundError
+from app.errors import AppError, DuplicateNameError, ErrorCode, NotFoundError
 from app.models import Dashboard, DashboardItem, QueryChart
+from app.models.user import User
 from app.schemas.dashboard import DashboardCreate, DashboardUpdate
 
 
@@ -27,8 +29,35 @@ def get_dashboard(session: Session, dashboard_id: str) -> Dashboard:
     return dashboard
 
 
-def list_dashboards(session: Session) -> list[Dashboard]:
-    """Every dashboard, with its items already loaded.
+def visible_to(user: User):
+    """The filter clause deciding which dashboards a caller may see.
+
+    Mirrors ``saved_query_service.visible_to`` exactly: an administrator sees
+    everything, including unowned boards; an analyst sees only boards they
+    created.
+    """
+    if user.is_admin:
+        return sa.true()
+    return Dashboard.owner_id == user.id
+
+
+def get_owned(session: Session, dashboard_id: str, user: User) -> Dashboard:
+    """One dashboard the caller is entitled to, or raise DASHBOARD_NOT_FOUND.
+
+    Not found rather than forbidden - see the identical note on
+    ``saved_query_service.get_owned``. A guessed board id must not confirm
+    that a colleague has been building something.
+    """
+    dashboard = session.get(Dashboard, dashboard_id)
+    if dashboard is None:
+        raise AppError(ErrorCode.DASHBOARD_NOT_FOUND, "No such dashboard.")
+    if not user.is_admin and dashboard.owner_id != user.id:
+        raise AppError(ErrorCode.DASHBOARD_NOT_FOUND, "No such dashboard.")
+    return dashboard
+
+
+def list_dashboards(session: Session, user: User) -> list[Dashboard]:
+    """Every dashboard the caller may see, with its items already loaded.
 
     ``selectinload`` reaches through to the charts as well, because the read
     model resolves them. Without that second level a board of twenty cards
@@ -45,6 +74,7 @@ def list_dashboards(session: Session) -> list[Dashboard]:
     return list(
         session.scalars(
             select(Dashboard)
+            .where(visible_to(user))
             .options(selectinload(Dashboard.items).selectinload(DashboardItem.chart))
             .order_by(Dashboard.created_at)
         )
@@ -106,9 +136,11 @@ def _commit(session: Session, dashboard: Dashboard, name: str) -> Dashboard:
     return dashboard
 
 
-def create_dashboard(session: Session, payload: DashboardCreate) -> Dashboard:
+def create_dashboard(
+    session: Session, payload: DashboardCreate, owner_id: str | None = None
+) -> Dashboard:
     chart_ids = _validate_chart_ids(session, payload.chart_ids)
-    dashboard = Dashboard(name=payload.name)
+    dashboard = Dashboard(name=payload.name, owner_id=owner_id)
     _apply_items(dashboard, chart_ids)
     session.add(dashboard)
     return _commit(session, dashboard, payload.name)

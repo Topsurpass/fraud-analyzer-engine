@@ -38,6 +38,7 @@ _INTEGRATION_MODULES = {
     "test_observability",
     "test_flag_rules_api",
     "test_cli",
+    "test_ownership",
 }
 
 

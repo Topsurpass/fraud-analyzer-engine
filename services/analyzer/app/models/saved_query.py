@@ -50,6 +50,13 @@ class SavedQuery(TimestampMixin, Base):
     )
     poll_interval_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    #: Who created this. Nullable because rows predating accounts have no
+    #: owner, and because an owner is never deleted so the column never has to
+    #: be cleared. An unowned row is visible to administrators only.
+    owner_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+
     connection: Mapped["Connection"] = relationship(back_populates="queries")
     execution_logs: Mapped[list["QueryExecutionLog"]] = relationship(
         back_populates="query",

@@ -51,6 +51,13 @@ class Dashboard(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
 
+    #: Who created this. Nullable because rows predating accounts have no
+    #: owner, and because an owner is never deleted so the column never has to
+    #: be cleared. An unowned row is visible to administrators only.
+    owner_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+
     items: Mapped[list[DashboardItem]] = relationship(
         back_populates="dashboard",
         cascade="all, delete-orphan",

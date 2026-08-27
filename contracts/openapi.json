@@ -974,6 +974,17 @@
           "success": {
             "title": "Success",
             "type": "boolean"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
           }
         },
         "required": [
@@ -4206,7 +4217,7 @@
     },
     "/connections/{connection_id}/queries": {
       "get": {
-        "description": "List every saved query on a connection.",
+        "description": "List every saved query on this connection that the caller may see.",
         "operationId": "list_queries_connections__connection_id__queries_get",
         "parameters": [
           {
@@ -5238,7 +5249,7 @@
     },
     "/dashboards": {
       "get": {
-        "description": "Every dashboard, oldest first.",
+        "description": "Every dashboard the caller may see, oldest first.",
         "operationId": "list_dashboards_dashboards_get",
         "responses": {
           "200": {
@@ -6207,18 +6218,25 @@
     },
     "/queries": {
       "get": {
-        "description": "Resolve many saved queries in one request.\n\nA dashboard card resolves to a saved query and a board may span several\nconnections, so the per-connection listing cannot serve one. Without this\nthe frontend issues one GET per card, and a twelve-card board is thirteen\nround trips before it can paint anything.\n\nUnknown ids are omitted rather than raising: a board that just lost a query\nshould still render the cards that survived.",
+        "description": "Resolve many saved queries in one request, or list every query the\ncaller may see when no ``ids`` are given.\n\nA dashboard card resolves to a saved query and a board may span several\nconnections, so the per-connection listing cannot serve one. Without this\nthe frontend issues one GET per card, and a twelve-card board is thirteen\nround trips before it can paint anything.\n\nUnknown ids are omitted rather than raising: a board that just lost a query\nshould still render the cards that survived. An id belonging to somebody\nelse's query is omitted the same way - see ``list_queries_by_ids`` in the\nservice for why that is the right answer for a batch endpoint.",
         "operationId": "list_queries_by_ids_queries_get",
         "parameters": [
           {
-            "description": "Comma-separated saved-query ids, in the order you want them back.",
+            "description": "Comma-separated saved-query ids, in the order you want them back. Omit to list every query visible to the caller.",
             "in": "query",
             "name": "ids",
-            "required": true,
+            "required": false,
             "schema": {
-              "description": "Comma-separated saved-query ids, in the order you want them back.",
-              "title": "Ids",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated saved-query ids, in the order you want them back. Omit to list every query visible to the caller.",
+              "title": "Ids"
             }
           }
         ],
@@ -6356,7 +6374,7 @@
     },
     "/queries/poll": {
       "post": {
-        "description": "Poll many saved queries in one request.\n\nEvery chart on a dashboard runs its own interval loop. Twelve cards at the\nfive-second default is twelve concurrent requests every five seconds, each\ntaking a worker thread and an app-state session, and each taking a target\nconnection out of a pool of ten whenever it misses cache. That load is\nstructural, not incidental, and this is the endpoint that removes it: one\nrequest per board per tick instead of one per card.\n\nA failure is reported per query rather than failing the batch, so one card\nwith broken SQL cannot blank out the eleven beside it.",
+        "description": "Poll many saved queries in one request.\n\nEvery chart on a dashboard runs its own interval loop. Twelve cards at the\nfive-second default is twelve concurrent requests every five seconds, each\ntaking a worker thread and an app-state session, and each taking a target\nconnection out of a pool of ten whenever it misses cache. That load is\nstructural, not incidental, and this is the endpoint that removes it: one\nrequest per board per tick instead of one per card.\n\nA failure is reported per query rather than failing the batch, so one card\nwith broken SQL cannot blank out the eleven beside it. That includes a\ncard belonging to somebody else: QUERY_NOT_FOUND lands in that card's slot\nin the results, not as a 404 for the whole batch.",
         "operationId": "poll_queries_queries_poll_post",
         "requestBody": {
           "content": {

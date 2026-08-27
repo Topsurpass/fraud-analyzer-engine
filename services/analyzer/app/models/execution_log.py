@@ -46,4 +46,10 @@ class QueryExecutionLog(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    #: Who caused this run. Null for a scheduled or background refresh, which
+    #: nobody asked for interactively.
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+
     query: Mapped["SavedQuery"] = relationship(back_populates="execution_logs")

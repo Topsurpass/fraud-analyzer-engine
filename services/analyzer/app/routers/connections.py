@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.app_state import get_session
 from app.models import utcnow
+from app.models.user import User
 from app.schemas.connection import (
     ConnectionCreate,
     ConnectionCreateResult,
@@ -34,7 +35,9 @@ router = APIRouter(
     dependencies=[Depends(require_admin)],
 )
 def create_connection(
-    payload: ConnectionCreate, session: Session = Depends(get_session)
+    payload: ConnectionCreate,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
 ) -> ConnectionCreateResult:
     """Create a connection profile and test it immediately.
 
@@ -42,7 +45,7 @@ def create_connection(
     error attached, so credentials can be corrected without re-entering
     everything.
     """
-    conn, error = connection_service.create_connection(session, payload)
+    conn, error = connection_service.create_connection(session, payload, created_by=user.id)
     return ConnectionCreateResult(
         connection=ConnectionRead.model_validate(conn),
         test_ok=error is None,

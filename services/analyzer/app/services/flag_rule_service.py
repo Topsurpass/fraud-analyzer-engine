@@ -25,7 +25,6 @@ from app.services import (
     result_cache,
 )
 from app.services.flagging import SEVERITY_ORDER
-from app.services.saved_query_service import get_query
 
 
 def list_rules(session: Session, query_id: str) -> list[FlagRule]:
@@ -90,12 +89,6 @@ def replace_rules(session: Session, query: SavedQuery, rules: list) -> list[Flag
 
     session.refresh(query, ["flag_rules"])
     return list_rules(session, query.id)
-
-
-def rules_for_query(session: Session, query_id: str) -> list[FlagRule]:
-    """Rules of one query, raising QUERY_NOT_FOUND if the query is gone."""
-    get_query(session, query_id)
-    return list_rules(session, query_id)
 
 
 # ---------------------------------------------------------------------------

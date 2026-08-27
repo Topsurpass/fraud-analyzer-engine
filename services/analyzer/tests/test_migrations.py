@@ -83,25 +83,64 @@ def test_migration_creates_the_expected_tables(tmp_path, alembic_for):
 
 
 def test_migration_sets_on_delete_cascade(tmp_path, alembic_for):
+    """The parent-link FK on each child table cascades: deleting the parent
+    removes what belongs to it.
+
+    Scoped to the specific column that links each row to its structural
+    parent, not "every FK on the table" -- since 0012_ownership these tables
+    also carry an *ownership* FK to ``users``, and that one is deliberately
+    RESTRICT rather than CASCADE (see test_ownership_foreign_keys_restrict
+    below): deleting an analyst's account must never delete their queries.
+    """
     url = f"sqlite:///{tmp_path / 'fk.db'}"
     command.upgrade(alembic_for(url), "head")
     inspector = inspect(create_engine(url))
-    for table in (
-        "saved_queries",
-        "query_execution_logs",
-        "dashboard_items",
-        # A rule must not outlive its query, nor a condition its rule.
-        "flag_rules",
-        "flag_conditions",
-    ):
-        fks = inspector.get_foreign_keys(table)
-        assert fks, f"{table} has no foreign key"
+    cascading_columns = {
+        "saved_queries": {"connection_id"},
+        "query_execution_logs": {"query_id"},
         # dashboard_items has two, and both must cascade: a board must not
         # outlive its dashboard, nor keep a card for a deleted query.
-        for fk in fks:
+        "dashboard_items": {"dashboard_id", "chart_id"},
+        # A rule must not outlive its query, nor a condition its rule.
+        "flag_rules": {"query_id"},
+        "flag_conditions": {"rule_id"},
+    }
+    for table, expected_columns in cascading_columns.items():
+        fks = inspector.get_foreign_keys(table)
+        assert fks, f"{table} has no foreign key"
+        by_column = {tuple(fk["constrained_columns"]): fk for fk in fks}
+        for column in expected_columns:
+            fk = by_column.get((column,))
+            assert fk is not None, f"{table} has no foreign key on {column}"
             assert fk["options"].get("ondelete") == "CASCADE", (
-                f"{table}.{fk['constrained_columns']}"
+                f"{table}.{column}"
             )
+
+
+def test_ownership_foreign_keys_restrict(tmp_path, alembic_for):
+    """The owner/creator FKs added by 0012_ownership refuse a deletion rather
+    than cascading it or nulling it out.
+
+    Accounts are deactivated, never deleted (see app/models/user.py), so this
+    only ever bites an operator trying to hard-delete a row directly against
+    the database -- but if they do, the fix must be "reassign or deactivate",
+    not "silently orphan every query that analyst ever saved".
+    """
+    url = f"sqlite:///{tmp_path / 'fk.db'}"
+    command.upgrade(alembic_for(url), "head")
+    inspector = inspect(create_engine(url))
+    ownership_columns = {
+        "saved_queries": "owner_id",
+        "dashboards": "owner_id",
+        "connections": "created_by",
+        "query_execution_logs": "user_id",
+    }
+    for table, column in ownership_columns.items():
+        fks = inspector.get_foreign_keys(table)
+        fk = next((fk for fk in fks if fk["constrained_columns"] == [column]), None)
+        assert fk is not None, f"{table} has no foreign key on {column}"
+        assert fk["referred_table"] == "users"
+        assert fk["options"].get("ondelete") == "RESTRICT", f"{table}.{column}"
 
 
 def test_downgrade_to_base_drops_everything(tmp_path, alembic_for):
