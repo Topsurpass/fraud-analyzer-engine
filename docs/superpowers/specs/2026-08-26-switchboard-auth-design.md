@@ -315,7 +315,7 @@ uv run fae reset-password      # lockout recovery
 uv run fae list-users
 ```
 
-Runs identically under Docker (`docker compose exec analyzer uv run fae ...`)
+Runs identically under Docker (`docker compose exec analyzer fae ...`)
 and without it (`cd services/analyzer && uv run fae ...`), because it loads the
 same `FAE_`-prefixed settings object the server does and therefore always
 targets the database the server is using.

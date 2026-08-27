@@ -2859,7 +2859,7 @@ existence, and it needs shell access rather than network access:
 
 Under Docker:
 
-    docker compose exec analyzer uv run fae create-admin
+    docker compose exec analyzer fae create-admin
 
 The command prints the database it is about to write to. If that is not the
 database you expect, you are in the wrong directory: the settings are read from
@@ -2902,7 +2902,7 @@ Then rebuild the container so the running engine has the new schema and CLI:
 ```bash
 cd services/analyzer
 docker compose build analyzer && docker compose up -d analyzer
-docker compose exec analyzer uv run fae create-admin
+docker compose exec analyzer fae create-admin
 ```
 
 **The dashboard will be completely broken at this point** — every request it
