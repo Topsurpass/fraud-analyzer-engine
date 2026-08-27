@@ -53,7 +53,7 @@ def create_dashboard(
 
     Every referenced query must exist; nothing is persisted otherwise.
     """
-    return _read(svc.create_dashboard(session, payload, owner_id=user.id))
+    return _read(svc.create_dashboard(session, payload, user))
 
 
 @router.get("/{dashboard_id}", response_model=DashboardRead)
@@ -77,7 +77,7 @@ def update_dashboard(
     ``chart_ids`` replaces the whole arrangement rather than merging into it.
     """
     dashboard = svc.get_owned(session, dashboard_id, user)
-    return _read(svc.update_dashboard(session, dashboard, payload))
+    return _read(svc.update_dashboard(session, dashboard, payload, user))
 
 
 @router.delete("/{dashboard_id}", status_code=status.HTTP_204_NO_CONTENT)

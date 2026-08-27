@@ -3931,7 +3931,7 @@
     },
     "/connections/{connection_id}/flagged": {
       "get": {
-        "description": "Flagged rows across every rule-bearing query on this connection.\n\nReads cached results and runs nothing, so opening the view costs the\ntarget database nothing. A query with no cached result is returned marked\n``stale`` rather than silently omitted, so the UI can say \"not run yet\"\ninstead of implying the rules matched nothing.",
+        "description": "Flagged rows across every rule-bearing query on this connection that\nthe caller may see.\n\nReads cached results and runs nothing, so opening the view costs the\ntarget database nothing. A query with no cached result is returned marked\n``stale`` rather than silently omitted, so the UI can say \"not run yet\"\ninstead of implying the rules matched nothing.\n\nA connection is shared across every analyst who queries it, but the\nqueries on it and the findings behind them are not: an analyst's section\nof this view is scoped to their own queries the same way ``GET /queries``\nis, via ``flagged_for_connection`` -> ``queries_with_rules``.",
         "operationId": "get_flagged_connections__connection_id__flagged_get",
         "parameters": [
           {
@@ -4074,7 +4074,7 @@
     },
     "/connections/{connection_id}/flagged/refresh": {
       "post": {
-        "description": "Re-run this connection's rule-bearing queries, then flag them.\n\nThe only path here that touches the target database. Bounded by\n``FAE_FLAGGED_REFRESH_MAX_QUERIES`` and counted against the execution rate\nlimit, since one click can otherwise fan out across every saved query on\nthe connection.",
+        "description": "Re-run this connection's rule-bearing queries that the caller may see,\nthen flag them.\n\nThe only path here that touches the target database. Bounded by\n``FAE_FLAGGED_REFRESH_MAX_QUERIES`` and counted against the execution rate\nlimit, since one click can otherwise fan out across every saved query on\nthe connection. Scoped to the caller's own queries the same way\n``get_flagged`` is - a refresh must not run, or report on, a query an\nanalyst is not allowed to see.",
         "operationId": "refresh_flagged_connections__connection_id__flagged_refresh_post",
         "parameters": [
           {
@@ -5952,7 +5952,7 @@
     },
     "/flagged/summary": {
       "get": {
-        "description": "Flagged totals per connection and per query, in one request.\n\nWhat the navigation badges need. A count endpoint per card would be the\nsame data fetched once per thing on screen, and this is read on every page.",
+        "description": "Flagged totals per connection and per query the caller may see, in one\nrequest.\n\nWhat the navigation badges need. A count endpoint per card would be the\nsame data fetched once per thing on screen, and this is read on every\npage - which is exactly why it must be scoped to the caller: this is the\nbadge every page reads on load, so an unfiltered count would leak another\nanalyst's findings on every navigation rather than just one.",
         "operationId": "flagged_summary_flagged_summary_get",
         "responses": {
           "200": {

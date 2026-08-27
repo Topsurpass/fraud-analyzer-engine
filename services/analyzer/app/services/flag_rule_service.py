@@ -18,11 +18,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.models import Connection, FlagCondition, FlagRule, SavedQuery
+from app.models.user import User
 from app.services import (
     flag_dismissal_service,
     flagged_row_service,
     query_service,
     result_cache,
+    saved_query_service,
 )
 from app.services.flagging import SEVERITY_ORDER
 
@@ -96,17 +98,29 @@ def replace_rules(session: Session, query: SavedQuery, rules: list) -> list[Flag
 # ---------------------------------------------------------------------------
 
 
-def queries_with_rules(session: Session, connection_id: str) -> list[SavedQuery]:
-    """Saved queries on a connection that actually define rules.
+def queries_with_rules(
+    session: Session, connection_id: str, user: User
+) -> list[SavedQuery]:
+    """Saved queries on a connection that actually define rules and that the
+    caller may see.
 
     Eager-loads rules and their conditions in one extra statement each. Reading
     ``query.flag_rules`` off a plain listing would emit one statement per query
     and then one per rule, which on a connection with twenty cards is the
     difference between three statements and sixty.
+
+    Filtered by ``visible_to`` even though this feeds a connection-scoped
+    view: a connection is shared across every analyst who queries it, but the
+    findings behind each query are not - the row values and rule names in
+    ``_section`` below are exactly what "an analyst sees only their own work"
+    is protecting.
     """
     statement = (
         select(SavedQuery)
-        .where(SavedQuery.connection_id == connection_id)
+        .where(
+            SavedQuery.connection_id == connection_id,
+            saved_query_service.visible_to(user),
+        )
         .order_by(SavedQuery.created_at)
         .options(selectinload(SavedQuery.flag_rules).selectinload(FlagRule.conditions))
     )
@@ -221,10 +235,12 @@ def _run_one(session: Session, query: SavedQuery, conn: Connection) -> tuple:
 def flagged_for_connection(
     session: Session,
     conn: Connection,
+    user: User,
     *,
     refresh: bool = False,
 ) -> dict:
-    """Stored findings across every rule-bearing query on one connection.
+    """Stored findings across every rule-bearing query on one connection that
+    the caller may see.
 
     Read from the flagged store, so this costs the target database nothing and
     shows what needs review even after a restart. ``refresh`` re-runs the
@@ -232,10 +248,11 @@ def flagged_for_connection(
 
     Queries with no rules are skipped entirely rather than reported with zero
     hits: a connection where only two of twenty queries define rules should
-    show two sections, not eighteen empty ones.
+    show two sections, not eighteen empty ones. Queries the caller cannot see
+    are skipped the same way - see ``queries_with_rules``.
     """
     settings = get_settings()
-    queries = queries_with_rules(session, conn.id)
+    queries = queries_with_rules(session, conn.id, user)
 
     truncated = False
     if refresh and len(queries) > settings.flagged_refresh_max_queries:

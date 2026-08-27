@@ -30,6 +30,8 @@ from sqlalchemy.orm import Session
 
 from app.models import Connection, FlaggedRow, SavedQuery, utcnow
 from app.models.enums import FlagSeverity
+from app.models.user import User
+from app.services import saved_query_service
 from app.services.flag_dismissal_service import (
     dismissed_fingerprints,
     row_fingerprint,
@@ -170,13 +172,19 @@ def delete_rows(
     return removed
 
 
-def summary(session: Session) -> dict:
-    """Flagged totals per connection and per query, plus when the newest arrived.
+def summary(session: Session, user: User) -> dict:
+    """Flagged totals per connection and per query the caller may see, plus
+    when the newest arrived.
 
     Everything the sidebar, the connection list and the notification bell need
     in one request. The
     alternative is a count endpoint per card, which is the same data fetched
     once per thing on screen.
+
+    Filtered by ``visible_to``: this is the badge every page reads on load,
+    so an unfiltered count or severity here would leak the existence and
+    urgency of another analyst's findings on every navigation, even though
+    the finding itself stays out of reach everywhere else.
     """
     # The connection's name comes along rather than being looked up by the
     # client. A notification listing "c9a86758" is not a notification, and
@@ -193,6 +201,7 @@ def summary(session: Session) -> dict:
         )
         .join(SavedQuery, SavedQuery.id == FlaggedRow.query_id)
         .join(Connection, Connection.id == SavedQuery.connection_id)
+        .where(saved_query_service.visible_to(user))
         .group_by(
             SavedQuery.connection_id,
             Connection.name,

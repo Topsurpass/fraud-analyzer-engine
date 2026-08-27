@@ -54,6 +54,44 @@ def _query(client, auth, connection, name):
     return response.json()
 
 
+def _flagged_query(client, auth, connection, name):
+    """A query whose own SQL selects the raw rows, with a rule that catches
+    two of the five seed transactions - the same shape
+    tests/test_flag_rules_api.py uses to get real findings into the flagged
+    store rather than an empty section.
+    """
+    response = client.post(
+        f"/connections/{connection['id']}/queries",
+        headers=auth,
+        json={"name": name, "sql_text": "SELECT day, amount, comment FROM txns ORDER BY id"},
+    )
+    assert response.status_code == 201, response.text
+    created = response.json()
+
+    rules = client.put(
+        f"/queries/{created['id']}/flag-rules",
+        headers=auth,
+        json={
+            "rules": [
+                {
+                    "name": "Large",
+                    "severity": "high",
+                    "enabled": True,
+                    "conditions": [
+                        {"column_name": "amount", "operator": "gt", "value": "500"}
+                    ],
+                }
+            ]
+        },
+    )
+    assert rules.status_code == 200, rules.text
+
+    run = client.post(f"/queries/{created['id']}/run", headers=auth)
+    assert run.status_code == 200, run.text
+
+    return created
+
+
 def test_a_query_belongs_to_whoever_created_it(client, alice, connection):
     created = _query(client, alice, connection, "alice's")
 
@@ -168,3 +206,68 @@ def test_unowned_rows_are_invisible_to_analysts(client, alice, boss, connection,
 
     assert client.get("/queries", headers=alice).json() == []
     assert len(client.get("/queries", headers=boss).json()) == 1
+
+
+
+def test_an_analyst_cannot_see_another_analysts_flagged_rows_on_a_shared_connection(
+    client, alice, bob, connection
+):
+    """A connection is shared across every analyst who queries it, but the
+    findings behind each query are not. Probed the way an attacker would: not
+    by reading the code, but by asking the endpoint what it returns."""
+    created = _flagged_query(client, alice, connection, "alice's flagged")
+
+    # Alice sees her own findings through the connection-level view.
+    own = client.get(f"/connections/{connection['id']}/flagged", headers=alice).json()
+    assert [q["query_id"] for q in own["queries"]] == [created["id"]]
+    assert own["flagged_count"] == 2
+
+    # Bob shares the same connection and must see none of it: no section for
+    # alice's query, no row values, no rule names, no count.
+    bobs_view = client.get(f"/connections/{connection['id']}/flagged", headers=bob).json()
+    assert bobs_view["queries"] == []
+    assert bobs_view["flagged_count"] == 0
+
+    # The refresh action is the same view with a side effect - it must not
+    # run, or report on, a query Bob cannot see either.
+    refreshed = client.post(
+        f"/connections/{connection['id']}/flagged/refresh", headers=bob
+    ).json()
+    assert refreshed["queries"] == []
+    assert refreshed["flagged_count"] == 0
+
+
+def test_an_analyst_does_not_see_another_analysts_findings_in_the_summary(
+    client, alice, bob, connection
+):
+    """The summary is the badge every page reads on load - a leak here is a
+    leak on every navigation, not just one page."""
+    created = _flagged_query(client, alice, connection, "alice's summary target")
+
+    bobs_summary = client.get("/flagged/summary", headers=bob).json()
+    assert created["id"] not in {q["query_id"] for q in bobs_summary["queries"]}
+    assert bobs_summary["flagged_count"] == 0
+
+    alices_summary = client.get("/flagged/summary", headers=alice).json()
+    assert created["id"] in {q["query_id"] for q in alices_summary["queries"]}
+    assert alices_summary["flagged_count"] == 2
+
+
+def test_an_analyst_cannot_attach_another_analysts_chart_to_a_dashboard(
+    client, alice, bob, connection
+):
+    """The row-data path already 404s bob out of alice's query (see
+    test_an_analyst_cannot_run_another_analysts_query). This is the same
+    check for the reference itself: attaching a chart id must not become a
+    way to learn, by 201 versus 404, which otherwise-unguessable chart ids
+    exist."""
+    created = _query(client, alice, connection, "alice's chart source")
+    chart_id = created["charts"][0]["id"]
+
+    response = client.post(
+        "/dashboards",
+        headers=bob,
+        json={"name": "bob's board", "chart_ids": [chart_id]},
+    )
+
+    assert response.status_code == 404

@@ -13,9 +13,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import AppError, DuplicateNameError, ErrorCode, NotFoundError
-from app.models import Dashboard, DashboardItem, QueryChart
+from app.models import Dashboard, DashboardItem, QueryChart, SavedQuery
 from app.models.user import User
 from app.schemas.dashboard import DashboardCreate, DashboardUpdate
+from app.services import saved_query_service
 
 
 def get_dashboard(session: Session, dashboard_id: str) -> Dashboard:
@@ -81,13 +82,21 @@ def list_dashboards(session: Session, user: User) -> list[Dashboard]:
     )
 
 
-def _validate_chart_ids(session: Session, chart_ids: list[str]) -> list[str]:
+def _validate_chart_ids(session: Session, chart_ids: list[str], user: User) -> list[str]:
     """Reject unknown ids, and collapse duplicates keeping first position.
 
     A dashboard referencing a query that does not exist would render a card
     that can only ever error, so the reference is checked at write time rather
     than discovered at read time. Duplicates are always a mistake: the same
     card twice on one board conveys nothing.
+
+    A chart id that exists but belongs to a query the caller cannot see is
+    treated exactly like an id that does not exist at all: it lands in
+    ``missing`` and 404s the same way. Anything else - a distinct error, or
+    silently dropping just that id - would turn "attach a chart" into an
+    oracle an analyst could use to learn which chart ids exist behind ids
+    they do not otherwise have access to, which is the same leak the
+    404-not-403 rule on every other ownership check exists to close.
     """
     deduped: list[str] = []
     for chart_id in chart_ids:
@@ -96,7 +105,14 @@ def _validate_chart_ids(session: Session, chart_ids: list[str]) -> list[str]:
 
     if deduped:
         found = set(
-            session.scalars(select(QueryChart.id).where(QueryChart.id.in_(deduped)))
+            session.scalars(
+                select(QueryChart.id)
+                .join(SavedQuery, SavedQuery.id == QueryChart.query_id)
+                .where(
+                    QueryChart.id.in_(deduped),
+                    saved_query_service.visible_to(user),
+                )
+            )
         )
         missing = [chart_id for chart_id in deduped if chart_id not in found]
         if missing:
@@ -136,23 +152,21 @@ def _commit(session: Session, dashboard: Dashboard, name: str) -> Dashboard:
     return dashboard
 
 
-def create_dashboard(
-    session: Session, payload: DashboardCreate, owner_id: str | None = None
-) -> Dashboard:
-    chart_ids = _validate_chart_ids(session, payload.chart_ids)
-    dashboard = Dashboard(name=payload.name, owner_id=owner_id)
+def create_dashboard(session: Session, payload: DashboardCreate, user: User) -> Dashboard:
+    chart_ids = _validate_chart_ids(session, payload.chart_ids, user)
+    dashboard = Dashboard(name=payload.name, owner_id=user.id)
     _apply_items(dashboard, chart_ids)
     session.add(dashboard)
     return _commit(session, dashboard, payload.name)
 
 
 def update_dashboard(
-    session: Session, dashboard: Dashboard, payload: DashboardUpdate
+    session: Session, dashboard: Dashboard, payload: DashboardUpdate, user: User
 ) -> Dashboard:
     data = payload.model_dump(exclude_unset=True)
 
     if "chart_ids" in data and data["chart_ids"] is not None:
-        _apply_items(dashboard, _validate_chart_ids(session, data["chart_ids"]))
+        _apply_items(dashboard, _validate_chart_ids(session, data["chart_ids"], user))
     if data.get("name") is not None:
         dashboard.name = data["name"]
 
