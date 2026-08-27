@@ -64,14 +64,22 @@ def test_the_password_is_never_written_in_the_clear(app_db):
 def test_it_prints_the_database_it_is_writing_to(app_db):
     """Run from the wrong directory the command would otherwise create an admin
     in the SQLite fallback while the real Postgres stayed empty, and the only
-    symptom would be "invalid credentials" at a login page."""
+    symptom would be "invalid credentials" at a login page.
+
+    Asserts the actual target rather than "sqlite or postgres": the
+    `isolated_environment` fixture in conftest.py points FAE_APP_DB_URL at a
+    per-test SQLite file named app_state.db, so that is the one true answer
+    here - an "or" that also accepts the wrong backend's name would pass even
+    if this printed the wrong database.
+    """
     result = runner.invoke(
         cli,
         ["create-admin", "--email", "boss@b.test", "--name", "The Boss"],
         input="a-perfectly-fine-password\na-perfectly-fine-password\n",
     )
 
-    assert "sqlite" in result.output.lower() or "postgres" in result.output.lower()
+    assert "sqlite:///" in result.output
+    assert "app_state.db" in result.output
 
 
 def test_a_mistyped_confirmation_creates_nobody(app_db):
@@ -166,3 +174,48 @@ def test_list_users_shows_role_and_state(app_db):
 
     assert "boss@b.test" in result.output
     assert "admin" in result.output
+
+
+# --- The schema guard -------------------------------------------------------
+#
+# _require_schema() is the one behaviour the brief singles out by name as
+# consequence-bearing: without it, running this tool from the wrong directory
+# (or before `alembic upgrade head`) mints an administrator into whatever
+# database FAE_APP_DB_URL happens to resolve to - often the SQLite fallback -
+# while the real database stays untouched. Nothing about that failure is
+# loud: the command prints "Administrator created" and exits 0, and the only
+# symptom anyone ever sees is "invalid credentials" at a login page, weeks
+# later, with nothing anywhere pointing back at this command.
+#
+# These three deliberately do NOT request the `app_db` fixture. `app_db`
+# is what calls `app_state.init_db()` to create the schema; skipping it
+# leaves the per-test SQLite file (set up by the autouse
+# `isolated_environment` fixture in conftest.py) exactly as fresh migrations
+# never touched it - no `users` table, which is the one condition the guard
+# exists to catch. That also means the guard fires before any of the
+# password machinery runs, so these pay no argon2 cost at all.
+
+
+def test_create_admin_refuses_when_the_schema_is_missing():
+    result = runner.invoke(
+        cli,
+        ["create-admin", "--email", "boss@b.test", "--name", "The Boss"],
+        input="a-perfectly-fine-password\na-perfectly-fine-password\n",
+    )
+
+    assert result.exit_code != 0
+    assert "no users table" in result.output.lower()
+
+
+def test_reset_password_refuses_when_the_schema_is_missing():
+    result = runner.invoke(cli, ["reset-password", "--email", "boss@b.test"])
+
+    assert result.exit_code != 0
+    assert "no users table" in result.output.lower()
+
+
+def test_list_users_refuses_when_the_schema_is_missing():
+    result = runner.invoke(cli, ["list-users"])
+
+    assert result.exit_code != 0
+    assert "no users table" in result.output.lower()

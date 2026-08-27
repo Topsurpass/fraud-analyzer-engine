@@ -12,13 +12,13 @@ from __future__ import annotations
 from datetime import timedelta
 
 import typer
-from sqlalchemy import func, inspect, select
+from sqlalchemy import delete, func, inspect, select
 
 from app.db.app_state import get_engine, get_sessionmaker
 from app.errors import AppError
 from app.models.base import utcnow
 from app.models.enums import UserRole
-from app.models.user import User
+from app.models.user import User, UserSession
 from app.security import passwords
 
 app = typer.Typer(help="Switchboard operator commands.", no_args_is_help=True)
@@ -136,15 +136,17 @@ def reset_password(email: str = typer.Option(..., prompt=True)) -> None:
         user.temp_password_expires_at = utcnow() + timedelta(hours=TEMP_PASSWORD_HOURS)
         user.failed_login_count = 0
         user.locked_until = None
+        # Inlined rather than calling session_service.revoke_all_for_user:
+        # that helper commits on its own, which would split this into two
+        # transactions - the password hash landing while the old sessions
+        # survive if the second commit failed. A reset is issued exactly
+        # when an account is suspected compromised (locked out, credential
+        # handed to the wrong person), which is precisely the moment a
+        # stolen-but-still-live session must die together with the password
+        # that let it in, not in a second write that can fail independently
+        # and leave the door standing open behind the new lock.
+        db.execute(delete(UserSession).where(UserSession.user_id == user.id))
         db.commit()
-
-        # A locked-out account may still hold live sessions from before it was
-        # locked (a stolen credential rather than a forgotten one), and a
-        # reset that leaves those sessions standing hands back the door it
-        # just changed the lock on.
-        from app.services import session_service
-
-        session_service.revoke_all_for_user(db, user.id)
     finally:
         db.close()
 
