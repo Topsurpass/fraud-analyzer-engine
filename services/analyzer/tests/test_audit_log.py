@@ -200,6 +200,28 @@ def test_detail_never_carries_a_password_nested_in_a_list(session):
     assert [r["email"] for r in stored["users"]] == ["a@example.com", "b@example.com"]
 
 
+def test_detail_never_carries_a_whitespace_padded_password_key(session):
+    """``key.lower()`` alone does not catch `"  PaSsWoRd  "` -- a key with
+    incidental leading/trailing whitespace from copy-pasted JSON or a
+    templated payload is still exactly the same credential under a
+    cosmetically different name, and stripping only case would leave it
+    through."""
+    actor = _user(session)
+
+    audit_service.record(
+        session,
+        actor,
+        AuditAction.USER_PASSWORD_RESET,
+        "user",
+        actor.id,
+        detail={"  PaSsWoRd  ": "hunter2-hunter2"},
+    )
+
+    stored = session.query(AuditLog).one().detail
+    assert not stored or all("password" not in k.strip().lower() for k in stored)
+    assert "hunter2-hunter2" not in str(stored)
+
+
 def test_detail_never_carries_a_temp_password(session):
     """The brief's own motivating scenario, by its most likely name.
 

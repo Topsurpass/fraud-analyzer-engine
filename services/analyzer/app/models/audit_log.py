@@ -30,9 +30,11 @@ from app.models.enums import AuditAction, enum_column
 #: for exactly that reason: ``User.temp_password_expires_at`` and
 #: ``generate_temporary_password()`` already name the concept elsewhere in
 #: this codebase, which makes ``temp_password`` the single most likely key a
-#: future call site reaches for. Matched case-insensitively, because a second
-#: author writing ``Password`` or ``PASSWORD`` is the median way this gets
-#: named, not an adversarial edge case.
+#: future call site reaches for. Matched case-insensitively and after
+#: stripping surrounding whitespace, because a second author writing
+#: ``Password``, ``PASSWORD``, or ``"  password  "`` off a copy-pasted or
+#: templated payload is the median way this gets named, not an adversarial
+#: edge case.
 FORBIDDEN_DETAIL_KEYS = frozenset(
     {"password", "new_password", "temporary_password", "temp_password", "token", "secret"}
 )
@@ -51,9 +53,23 @@ def scrub_detail(detail: dict[str, Any] | None) -> dict[str, Any] | None:
     detail had nothing left worth keeping, and no detail is more honest than
     an empty object that looks like someone meant to record nothing.
 
-    This is the single place both the model (via the ``@validates`` hook
-    below) and ``audit_service.record`` rely on, so there is exactly one
-    definition of "safe" rather than two that can drift apart.
+    This is the single definition of "safe", called from two places that
+    catch two different ways a row gets built: ``audit_service.record``
+    calls it directly, and ``AuditLog``'s ``@validates("detail")`` hook below
+    calls it again for anything constructed without going through
+    ``record`` (see that hook's docstring for what it does and does not
+    cover). Two callers sharing one function cannot drift from each other
+    the way two independent copies of the filter logic could.
+
+    Neither caller is reached by every way a row can land in this table.
+    SQLAlchemy Core's ``insert(AuditLog.__table__)`` and the bulk helpers
+    (``Session.bulk_insert_mappings``, ``bulk_save_objects``) write columns
+    directly against the table and never construct an ``AuditLog`` Python
+    object, so they never trigger ``@validates`` and never run through
+    ``record``. No call site in this codebase uses either path today
+    (checked), but a future backfill or bulk import that does must call
+    ``scrub_detail`` itself before handing ``detail`` to one of those APIs --
+    this function is exported (no leading underscore) specifically so it can.
     """
 
     def _scrub(value: Any) -> Any:
@@ -61,7 +77,7 @@ def scrub_detail(detail: dict[str, Any] | None) -> dict[str, Any] | None:
             return {
                 key: _scrub(val)
                 for key, val in value.items()
-                if key.lower() not in FORBIDDEN_DETAIL_KEYS
+                if key.strip().lower() not in FORBIDDEN_DETAIL_KEYS
             }
         if isinstance(value, list):
             return [_scrub(item) for item in value]
@@ -105,12 +121,17 @@ class AuditLog(Base):
 
     @validates("detail")
     def _validate_detail(self, key: str, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        """Scrub on every assignment, not just the one call site that
-        remembers to.
+        """A second, independent layer: scrub on every ORM attribute
+        assignment, not just inside ``audit_service.record``.
 
-        ``audit_service.record`` is the only call site today, but it will not
-        stay that way: this hook is what keeps "no credential in ``detail``"
-        a property of the table rather than a convention a future call site
-        can silently skip by constructing ``AuditLog`` directly.
+        This closes the gap where something constructs ``AuditLog(...)``
+        directly instead of calling ``record`` -- accidentally or as a
+        shortcut -- and would otherwise skip ``record``'s own call to
+        ``scrub_detail``. It does **not** close every gap: SQLAlchemy Core
+        inserts and the ``Session`` bulk helpers write columns without ever
+        assigning a Python attribute on an ``AuditLog`` instance, so
+        ``@validates`` never fires for them either. See ``scrub_detail``'s
+        docstring above for the full, accurate list of what is and is not
+        covered -- this hook is one of two layers, not the whole guarantee.
         """
         return scrub_detail(value)
