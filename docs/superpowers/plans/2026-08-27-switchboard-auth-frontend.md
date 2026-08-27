@@ -330,7 +330,7 @@ git commit -m "feat(auth): an append-only record of who changed the system"
   - `PATCH /users/{id}` → `UserRead` — deactivate/reactivate and role change (admin only)
   - `POST /users/{id}/reset-password` → `{temporary_password: str}` (admin only)
   - `GET /audit-log` → `list[AuditEntryRead]` (admin only)
-  - `user_service.last_active_admin_guard(db, user, *, changing_role, changing_active)` raising `AppError(FORBIDDEN)`
+  - `user_service.guard_last_admin(db, target, *, becoming_inactive, becoming_analyst)` raising `AppError(LAST_ADMIN)` (409)
 
 - [ ] **Step 1: Add error codes**
 
