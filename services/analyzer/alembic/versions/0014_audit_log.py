@@ -14,6 +14,12 @@ ownership foreign key added since 0012: accounts are never deleted, so this
 should never fire in practice, but an audit entry that has forgotten who
 performed it answers nothing, and a hard delete against the database directly
 must not be allowed to erase that.
+
+``created_at`` carries ``server_default=sa.func.now()``, matching
+``TimestampMixin``'s pattern for every other timestamp in this schema: a row
+inserted by something other than this ORM (a migration backfill, a manual SQL
+fix) still gets a timestamp instead of violating the NOT NULL constraint it
+was written under.
 """
 
 from __future__ import annotations
@@ -43,7 +49,12 @@ def upgrade() -> None:
         sa.Column("target_type", sa.String(length=40), nullable=False),
         sa.Column("target_id", sa.String(length=36), nullable=False),
         sa.Column("detail", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
     )
     op.create_index("ix_audit_logs_actor_id", "audit_logs", ["actor_id"])
     op.create_index("ix_audit_logs_target_id", "audit_logs", ["target_id"])

@@ -13,14 +13,6 @@ from app.models.audit_log import AuditLog
 from app.models.enums import AuditAction
 from app.models.user import User
 
-#: Keys stripped from ``detail`` before it is stored, whatever the caller says.
-#:
-#: An audit table is exactly where a credential must never come to rest, and a
-#: password-reset entry is the obvious place somebody later adds "the temporary
-#: password we issued" for convenience. Refusing at the one chokepoint is the
-#: only version of this rule that holds.
-_FORBIDDEN_DETAIL_KEYS = frozenset({"password", "new_password", "temporary_password", "token"})
-
 
 def record(
     db: Session,
@@ -31,19 +23,20 @@ def record(
     detail: dict | None = None,
 ) -> AuditLog:
     """Append one entry. Commits, because an audit write must not be rolled
-    back by a later failure in the operation it describes."""
-    safe = (
-        {k: v for k, v in detail.items() if k not in _FORBIDDEN_DETAIL_KEYS}
-        if detail
-        else None
-    )
+    back by a later failure in the operation it describes.
 
+    ``detail`` is passed through unscrubbed on purpose: ``AuditLog``'s own
+    ``@validates("detail")`` hook (see ``app.models.audit_log``) is what
+    actually strips credential-shaped keys, so the guarantee holds for every
+    way a row gets built, not just this function. Filtering again here would
+    be a second copy of the same rule that can quietly drift from the first.
+    """
     entry = AuditLog(
         actor_id=actor.id,
         action=action,
         target_type=target_type,
         target_id=target_id,
-        detail=safe or None,
+        detail=detail,
     )
     db.add(entry)
     db.commit()
