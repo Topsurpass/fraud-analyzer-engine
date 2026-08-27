@@ -224,6 +224,34 @@ uv run uvicorn app.main:app --reload
 Interactive docs at http://127.0.0.1:8000/docs. Run the tests with
 `uv run pytest`.
 
+## Accounts
+
+Every endpoint except `/health` and `/auth/login` needs a signed-in user.
+
+Create the first administrator. This is the only way an admin account comes
+into existence: it is a CLI command, not an HTTP endpoint, because no admin
+exists yet to authenticate a request that could create one. It needs shell
+access to the machine running the app rather than network access to it.
+
+    cd services/analyzer
+    uv run fae create-admin
+
+Under Docker:
+
+    docker compose exec analyzer uv run fae create-admin
+
+The command prints the database it is about to write to. If that is not the
+database you expect, you are in the wrong directory: the settings are read from
+`services/analyzer/.env`.
+
+Other commands:
+
+    uv run fae reset-password --email someone@example.com
+    uv run fae list-users
+
+`reset-password` prints a temporary password once. It is valid for 72 hours and
+the holder must choose a new one before they can use anything else.
+
 ## Endpoints
 
 | Method | Path | Purpose |

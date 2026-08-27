@@ -39,6 +39,7 @@ _INTEGRATION_MODULES = {
     "test_flag_rules_api",
     "test_cli",
     "test_ownership",
+    "test_password_change_gate",
 }
 
 
