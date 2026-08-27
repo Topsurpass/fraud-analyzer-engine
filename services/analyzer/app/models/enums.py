@@ -96,6 +96,22 @@ class UserRole(StrEnum):
     ANALYST = "analyst"
 
 
+class AuditAction(StrEnum):
+    """Administrative acts worth reconstructing months later.
+
+    Deliberately a closed set rather than free text. An audit trail whose
+    action names are typed by whoever wrote the call site cannot be filtered
+    or counted, and the first person to need it is looking for one specific
+    thing under time pressure.
+    """
+
+    USER_CREATED = "user_created"
+    USER_DEACTIVATED = "user_deactivated"
+    USER_REACTIVATED = "user_reactivated"
+    USER_ROLE_CHANGED = "user_role_changed"
+    USER_PASSWORD_RESET = "user_password_reset"
+
+
 class FlagOperator(StrEnum):
     """Comparisons a flag condition can make against one result column.
 

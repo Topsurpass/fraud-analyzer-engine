@@ -163,6 +163,7 @@ def test_migration_creates_the_expected_tables(tmp_path, alembic_for):
         "query_charts",
         "users",
         "sessions",
+        "audit_logs",
     }
 
 
@@ -466,3 +467,55 @@ def test_a_mixed_case_email_is_rejected_by_the_database(tmp_path, alembic_for):
                     "'2026-08-26', '2026-08-26')"
                 )
             )
+
+
+def test_audit_logs_table_and_indexes_are_created(tmp_path, alembic_for):
+    """0014 adds ``audit_logs`` with an index on each lookup column.
+
+    Both ``actor_id`` ("what has this admin done") and ``target_id`` ("what
+    has happened to this account") are queried independently once the API
+    exposes an audit trail, so both need their own index rather than one
+    covering only the first.
+    """
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+
+    inspector = inspect(create_engine(url))
+    assert "audit_logs" in inspector.get_table_names()
+    indexed_columns = {
+        tuple(ix["column_names"]) for ix in inspector.get_indexes("audit_logs")
+    }
+    assert ("actor_id",) in indexed_columns
+    assert ("target_id",) in indexed_columns
+
+
+def test_audit_logs_actor_fk_restricts_deletion(tmp_path, alembic_for):
+    """An audit row must survive its actor's account, unlike a preview log's
+    ``user_id`` above which shares the same RESTRICT reasoning: an entry that
+    has forgotten who performed it answers nothing, and accounts are never
+    deleted in the first place (see app/models/user.py)."""
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+
+    inspector = inspect(create_engine(url))
+    fks = inspector.get_foreign_keys("audit_logs")
+    fk = next((fk for fk in fks if fk["constrained_columns"] == ["actor_id"]), None)
+    assert fk is not None, "audit_logs has no foreign key on actor_id"
+    assert fk["referred_table"] == "users"
+    assert fk["options"].get("ondelete") == "RESTRICT"
+
+
+def test_audit_logs_survive_a_downgrade_and_reapply(tmp_path, alembic_for):
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+
+    command.downgrade(cfg, "0013_owner_scoped_names")
+    tables = set(inspect(create_engine(url)).get_table_names())
+    assert "audit_logs" not in tables
+
+    command.upgrade(cfg, "head")
+    tables = set(inspect(create_engine(url)).get_table_names())
+    assert "audit_logs" in tables

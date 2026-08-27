@@ -16,6 +16,7 @@ from app.config import get_settings
 #: Modules whose tests stand up a database, an HTTP client, or a migration.
 #: Everything else is the fast gate lane, meant to run on every commit.
 _INTEGRATION_MODULES = {
+    "test_audit_log",
     "test_auth_api",
     "test_role_enforcement",
     "test_connections_api",

@@ -1,7 +1,9 @@
+from app.models.audit_log import AuditLog
 from app.models.base import Base, TimestampMixin, new_id, utcnow
 from app.models.connection import Connection
 from app.models.dashboard import Dashboard, DashboardItem
 from app.models.enums import (
+    AuditAction,
     ChartType,
     ConnectionStatus,
     DbType,
@@ -19,6 +21,8 @@ from app.models.saved_query import DEFAULT_ROW_LIMIT, SavedQuery
 from app.models.user import User, UserSession
 
 __all__ = [
+    "AuditAction",
+    "AuditLog",
     "Base",
     "ChartType",
     "Connection",
