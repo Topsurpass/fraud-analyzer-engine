@@ -18,7 +18,7 @@ and shape what comes back.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -54,6 +54,12 @@ audit_router = APIRouter(
     tags=["users"],
     dependencies=[Depends(require_admin)],
 )
+
+#: Audit rows are never deleted by design (see app/models/audit_log.py), so
+#: the table only grows for as long as the installation runs. Matches the
+#: ``limit`` convention in app/routers/queries.py:list_logs.
+AUDIT_LOG_DEFAULT_LIMIT = 100
+AUDIT_LOG_MAX_LIMIT = 500
 
 
 @router.get("", response_model=list[UserRead])
@@ -117,8 +123,22 @@ def reset_password(
 
 
 @audit_router.get("", response_model=list[AuditEntryRead])
-def list_audit_log(session: Session = Depends(get_session)) -> list[AuditEntryRead]:
-    """Every audit entry, newest first, with the actor's email resolved.
+def list_audit_log(
+    limit: int = Query(default=AUDIT_LOG_DEFAULT_LIMIT, ge=1, le=AUDIT_LOG_MAX_LIMIT),
+    session: Session = Depends(get_session),
+) -> list[AuditEntryRead]:
+    """The most recent audit entries, newest first, with the actor's email
+    resolved.
+
+    Capped at ``limit`` (default AUDIT_LOG_DEFAULT_LIMIT, maximum
+    AUDIT_LOG_MAX_LIMIT) rather than returning the whole table. Audit rows
+    are never deleted by design, so the table only grows for as long as the
+    installation runs, and an unbounded ``SELECT *`` here would eventually
+    have to serialise and ship every row that was ever written. Newest first
+    with a cap, rather than any other slice, because the entries an admin
+    reading this screen actually needs are the ones nearest to whatever they
+    are investigating - a login lockout, a role change someone is asking
+    about - and that is always the most recent activity, not the oldest.
 
     The table stores ``actor_id`` rather than an email because accounts are
     never deleted and an id is what survives an email changing (see
@@ -130,6 +150,7 @@ def list_audit_log(session: Session = Depends(get_session)) -> list[AuditEntryRe
         select(AuditLog, User.email)
         .join(User, User.id == AuditLog.actor_id)
         .order_by(AuditLog.created_at.desc())
+        .limit(limit)
     ).all()
     return [
         AuditEntryRead(

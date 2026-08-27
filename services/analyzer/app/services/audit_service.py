@@ -21,9 +21,22 @@ def record(
     target_type: str,
     target_id: str,
     detail: dict | None = None,
+    *,
+    commit: bool = True,
 ) -> AuditLog:
-    """Append one entry. Commits, because an audit write must not be rolled
-    back by a later failure in the operation it describes.
+    """Append one entry. Commits by default, because an audit write must not
+    be rolled back by a later failure in an operation that is otherwise
+    already finished.
+
+    Pass ``commit=False`` when the caller needs this entry to land in the
+    *same* transaction as the mutation it describes, so the two succeed or
+    fail together -- a crash between two separate commits would otherwise
+    leave a role change or deactivation with no matching audit row.
+    ``app.services.user_service`` does this for every mutation it makes: it
+    adds this entry (uncommitted), then commits once itself after every write
+    for that operation is staged. The default stays ``True`` so a call site
+    that writes nothing else still gets the durability guarantee above
+    without having to know this parameter exists.
 
     Calls ``scrub_detail`` directly rather than relying only on
     ``AuditLog``'s ``@validates("detail")`` hook to do it implicitly: the two
@@ -52,5 +65,6 @@ def record(
         detail=scrub_detail(detail),
     )
     db.add(entry)
-    db.commit()
+    if commit:
+        db.commit()
     return entry

@@ -75,6 +75,13 @@ def test_the_admin_never_chooses_the_password(client, app_db):
     # The field is not in the schema at all, so it is ignored rather than honoured.
     assert response.status_code == 201
     assert response.json()["temporary_password"] != "chosen-by-the-admin"
+    # The differing string alone would not catch a future refactor that
+    # quietly stashed the supplied value as a second, valid credential -
+    # only actually trying to log in with it closes that gap.
+    assert (
+        login(client, email="kemi@example.com", password="chosen-by-the-admin").status_code
+        == 401
+    )
 
 
 def test_the_temporary_password_actually_logs_in(client, app_db):

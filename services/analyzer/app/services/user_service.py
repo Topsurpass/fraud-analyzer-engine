@@ -17,17 +17,17 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.errors import AppError, ErrorCode
 from app.models.audit_log import AuditLog
 from app.models.base import utcnow
 from app.models.enums import AuditAction, UserRole
-from app.models.user import User
+from app.models.user import User, UserSession
 from app.schemas.user import AuditEntryRead, UserCreate, UserUpdate
 from app.security import passwords
-from app.services import audit_service, session_service
+from app.services import audit_service
 
 #: How long an admin-issued temporary password stays usable, matching
 #: ``app.cli.TEMP_PASSWORD_HOURS``. Duplicated rather than imported: importing
@@ -41,7 +41,15 @@ TEMP_PASSWORD_HOURS = 72
 
 
 def count_active_admins(db: Session) -> int:
-    """How many admins could still administer this installation."""
+    """How many admins could still administer this installation.
+
+    Plain, unlocked count - fine for a status page or a report, but not for a
+    decision another transaction can act on. ``guard_last_admin`` below does
+    NOT call this: an unlocked count read here and acted on later is exactly
+    the race that function exists to close. Kept as its own function because
+    "how many active admins are there" is still a useful, cheap read when
+    nothing is about to change based on the answer.
+    """
     return db.scalar(
         select(func.count())
         .select_from(User)
@@ -57,12 +65,53 @@ def guard_last_admin(
     Enforced here rather than in the router because the router is not the only
     thing that will ever call this, and a rule that lives in one call site is a
     rule until somebody adds a second.
+
+    TOCTOU: two concurrent PATCH requests demoting/deactivating two
+    *different* active admins must not both be allowed to succeed just
+    because each one, read in isolation, still leaves "one other admin"
+    standing. A plain ``SELECT count(*)`` (what this function used to do) is
+    read committed and takes no lock: transaction A reads count == 2, passes;
+    transaction B reads count == 2 (A has not committed yet), passes; both
+    commit; zero active admins remain - exactly the state this guard exists
+    to prevent, recoverable only by shell access.
+
+    The fix is to lock the active-admin rows for the rest of the transaction
+    before counting them, with ``SELECT ... FOR UPDATE``. On Postgres this
+    makes transaction B's ``SELECT`` block on transaction A's locked rows
+    until A commits or rolls back, so B's count is re-taken against A's
+    already-applied change rather than against a stale snapshot.
+
+    Two things a future reader must not miss:
+
+    1. SQLite - what ``tests/test_users_api.py`` runs on - has no row-level
+       locking, and SQLAlchemy does not even emit ``FOR UPDATE`` for the
+       sqlite dialect (it is silently dropped). So the SQLite suite proves
+       this function's *arithmetic* (a count of exactly one active admin
+       refuses, more than one allows, a deactivated admin does not count),
+       but it cannot demonstrate the race being closed - there is no dialect
+       available to this suite where two concurrent transactions can
+       actually block on each other here. Production runs on Postgres (see
+       ``app/config.py``), which is where this clause does real work. Only a
+       Postgres integration test driving two real concurrent transactions
+       could exercise the lock itself, and this suite has none.
+    2. The lock only protects anything because it is taken in the *same*
+       transaction as the write that follows it. This function never calls
+       ``db.commit()``; every caller must not commit between calling this
+       and committing the mutation it is guarding, or the lock is released
+       before the row it was protecting is written.
     """
     if not (becoming_inactive or becoming_analyst):
         return
     if target.role is not UserRole.ADMIN or not target.is_active:
         return
-    if count_active_admins(db) > 1:
+
+    locked_admin_ids = db.scalars(
+        select(User.id)
+        .where(User.role == UserRole.ADMIN, User.is_active.is_(True))
+        .with_for_update()
+    ).all()
+
+    if len(locked_admin_ids) > 1:
         return
     raise AppError(
         ErrorCode.LAST_ADMIN,
@@ -116,11 +165,18 @@ def create_user(db: Session, actor: User, payload: UserCreate) -> tuple[User, st
         created_by=actor.id,
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    # Flushes the INSERT and assigns user.id (a Python-side default, see
+    # app/models/base.py:new_id) without committing, so the id is available
+    # for the audit entry below while the row creation and the audit write
+    # still land in one transaction.
+    db.flush()
 
     # No password anywhere in this detail, and scrub_detail would strip it
     # even if a future edit here got that wrong - see audit_log.py.
+    #
+    # commit=False: the row and its audit entry must succeed or fail
+    # together, so a crash between them cannot leave a new account with no
+    # matching USER_CREATED entry. One db.commit() below covers both.
     audit_service.record(
         db,
         actor,
@@ -128,7 +184,10 @@ def create_user(db: Session, actor: User, payload: UserCreate) -> tuple[User, st
         target_type="user",
         target_id=user.id,
         detail={"email": user.email, "role": user.role.value},
+        commit=False,
     )
+    db.commit()
+    db.refresh(user)
     return user, temporary
 
 
@@ -160,16 +219,23 @@ def update_user(db: Session, actor: User, user_id: str, payload: UserUpdate) -> 
     if payload.is_active is not None:
         target.is_active = payload.is_active
 
-    db.commit()
-    db.refresh(target)
-
+    # Everything below - the row mutation above, ending sessions, and the
+    # audit entries - lands in the single db.commit() at the bottom instead
+    # of one commit per step. A crash between separate commits could
+    # previously leave a role change or deactivation committed with no
+    # matching audit row, or a deactivation committed with the target's
+    # sessions still live. session_service.revoke_all_for_user is not called
+    # here because it commits on its own, which would split this back into
+    # two transactions; the delete is inlined instead, the same fix already
+    # applied to app/cli.py's reset-password command.
+    #
     # Sessions are ended, and the audit trail written, only for the fields
     # that actually moved - sending {"is_active": true} at an already-active
     # account is not a reactivation and must not manufacture a log entry for
     # one.
     if changing_active:
         if not target.is_active:
-            session_service.revoke_all_for_user(db, target.id)
+            db.execute(delete(UserSession).where(UserSession.user_id == target.id))
             audit_service.record(
                 db,
                 actor,
@@ -177,6 +243,7 @@ def update_user(db: Session, actor: User, user_id: str, payload: UserUpdate) -> 
                 target_type="user",
                 target_id=target.id,
                 detail={"email": target.email},
+                commit=False,
             )
         else:
             audit_service.record(
@@ -186,6 +253,7 @@ def update_user(db: Session, actor: User, user_id: str, payload: UserUpdate) -> 
                 target_type="user",
                 target_id=target.id,
                 detail={"email": target.email},
+                commit=False,
             )
 
     if changing_role:
@@ -200,8 +268,11 @@ def update_user(db: Session, actor: User, user_id: str, payload: UserUpdate) -> 
                 "from_role": previous_role.value,
                 "to_role": target.role.value,
             },
+            commit=False,
         )
 
+    db.commit()
+    db.refresh(target)
     return target
 
 
@@ -220,9 +291,18 @@ def reset_password(db: Session, actor: User, user_id: str) -> str:
     target.temp_password_expires_at = utcnow() + timedelta(hours=TEMP_PASSWORD_HOURS)
     target.failed_login_count = 0
     target.locked_until = None
-    db.commit()
 
-    session_service.revoke_all_for_user(db, target.id)
+    # Inlined rather than session_service.revoke_all_for_user, which commits
+    # on its own: a reset is issued exactly when an account is suspected
+    # compromised, which is precisely the moment a stolen-but-still-live
+    # session must die together with the new password, not in a second write
+    # that can fail independently and leave the door standing open behind
+    # the new lock - the same reasoning, and the same fix, already applied to
+    # app/cli.py's reset-password command. The audit entry joins the same
+    # transaction for the same reason: a crash between separate commits could
+    # otherwise leave the password rotated with no USER_PASSWORD_RESET entry
+    # to show it happened.
+    db.execute(delete(UserSession).where(UserSession.user_id == target.id))
 
     audit_service.record(
         db,
@@ -231,5 +311,7 @@ def reset_password(db: Session, actor: User, user_id: str) -> str:
         target_type="user",
         target_id=target.id,
         detail={"email": target.email},
+        commit=False,
     )
+    db.commit()
     return temporary
