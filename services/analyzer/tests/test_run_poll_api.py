@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from app.models import QueryExecutionLog
+from app.models import QueryExecutionLog, SavedQuery
 from app.services import result_cache
 
 RUN_KEYS = {
@@ -325,12 +325,32 @@ def test_preview_goes_through_the_guard(admin_client, sqlite_connection):
     assert r.json()["error_code"] == "NON_SELECT_STATEMENT"
 
 
-def test_preview_writes_no_execution_log(admin_client, sqlite_connection, session):
+def test_preview_saves_nothing_but_records_that_it_ran(
+    admin_client, sqlite_connection, session
+):
+    """Reverses an earlier rule here that a preview writes no execution log.
+
+    "Nothing is persisted" is still true of everything a preview *creates* -
+    no saved query, no cache entry, no flagged rows. The run itself is another
+    matter: this is analyst-authored SQL executed against a customer's
+    database, which is exactly what the execution log exists to attribute, and
+    the design measures itself on a ``user_id`` for 100% of runs. Not saving
+    the query is not a reason to leave no record that it ran.
+
+    The row carries no ``query_id`` - there is no saved query - so it names
+    the connection instead, or it could not say which database was touched.
+    """
     admin_client.post(
         f"/connections/{sqlite_connection['id']}/query/preview",
         json={"sql_text": "SELECT 1"},
     )
-    assert session.query(QueryExecutionLog).count() == 0
+
+    entries = session.query(QueryExecutionLog).all()
+    assert len(entries) == 1
+    assert entries[0].query_id is None
+    assert entries[0].connection_id == sqlite_connection["id"]
+    assert entries[0].user_id is not None
+    assert session.query(SavedQuery).count() == 0
 
 
 def test_preview_on_missing_connection_is_404(admin_client):

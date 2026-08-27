@@ -30,10 +30,24 @@ class QueryExecutionLog(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    query_id: Mapped[str] = mapped_column(
+    #: The saved query that ran. Null for an ad-hoc preview, which executes
+    #: analyst-authored SQL against a customer database without saving it and
+    #: so has no query row to point at - see ``connection_id`` below.
+    query_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("saved_queries.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    )
+    #: Which database this ran against, recorded only when ``query_id`` is
+    #: null. A saved query already names its connection, and duplicating it
+    #: would be a second source of truth that could disagree; a preview names
+    #: nothing else, and an execution-log row that cannot say which customer
+    #: database was touched does not answer the question the log exists for.
+    connection_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("connections.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
 
@@ -46,10 +60,12 @@ class QueryExecutionLog(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    #: Who caused this run. Null for a scheduled or background refresh, which
-    #: nobody asked for interactively.
+    #: Who caused this run. Null only for the scheduler, which runs on a timer
+    #: with nobody behind it. Every path a person can trigger - a run, a poll,
+    #: a preview, a flagged refresh, and the stale-cache refresh a poll starts
+    #: behind itself - carries the caller.
     user_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True
     )
 
-    query: Mapped["SavedQuery"] = relationship(back_populates="execution_logs")
+    query: Mapped["SavedQuery | None"] = relationship(back_populates="execution_logs")

@@ -63,6 +63,90 @@ def test_upgrade_head_matches_model_metadata(tmp_path, alembic_for):
         assert migrated[table] == from_models[table], f"column drift in {table}"
 
 
+def _unique_constraints_of(url: str) -> dict[str, set[tuple[str, tuple[str, ...]]]]:
+    inspector = inspect(create_engine(url))
+    return {
+        table: {
+            (c["name"], tuple(c["column_names"]))
+            for c in inspector.get_unique_constraints(table)
+        }
+        for table in inspector.get_table_names()
+        if table != "alembic_version"
+    }
+
+
+def test_upgrade_head_matches_model_unique_constraints(tmp_path, alembic_for):
+    """Columns are not the whole schema.
+
+    ``test_upgrade_head_matches_model_metadata`` compares columns only, so a
+    unique constraint could sit in the models and never reach a migrated
+    database - and every API test runs against ``create_all``, which builds
+    from the models. Owner-scoped names (0013) are enforced by a database
+    constraint and by nothing else, so without this the one place they
+    actually have to exist is the one place nothing checks.
+    """
+    migrated_url = f"sqlite:///{tmp_path / 'uq_migrated.db'}"
+    command.upgrade(alembic_for(migrated_url), "head")
+
+    from_models_url = f"sqlite:///{tmp_path / 'uq_from_models.db'}"
+    Base.metadata.create_all(create_engine(from_models_url))
+
+    migrated = _unique_constraints_of(migrated_url)
+    from_models = _unique_constraints_of(from_models_url)
+
+    for table in sorted(from_models):
+        assert migrated[table] == from_models[table], f"unique-constraint drift in {table}"
+
+    assert ("uq_dashboards_owner_name", ("owner_id", "name")) in migrated["dashboards"]
+    assert (
+        "uq_saved_queries_conn_owner_name",
+        ("connection_id", "owner_id", "name"),
+    ) in migrated["saved_queries"]
+
+
+def test_a_migrated_database_lets_two_owners_reuse_a_name(tmp_path, alembic_for):
+    """The constraint change, exercised against the migration rather than the
+    models: two analysts naming a dashboard the same thing must both land."""
+    url = f"sqlite:///{tmp_path / 'owner_names.db'}"
+    command.upgrade(alembic_for(url), "head")
+    engine = create_engine(url)
+
+    with engine.begin() as conn:
+        for owner in ("alice", "bob"):
+            conn.execute(
+                text(
+                    "INSERT INTO users (id, email, full_name, password_hash, role, "
+                    "is_active, must_change_password, failed_login_count, "
+                    "created_at, updated_at) VALUES (:id, :email, :name, 'x', "
+                    "'admin', 1, 0, 0, '2026-08-27', '2026-08-27')"
+                ),
+                {"id": owner, "email": f"{owner}@example.com", "name": owner},
+            )
+        for owner in ("alice", "bob"):
+            conn.execute(
+                text(
+                    "INSERT INTO dashboards (id, name, owner_id, created_at, "
+                    "updated_at) VALUES (:id, 'Fraud Review', :owner, "
+                    "'2026-08-27', '2026-08-27')"
+                ),
+                {"id": f"d-{owner}", "owner": owner},
+            )
+
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM dashboards")).scalar() == 2
+
+    # And one owner still cannot use the same name twice.
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO dashboards (id, name, owner_id, created_at, "
+                    "updated_at) VALUES ('d-again', 'Fraud Review', 'alice', "
+                    "'2026-08-27', '2026-08-27')"
+                )
+            )
+
+
 def test_migration_creates_the_expected_tables(tmp_path, alembic_for):
     url = f"sqlite:///{tmp_path / 'tables.db'}"
     command.upgrade(alembic_for(url), "head")
@@ -324,6 +408,34 @@ def test_users_and_sessions_survive_a_downgrade_and_reapply(tmp_path, alembic_fo
     command.upgrade(cfg, "head")
     tables = set(inspect(create_engine(url)).get_table_names())
     assert {"users", "sessions"} <= tables
+
+
+def test_owner_scoped_names_survive_a_downgrade_and_reapply(tmp_path, alembic_for):
+    """0013 rewrites two unique constraints and makes ``query_id`` nullable.
+    Both directions have to work, or a rollback is unavailable exactly when
+    somebody needs one."""
+    url = f"sqlite:///{tmp_path / 'app.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+
+    command.downgrade(cfg, "0012_ownership")
+    back = _unique_constraints_of(url)
+    assert ("uq_dashboards_name", ("name",)) in back["dashboards"]
+    assert ("uq_saved_queries_conn_name", ("connection_id", "name")) in back[
+        "saved_queries"
+    ]
+    columns = {c["name"] for c in inspect(create_engine(url)).get_columns(
+        "query_execution_logs"
+    )}
+    assert "connection_id" not in columns
+
+    command.upgrade(cfg, "head")
+    forward = _unique_constraints_of(url)
+    assert ("uq_dashboards_owner_name", ("owner_id", "name")) in forward["dashboards"]
+    assert (
+        "uq_saved_queries_conn_owner_name",
+        ("connection_id", "owner_id", "name"),
+    ) in forward["saved_queries"]
 
 
 def test_a_mixed_case_email_is_rejected_by_the_database(tmp_path, alembic_for):

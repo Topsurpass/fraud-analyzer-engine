@@ -194,27 +194,39 @@ def delete_query(session: Session, query: SavedQuery) -> None:
 
 def log_execution(
     session: Session,
-    query_id: str,
+    query_id: str | None,
     *,
     success: bool,
     row_count: int | None = None,
     duration_ms: int | None = None,
     error: AppError | None = None,
     user_id: str | None = None,
+    connection_id: str | None = None,
 ) -> None:
     """Record an execution attempt.
 
-    ``user_id`` answers "who caused this run", the audit question this
-    feature exists for. It defaults to ``None`` because not every execution
-    has a person behind it: the scheduler and the stale-cache refresher (see
-    app/services/scheduler.py and app/services/refresher.py) call this with
-    no user, correctly, since nobody asked for those interactively.
+    ``user_id`` answers "who caused this run", the audit question this feature
+    exists for, and the design measures itself on execution-log rows carrying
+    one for 100% of runs. Exactly one caller is entitled to leave it None:
+    ``app/services/scheduler.py``, which runs on a timer with nobody behind
+    it. Every other path is somebody asking, including the ones that finish
+    after the response has been sent - the stale-cache refresher in
+    ``app/services/refresher.py`` runs behind a named analyst's poll and
+    carries that analyst's id, and the flagged refresh in
+    ``app/services/flag_rule_service.py`` fans one click out into several
+    executions that all belong to the person who clicked. A row with no user
+    means the scheduler, and nothing else.
+
+    ``query_id`` is None for an ad-hoc preview, which has no saved query;
+    ``connection_id`` names the database in that case, and is left None for a
+    saved query, which already names its own connection.
 
     Logging must never be the reason a request fails, so a failure to write the
     log is swallowed after being reported.
     """
     entry = QueryExecutionLog(
         query_id=query_id,
+        connection_id=connection_id,
         success=success,
         row_count=row_count,
         duration_ms=duration_ms,
@@ -226,7 +238,9 @@ def log_execution(
         session.add(entry)
         session.commit()
     except Exception:  # noqa: BLE001 - never mask the real result
-        logger.exception("Failed to write execution log for query %s", query_id)
+        logger.exception(
+            "Failed to write execution log for query %s", query_id or "(preview)"
+        )
         session.rollback()
 
 
@@ -324,9 +338,16 @@ def _trim_per_query(session: Session, keep: int) -> int:
     window function, because the app-state backend may be SQLite or Postgres
     and this keeps one code path for both. Queries at or under quota cost
     nothing beyond the initial count.
+
+    Preview rows have no ``query_id`` and are skipped here rather than falling
+    out as a NULL group: ``WHERE query_id = NULL`` matches nothing, so the
+    group would cost a query per prune and delete nothing. This is a *depth
+    per query* bound, and a row belonging to no query has no depth to bound;
+    ``log_retention_days`` is what keeps those from accumulating.
     """
     over_quota = session.execute(
         select(QueryExecutionLog.query_id)
+        .where(QueryExecutionLog.query_id.is_not(None))
         .group_by(QueryExecutionLog.query_id)
         .having(func.count(QueryExecutionLog.id) > keep)
     ).scalars()

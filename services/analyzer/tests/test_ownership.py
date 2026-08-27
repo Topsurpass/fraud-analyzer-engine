@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+
 import pytest
 
 from app.models.enums import UserRole
@@ -271,3 +273,192 @@ def test_an_analyst_cannot_attach_another_analysts_chart_to_a_dashboard(
     )
 
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Names are private too
+# ---------------------------------------------------------------------------
+
+
+def test_two_analysts_can_name_a_dashboard_the_same_thing(client, alice, bob):
+    """``uq_dashboards_name`` was global, so Bob creating "Fraud Review" got a
+    409 naming a board he cannot see, in a listing that is empty for him. Same
+    cross-analyst existence leak as the 404-not-403 rule, arriving through the
+    write path - and a plain collision besides, since two analysts working the
+    same pattern reach for the same words."""
+    first = client.post("/dashboards", headers=alice, json={"name": "Fraud Review"})
+    assert first.status_code == 201, first.text
+
+    second = client.post("/dashboards", headers=bob, json={"name": "Fraud Review"})
+
+    assert second.status_code == 201, second.text
+    assert second.json()["id"] != first.json()["id"]
+
+
+def test_an_analyst_still_cannot_reuse_their_own_dashboard_name(client, alice):
+    """Scoped to the owner, not abandoned: within one person's own boards a
+    duplicate name is still a mistake worth refusing."""
+    client.post("/dashboards", headers=alice, json={"name": "Fraud Review"})
+
+    again = client.post("/dashboards", headers=alice, json={"name": "Fraud Review"})
+
+    assert again.status_code == 409
+    assert again.json()["error_code"] == "DUPLICATE_NAME"
+
+
+def test_two_analysts_can_name_a_query_the_same_thing(client, alice, bob, connection):
+    """Connections are shared by design, so a unique ``(connection_id, name)``
+    made every query name on a shared database a global namespace."""
+    _query(client, alice, connection, "velocity")
+
+    response = client.post(
+        f"/connections/{connection['id']}/queries",
+        headers=bob,
+        json={"name": "velocity", "sql_text": "SELECT day FROM txns"},
+    )
+
+    assert response.status_code == 201, response.text
+
+
+def test_an_analyst_still_cannot_reuse_their_own_query_name(client, alice, connection):
+    _query(client, alice, connection, "velocity")
+
+    response = client.post(
+        f"/connections/{connection['id']}/queries",
+        headers=alice,
+        json={"name": "velocity", "sql_text": "SELECT day FROM txns"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "DUPLICATE_NAME"
+
+
+def test_the_same_query_name_is_still_free_on_another_connection(
+    client, alice, boss, connection, target_sqlite
+):
+    """The connection stays in the key: two connections are two databases, and
+    a name reused across them was never a collision."""
+    _query(client, alice, connection, "velocity")
+    other = client.post(
+        "/connections",
+        headers=boss,
+        json={"name": "second", "db_type": "sqlite", "sqlite_path": target_sqlite},
+    ).json()["connection"]
+
+    response = client.post(
+        f"/connections/{other['id']}/queries",
+        headers=alice,
+        json={"name": "velocity", "sql_text": "SELECT day FROM txns"},
+    )
+
+    assert response.status_code == 201, response.text
+
+
+# ---------------------------------------------------------------------------
+# Every run against a customer database names the person behind it
+# ---------------------------------------------------------------------------
+
+
+def _execution_rows() -> list[dict]:
+    """Every execution-log row, read straight from the database.
+
+    The ``/logs`` endpoint is scoped to one saved query, and a preview has no
+    saved query - which is exactly the path that was going unrecorded.
+    """
+    from app.db.app_state import get_sessionmaker
+    from app.models import QueryExecutionLog
+
+    db = get_sessionmaker()()
+    try:
+        return [
+            {
+                "query_id": row.query_id,
+                "connection_id": row.connection_id,
+                "user_id": row.user_id,
+                "success": row.success,
+            }
+            for row in db.query(QueryExecutionLog).all()
+        ]
+    finally:
+        db.close()
+
+
+def _me(client, auth) -> str:
+    return client.get("/auth/me", headers=auth).json()["id"]
+
+
+def test_a_preview_records_who_ran_it(client, alice, connection):
+    """A preview is analyst-authored SQL executed against a customer database.
+    It logged nothing at all, and did not even take a user - so the design's
+    "a user_id for 100% of runs" was false for every exploratory query anybody
+    wrote."""
+    response = client.post(
+        f"/connections/{connection['id']}/query/preview",
+        headers=alice,
+        json={"sql_text": "SELECT day, amount FROM txns"},
+    )
+    assert response.status_code == 200, response.text
+
+    rows = _execution_rows()
+    assert len(rows) == 1
+    assert rows[0]["user_id"] == _me(client, alice)
+    assert rows[0]["query_id"] is None
+    # A log row that cannot say which customer database was touched does not
+    # answer the question the log exists for.
+    assert rows[0]["connection_id"] == connection["id"]
+    assert rows[0]["success"] is True
+
+
+def test_a_failing_preview_is_recorded_too(client, alice, connection):
+    """A refused or broken statement still reached the target, and a log that
+    only holds successes hides exactly the runs somebody would go looking
+    for."""
+    response = client.post(
+        f"/connections/{connection['id']}/query/preview",
+        headers=alice,
+        json={"sql_text": "SELECT * FROM no_such_table"},
+    )
+    assert response.status_code >= 400
+
+    rows = _execution_rows()
+    assert len(rows) == 1
+    assert rows[0]["success"] is False
+    assert rows[0]["user_id"] == _me(client, alice)
+    assert rows[0]["connection_id"] == connection["id"]
+
+
+def test_an_anonymous_preview_is_refused(client, connection):
+    """A guard, not a reproduction: the router-level ``require_user`` already
+    covered this, which is how the endpoint could omit a ``user`` parameter
+    for so long without ever looking unauthenticated. Threading the caller
+    through must not turn into an endpoint-level dependency that somebody can
+    later delete and leave the route open."""
+    response = client.post(
+        f"/connections/{connection['id']}/query/preview",
+        json={"sql_text": "SELECT 1"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_a_flagged_refresh_records_who_asked_for_it(client, alice, connection):
+    """One click fans out into one real execution per rule-bearing query on the
+    connection, and not one of them was logged. The worst of the three: the
+    most target load produced by a single request, and the least attribution.
+    """
+    first = _flagged_query(client, alice, connection, "first")
+    second = _flagged_query(client, alice, connection, "second")
+    before = Counter(row["query_id"] for row in _execution_rows())
+
+    response = client.post(
+        f"/connections/{connection['id']}/flagged/refresh", headers=alice
+    )
+    assert response.status_code == 200, response.text
+
+    rows = _execution_rows()
+    after = Counter(row["query_id"] for row in rows)
+    # One new execution per rule-bearing query, each of them a real round trip
+    # to the customer's database that used to leave no trace at all.
+    assert after[first["id"]] == before[first["id"]] + 1
+    assert after[second["id"]] == before[second["id"]] + 1
+    assert {row["user_id"] for row in rows} == {_me(client, alice)}

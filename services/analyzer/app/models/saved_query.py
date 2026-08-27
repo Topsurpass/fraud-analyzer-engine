@@ -28,8 +28,18 @@ DEFAULT_ROW_LIMIT = 1000
 
 class SavedQuery(TimestampMixin, Base):
     __tablename__ = "saved_queries"
+    # The owner is part of the key. Connections are shared by design, so a
+    # unique ``(connection_id, name)`` turned every query name on a shared
+    # database into a global namespace: one analyst naming a query told the
+    # next one, through a 409, that somebody else's query by that name exists
+    # on a connection they both use - about work they cannot see. The
+    # connection stays in the key because two connections are two databases
+    # and a name reused across them was never a collision. See the note on
+    # ``Dashboard.__table_args__`` about NULL owners.
     __table_args__ = (
-        UniqueConstraint("connection_id", "name", name="uq_saved_queries_conn_name"),
+        UniqueConstraint(
+            "connection_id", "owner_id", "name", name="uq_saved_queries_conn_owner_name"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)

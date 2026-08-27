@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError, ErrorCode
 from app.models.base import utcnow
+from app.models.enums import UserRole
 from app.models.user import User
 from app.security import passwords
 from app.services import session_service
@@ -44,6 +45,41 @@ _REFUSAL = "Those details are not right."
 _DUMMY_HASH = passwords.hash_password("timing-equaliser")
 
 
+def _is_last_active_admin(db: Session, user: User) -> bool:
+    """Whether locking this account would leave nobody able to unlock it.
+
+    A lockout is triggered by *failed* logins, so it needs no credential at
+    all: anybody who knows an administrator's address can hold the console
+    shut indefinitely at one request every ``LOCKOUT_MINUTES``, and recovery
+    needs shell access. The design's "the last admin cannot be locked out"
+    rule covers this the same way it covers deactivation and demotion - all
+    three end with an installation nobody can administer.
+
+    The exemption is narrow on purpose. It applies to exactly one account, and
+    only while it is the sole active administrator; a second active admin
+    means either can be locked because the other can still issue a reset. The
+    IP rate limiter remains the bound on guessing at this one account, which
+    is what it is for - a per-account lock does nothing against a distributed
+    attempt anyway, and this account has to stay reachable.
+
+    Inactive administrators are not counted: a deactivated account cannot
+    reset anybody, so treating it as cover would lock out the only admin who
+    can actually do anything.
+    """
+    if user.role is not UserRole.ADMIN or not user.is_active:
+        return False
+    others = db.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(
+            User.role == UserRole.ADMIN,
+            User.is_active.is_(True),
+            User.id != user.id,
+        )
+    )
+    return not others
+
+
 def authenticate(db: Session, email: str, password: str) -> User:
     """The user behind these credentials, or raise.
 
@@ -51,6 +87,9 @@ def authenticate(db: Session, email: str, password: str) -> User:
     whose password was otherwise correct-shaped; every other failure raises
     ``INVALID_CREDENTIALS``.
     """
+    # Password first, lock second. See the comments at each branch below: the
+    # order is what keeps a locked account indistinguishable from an unknown
+    # one for anybody who does not already hold the password.
     now = utcnow()
     normalised = email.strip().lower()
 
@@ -65,19 +104,37 @@ def authenticate(db: Session, email: str, password: str) -> User:
         passwords.verify_password(password, _DUMMY_HASH)
         raise AppError(ErrorCode.INVALID_CREDENTIALS, _REFUSAL)
 
-    if user.locked_until is not None and user.locked_until > now:
+    locked = user.locked_until is not None and user.locked_until > now
+
+    # The password is verified *before* the lock is acted on, and that order is
+    # the whole point. Refusing a locked account up front skipped argon2 and
+    # answered ACCOUNT_LOCKED - a distinct status, code and message, and a
+    # measurably faster one - but only for an address that exists. Six wrong
+    # guesses therefore separated a registered address from an unregistered
+    # one, which is precisely the oracle this module's docstring says is shut.
+    if not passwords.verify_password(password, user.password_hash):
+        # Not incremented while already locked. An attacker who can push the
+        # lock forward with every wrong guess holds the account shut for as
+        # long as they care to keep guessing, which turns a defence into a
+        # weapon. A lock runs out on its own clock.
+        if not locked:
+            user.failed_login_count += 1
+            if user.failed_login_count >= MAX_FAILED_LOGINS and not _is_last_active_admin(
+                db, user
+            ):
+                user.locked_until = now + timedelta(minutes=LOCKOUT_MINUTES)
+                user.failed_login_count = 0
+            db.commit()
+        raise AppError(ErrorCode.INVALID_CREDENTIALS, _REFUSAL)
+
+    # Only now, having proved they hold the password, is the caller told why
+    # they are being refused. Someone who genuinely mistyped their way into a
+    # lock finds out; a guesser gets _REFUSAL like everybody else.
+    if locked:
         raise AppError(
             ErrorCode.ACCOUNT_LOCKED,
             f"Too many failed attempts. Try again in {LOCKOUT_MINUTES} minutes.",
         )
-
-    if not passwords.verify_password(password, user.password_hash):
-        user.failed_login_count += 1
-        if user.failed_login_count >= MAX_FAILED_LOGINS:
-            user.locked_until = now + timedelta(minutes=LOCKOUT_MINUTES)
-            user.failed_login_count = 0
-        db.commit()
-        raise AppError(ErrorCode.INVALID_CREDENTIALS, _REFUSAL)
 
     # Deactivated accounts fail here rather than earlier, and with the same
     # message: "this account is switched off" confirms the address is real.
@@ -106,6 +163,18 @@ def change_password(db: Session, user: User, current: str, new: str) -> None:
     """Replace a password, then sign the account out everywhere else."""
     if not passwords.verify_password(current, user.password_hash):
         raise AppError(ErrorCode.INVALID_CREDENTIALS, "That is not your current password.")
+
+    # Re-entering the same value is not a change, and under a forced change it
+    # is the design failing completely: the admin-issued temporary password
+    # becomes the permanent one, the admin permanently knows a working
+    # credential, the value that travelled through a chat message stops being
+    # temporary, and clearing temp_password_expires_at below cancels the
+    # 72-hour expiry that bounded it.
+    if passwords.verify_password(new, user.password_hash):
+        raise AppError(
+            ErrorCode.WEAK_PASSWORD,
+            "Your new password must be different from your current one.",
+        )
 
     passwords.validate_password_strength(new)
 

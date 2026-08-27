@@ -77,6 +77,15 @@ def change_password(
     # original absolute expiry lives.
     mine = session_service.digest(_bearer(request))
     mine_row = db.get(UserSession, mine)
+    # Snapshotted into plain values, not carried as a live ORM instance. Both
+    # calls below commit, and revoke_all_for_user deletes this very row, so a
+    # deferred attribute read afterwards is a lazy load against a row that no
+    # longer exists.
+    survivor = (
+        None
+        if mine_row is None
+        else (mine_row.created_at, mine_row.expires_at, mine_row.ip, mine_row.user_agent)
+    )
 
     auth_service.change_password(db, user, body.current_password, body.new_password)
 
@@ -88,9 +97,20 @@ def change_password(
     # would let anyone dodge the absolute cap indefinitely by changing their
     # password on a schedule. See issue_with_id's docstring.
     session_service.revoke_all_for_user(db, user.id)
-    if mine_row is not None:
+    if survivor is not None:
+        created_at, expires_at, ip, user_agent = survivor
         session_service.issue_with_id(
-            db, user, mine, created_at=mine_row.created_at, expires_at=mine_row.expires_at
+            db,
+            user,
+            mine,
+            created_at=created_at,
+            expires_at=expires_at,
+            # Provenance, carried across from the row just read. Restoring
+            # without these blanks where this session came from on every
+            # password change - one of the two moments somebody is most likely
+            # to be asking where a session came from.
+            ip=ip,
+            user_agent=user_agent,
         )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)

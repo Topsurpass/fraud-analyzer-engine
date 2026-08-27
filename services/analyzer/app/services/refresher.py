@@ -59,12 +59,20 @@ def _get_pool() -> ThreadPoolExecutor:
         return _pool
 
 
-def request_refresh(query_id: str) -> bool:
+def request_refresh(query_id: str, user_id: str | None) -> bool:
     """Ask for a background refresh. Returns whether one was actually started.
 
     False means one is already running for this query, which is the common case
     on a dashboard: every card watching a stale query asks at once and exactly
     one execution follows.
+
+    ``user_id`` is who caused it - the analyst whose poll found the entry
+    stale. It is required rather than defaulted so that a future call site
+    cannot quietly file its runs under "nobody"; the scheduler, which really
+    does have nobody behind it, does not come through here at all. When
+    several people poll the same stale query at once the winner's id is the
+    one recorded, because exactly one execution happens and it is theirs: the
+    others are served the cached answer and cause no run.
     """
     with _lock:
         if query_id in _in_flight:
@@ -72,7 +80,7 @@ def request_refresh(query_id: str) -> bool:
         _in_flight.add(query_id)
 
     try:
-        _get_pool().submit(_refresh, query_id)
+        _get_pool().submit(_refresh, query_id, user_id)
         return True
     except RuntimeError:  # pragma: no cover - pool shut down mid-request
         with _lock:
@@ -80,7 +88,7 @@ def request_refresh(query_id: str) -> bool:
         return False
 
 
-def _refresh(query_id: str) -> None:
+def _refresh(query_id: str, user_id: str | None) -> None:
     """Run one query and replace its cache entry. Never raises."""
     try:
         with Session(get_engine()) as session:
@@ -94,15 +102,18 @@ def _refresh(query_id: str) -> None:
                 return
 
             payload = query_service.run_saved_query(query, conn)
-            # Logged like any other execution. This runs against the customer's
-            # database without anyone asking it to, and load nobody can see in
-            # the execution log is load nobody can account for.
+            # Logged like any other execution, and attributed like one. This
+            # runs against the customer's database behind a response that has
+            # already been sent, but somebody's poll is what started it -
+            # load nobody can account for is the thing the execution log
+            # exists to prevent.
             saved_query_service.log_execution(
                 session,
                 query.id,
                 success=True,
                 row_count=payload.row_count,
                 duration_ms=payload.duration_ms,
+                user_id=user_id,
             )
             interval = query_service.poll_interval_for(query)
             result_cache.set(
@@ -117,7 +128,7 @@ def _refresh(query_id: str) -> None:
         try:
             with Session(get_engine()) as session:
                 saved_query_service.log_execution(
-                    session, query_id, success=False, error=error
+                    session, query_id, success=False, error=error, user_id=user_id
                 )
         except Exception:  # noqa: BLE001 - logging must not raise either
             logger.debug("Could not record a failed refresh of %s", query_id)

@@ -46,7 +46,18 @@ class DashboardItem(Base):
 
 class Dashboard(TimestampMixin, Base):
     __tablename__ = "dashboards"
-    __table_args__ = (UniqueConstraint("name", name="uq_dashboards_name"),)
+    # Scoped to the owner, not global. A unique ``name`` alone made every
+    # board title a shared namespace: the second analyst to reach for "Fraud
+    # Review" got a 409 about a board that is not in their listing and that
+    # they are not allowed to see, which is the same cross-analyst existence
+    # leak the 404-not-403 rule closes on the read path. Within one person's
+    # own boards a duplicate name is still refused.
+    #
+    # NULL owner_ids do not collide with each other, because SQL treats NULLs
+    # in a unique constraint as distinct. That only reaches rows predating
+    # accounts - every create sets an owner - and duplicate names among
+    # unowned legacy rows are the lesser problem.
+    __table_args__ = (UniqueConstraint("owner_id", "name", name="uq_dashboards_owner_name"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(200), nullable=False)

@@ -219,3 +219,136 @@ def test_list_users_refuses_when_the_schema_is_missing():
 
     assert result.exit_code != 0
     assert "no users table" in result.output.lower()
+
+
+# --- Claiming what nobody owns ---------------------------------------------
+#
+# Ownership columns are nullable because nothing predating accounts has an
+# owner and there is no administrator at migration time to attribute rows to.
+# Nothing else in the application can ever set an owner on those rows, so
+# without this step every pre-existing saved query and dashboard stays
+# owner_id IS NULL permanently: administrators can see them, the analyst who
+# wrote them can never edit them again, and no analyst can see them at all.
+# The design names this offer twice - in the data model and in the CLI section.
+
+
+def _unowned_rows(app_db):
+    """One connection, one saved query and one dashboard, all unowned.
+
+    Written straight to the database rather than through the API, because the
+    API always sets an owner - which is the point: these rows are the ones
+    that existed before there was anybody to own them.
+    """
+    from app.models import Connection, Dashboard, DbType, SavedQuery
+
+    db = get_sessionmaker()()
+    try:
+        conn = Connection(name="legacy", db_type=DbType.SQLITE, sqlite_path="/tmp/x.db")
+        db.add(conn)
+        db.commit()
+        db.add_all(
+            [
+                SavedQuery(connection_id=conn.id, name="legacy q", sql_text="SELECT 1"),
+                SavedQuery(connection_id=conn.id, name="older q", sql_text="SELECT 2"),
+                Dashboard(name="legacy board"),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _owner_ids(model) -> list:
+    db = get_sessionmaker()()
+    try:
+        return [row.owner_id for row in db.query(model).all()]
+    finally:
+        db.close()
+
+
+def test_create_admin_reports_what_is_unowned(app_db):
+    _unowned_rows(app_db)
+
+    result = runner.invoke(
+        cli,
+        ["create-admin", "--email", "boss@b.test", "--name", "The Boss", "--claim"],
+        input="a-perfectly-fine-password\na-perfectly-fine-password\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "2 saved queries" in result.output
+    assert "1 dashboard" in result.output
+
+
+def test_create_admin_claims_unowned_work_when_accepted(app_db):
+    from app.models import Dashboard, SavedQuery
+
+    _unowned_rows(app_db)
+
+    result = runner.invoke(
+        cli,
+        ["create-admin", "--email", "boss@b.test", "--name", "The Boss", "--claim"],
+        input="a-perfectly-fine-password\na-perfectly-fine-password\n",
+    )
+    assert result.exit_code == 0, result.output
+
+    db = get_sessionmaker()()
+    try:
+        admin_id = db.query(User).one().id
+    finally:
+        db.close()
+
+    assert _owner_ids(SavedQuery) == [admin_id, admin_id]
+    assert _owner_ids(Dashboard) == [admin_id]
+
+
+def test_create_admin_leaves_unowned_work_alone_when_declined(app_db):
+    from app.models import Dashboard, SavedQuery
+
+    _unowned_rows(app_db)
+
+    result = runner.invoke(
+        cli,
+        ["create-admin", "--email", "boss@b.test", "--name", "The Boss", "--no-claim"],
+        input="a-perfectly-fine-password\na-perfectly-fine-password\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _owner_ids(SavedQuery) == [None, None]
+    assert _owner_ids(Dashboard) == [None]
+
+
+def test_create_admin_asks_when_neither_flag_is_given(app_db):
+    """Skippable, and defaulting to claiming: the operator running this is the
+    first administrator, and leaving the rows unowned is the outcome nothing
+    can undo later."""
+    from app.models import Dashboard, SavedQuery
+
+    _unowned_rows(app_db)
+
+    result = runner.invoke(
+        cli,
+        ["create-admin", "--email", "boss@b.test", "--name", "The Boss"],
+        # Password, confirmation, then a bare newline accepting the default.
+        input="a-perfectly-fine-password\na-perfectly-fine-password\n\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    db = get_sessionmaker()()
+    try:
+        admin_id = db.query(User).one().id
+    finally:
+        db.close()
+    assert _owner_ids(SavedQuery) == [admin_id, admin_id]
+    assert _owner_ids(Dashboard) == [admin_id]
+
+
+def test_create_admin_says_nothing_about_claiming_when_there_is_nothing_to_claim(app_db):
+    result = runner.invoke(
+        cli,
+        ["create-admin", "--email", "boss@b.test", "--name", "The Boss"],
+        input="a-perfectly-fine-password\na-perfectly-fine-password\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "unowned" not in result.output.lower()

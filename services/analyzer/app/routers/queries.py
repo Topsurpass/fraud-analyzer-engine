@@ -185,10 +185,12 @@ def _execute_and_log(session: Session, query, conn, user: User):
 
     ``user`` is who asked for this run, threaded all the way down to the log
     row so "who ran this" is answerable later. It is never None for these two
-    call sites - both sit behind ``require_user`` - which is what tells the
-    two of them apart from the scheduler and the stale-cache refresher, which
-    call ``log_execution`` directly with no user because nobody asked for
-    those interactively.
+    call sites - both sit behind ``require_user``. Every other path that
+    executes against a target carries its caller too, including the ones that
+    finish after the response: the stale-cache refresher takes the id of the
+    analyst whose poll started it, and the flagged refresh the id of whoever
+    clicked. Only ``app/services/scheduler.py`` logs with no user, because a
+    timer really has nobody behind it.
     """
     try:
         payload = query_service.run_saved_query(query, conn)
@@ -279,7 +281,9 @@ def _poll_one(
     if cached is None and not force:
         stale = result_cache.get_stale(query_id)
         if stale is not None:
-            refresher.request_refresh(query_id)
+            # The person polling is the person who caused the refresh, even
+            # though it lands after their response does.
+            refresher.request_refresh(query_id, user.id)
             cached = stale
 
     if cached is not None:
@@ -315,19 +319,49 @@ def _poll_one(
 def preview_query(
     connection_id: str,
     payload: PreviewRequest,
+    user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> PreviewResponse:
     """Run ad-hoc SQL without saving it, for a 'try before you save' UX.
 
     Goes through the same guard as everything else and is capped aggressively,
-    since this is exploratory only. Nothing is persisted and nothing is logged.
+    since this is exploratory only. Nothing is *persisted* - no saved query,
+    no cache entry, no flagged rows - but the run itself is logged, with the
+    caller's id and the connection it touched. Exploratory or not, this is
+    analyst-authored SQL against a customer's database, which is precisely the
+    thing the execution log exists to attribute; "we did not save the query"
+    is not a reason to leave no record that it ran. There is no saved query to
+    hang the row on, so it carries ``connection_id`` instead - see
+    ``QueryExecutionLog.connection_id``.
     """
     conn = connection_service.get_connection(session, connection_id)
     settings = get_settings()
     requested = payload.row_limit or settings.preview_row_limit
     row_limit = min(query_service.resolve_row_limit(requested), settings.preview_row_limit)
 
-    result = query_service.execute_sql(conn, payload.sql_text, row_limit=row_limit)
+    try:
+        result = query_service.execute_sql(conn, payload.sql_text, row_limit=row_limit)
+    except AppError as error:
+        # A refused or broken statement still reached the target. A log holding
+        # only successes hides exactly the runs somebody goes looking for.
+        svc.log_execution(
+            session,
+            None,
+            success=False,
+            error=error,
+            user_id=user.id,
+            connection_id=conn.id,
+        )
+        raise
+    svc.log_execution(
+        session,
+        None,
+        success=True,
+        row_count=result.row_count,
+        duration_ms=result.duration_ms,
+        user_id=user.id,
+        connection_id=conn.id,
+    )
     return PreviewResponse(
         connection_id=conn.id,
         executed_at=utcnow(),

@@ -12,12 +12,14 @@ from __future__ import annotations
 from datetime import timedelta
 
 import typer
-from sqlalchemy import delete, func, inspect, select
+from sqlalchemy import delete, func, inspect, select, update
 
 from app.db.app_state import get_engine, get_sessionmaker
 from app.errors import AppError
 from app.models.base import utcnow
+from app.models.dashboard import Dashboard
 from app.models.enums import UserRole
+from app.models.saved_query import SavedQuery
 from app.models.user import User, UserSession
 from app.security import passwords
 
@@ -57,10 +59,85 @@ def _require_schema() -> None:
         raise typer.Exit(code=1)
 
 
+def _unowned_counts(db) -> tuple[int, int]:
+    """How many saved queries and dashboards have no owner."""
+    queries = db.scalar(
+        select(func.count()).select_from(SavedQuery).where(SavedQuery.owner_id.is_(None))
+    )
+    dashboards = db.scalar(
+        select(func.count()).select_from(Dashboard).where(Dashboard.owner_id.is_(None))
+    )
+    return int(queries or 0), int(dashboards or 0)
+
+
+def _claim_unowned(db, admin_id: str) -> None:
+    """Give every unowned saved query and dashboard to the new administrator.
+
+    One transaction for both tables: claiming half of somebody's work is worse
+    than claiming none of it, because the half that moved is no longer
+    identifiable as needing the other half.
+    """
+    db.execute(
+        update(SavedQuery).where(SavedQuery.owner_id.is_(None)).values(owner_id=admin_id)
+    )
+    db.execute(
+        update(Dashboard).where(Dashboard.owner_id.is_(None)).values(owner_id=admin_id)
+    )
+    db.commit()
+
+
+def _offer_to_claim(db, admin_id: str, claim: bool | None) -> None:
+    """Report what nobody owns, and offer to hand it to the new administrator.
+
+    Ownership columns are nullable because rows predating accounts have no
+    owner and there was no administrator at migration time to attribute them
+    to. Nothing else in the application can ever set an owner on those rows,
+    so without this they stay ``owner_id IS NULL`` permanently: administrators
+    can still see them, no analyst can, and the person who wrote them can
+    never edit them again. This command is the only place that offer exists,
+    which is why the design names it twice.
+
+    ``claim`` is the ``--claim/--no-claim`` flag: None means ask. The prompt
+    defaults to claiming, because the operator running ``create-admin`` is the
+    first administrator and leaving the rows unowned is the outcome that
+    nothing later can undo.
+    """
+    queries, dashboards = _unowned_counts(db)
+    if not queries and not dashboards:
+        return
+
+    typer.echo("")
+    typer.echo(
+        f"Unowned work found: {queries} saved "
+        f"{'query' if queries == 1 else 'queries'} and {dashboards} "
+        f"{'dashboard' if dashboards == 1 else 'dashboards'}. "
+        "Nothing else can give these an owner later."
+    )
+    if claim is None:
+        claim = typer.confirm("Give them to this administrator?", default=True)
+    if not claim:
+        typer.echo("Left unowned. Only administrators will see them.")
+        return
+
+    _claim_unowned(db, admin_id)
+    typer.secho(
+        f"Claimed {queries + dashboards} rows for this administrator.",
+        fg=typer.colors.GREEN,
+    )
+
+
 @app.command("create-admin")
 def create_admin(
     email: str = typer.Option(..., prompt=True),
     name: str = typer.Option(..., prompt="Full name"),
+    claim: bool | None = typer.Option(
+        None,
+        "--claim/--no-claim",
+        help=(
+            "Claim saved queries and dashboards that have no owner, or leave "
+            "them unowned. Omit to be asked."
+        ),
+    ),
 ) -> None:
     """Create the first administrator.
 
@@ -89,26 +166,29 @@ def create_admin(
             typer.secho(f"{normalised} already has an account.", fg=typer.colors.RED)
             raise typer.Exit(code=1)
 
-        db.add(
-            User(
-                email=normalised,
-                full_name=name.strip(),
-                password_hash=passwords.hash_password(password),
-                role=UserRole.ADMIN,
-                is_active=True,
-                # They chose it at the prompt, so there is nothing to replace.
-                # Forcing a change here would trap the first admin behind a
-                # screen with nobody able to reset them - the opposite of
-                # reset-password below, which issues a credential nobody
-                # chose and so must be replaced.
-                must_change_password=False,
-            )
+        admin = User(
+            email=normalised,
+            full_name=name.strip(),
+            password_hash=passwords.hash_password(password),
+            role=UserRole.ADMIN,
+            is_active=True,
+            # They chose it at the prompt, so there is nothing to replace.
+            # Forcing a change here would trap the first admin behind a
+            # screen with nobody able to reset them - the opposite of
+            # reset-password below, which issues a credential nobody
+            # chose and so must be replaced.
+            must_change_password=False,
         )
+        db.add(admin)
         db.commit()
+
+        typer.secho(f"Administrator created: {normalised}", fg=typer.colors.GREEN)
+        # After the commit, deliberately. The account exists whatever happens
+        # next; a declined offer, or an interrupted prompt, must not undo the
+        # one thing this command is for.
+        _offer_to_claim(db, admin.id, claim)
     finally:
         db.close()
-
-    typer.secho(f"Administrator created: {normalised}", fg=typer.colors.GREEN)
 
 
 @app.command("reset-password")

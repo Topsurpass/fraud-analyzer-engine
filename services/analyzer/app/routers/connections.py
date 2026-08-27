@@ -125,8 +125,9 @@ def delete_connection(
 ) -> Response:
     """Delete a connection.
 
-    This cascades: every saved query on the connection and every execution log
-    row for those queries is deleted with it.
+    This cascades: every saved query on the connection, every execution log
+    row for those queries, and the log rows from ad-hoc previews run against
+    it are deleted with it.
     """
     conn = connection_service.get_connection(session, connection_id)
     connection_service.delete_connection(session, conn)
@@ -140,7 +141,7 @@ def delete_connection(
 )
 def disconnect_connection(
     connection_id: str, session: Session = Depends(get_session)
-) -> Connection:
+) -> ConnectionRead:
     """Stop using this connection until it is reconnected.
 
     Closes its pooled connections immediately, so the target database sees them

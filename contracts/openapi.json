@@ -3360,7 +3360,7 @@
     },
     "/connections/{connection_id}": {
       "delete": {
-        "description": "Delete a connection.\n\nThis cascades: every saved query on the connection and every execution log\nrow for those queries is deleted with it.",
+        "description": "Delete a connection.\n\nThis cascades: every saved query on the connection, every execution log\nrow for those queries, and the log rows from ad-hoc previews run against\nit are deleted with it.",
         "operationId": "delete_connection_connections__connection_id__delete",
         "parameters": [
           {
@@ -4515,7 +4515,7 @@
     },
     "/connections/{connection_id}/query/preview": {
       "post": {
-        "description": "Run ad-hoc SQL without saving it, for a 'try before you save' UX.\n\nGoes through the same guard as everything else and is capped aggressively,\nsince this is exploratory only. Nothing is persisted and nothing is logged.",
+        "description": "Run ad-hoc SQL without saving it, for a 'try before you save' UX.\n\nGoes through the same guard as everything else and is capped aggressively,\nsince this is exploratory only. Nothing is *persisted* - no saved query,\nno cache entry, no flagged rows - but the run itself is logged, with the\ncaller's id and the connection it touched. Exploratory or not, this is\nanalyst-authored SQL against a customer's database, which is precisely the\nthing the execution log exists to attribute; \"we did not save the query\"\nis not a reason to leave no record that it ran. There is no saved query to\nhang the row on, so it carries ``connection_id`` instead - see\n``QueryExecutionLog.connection_id``.",
         "operationId": "preview_query_connections__connection_id__query_preview_post",
         "parameters": [
           {

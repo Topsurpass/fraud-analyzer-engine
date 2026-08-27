@@ -205,13 +205,19 @@ def _section(session: Session, query: SavedQuery) -> dict:
     }
 
 
-def _run_one(session: Session, query: SavedQuery, conn: Connection) -> tuple:
+def _run_one(session: Session, query: SavedQuery, conn: Connection, user: User) -> tuple:
     """Run one query so its stored findings are current.
 
     Returns ``(error_code, error_message)``; both None on success. One broken
     query must not empty the whole view - the other cards on this connection
     are fine and their findings still matter - so the failure is reported
     against its own section and the rest are built as usual.
+
+    ``user`` is who clicked refresh. This is the single request in the app that
+    fans out into several real executions against a customer database - up to
+    ``flagged_refresh_max_queries`` of them - so it is the last place an
+    unattributed run should be acceptable, and each execution is logged
+    against the person who caused all of them.
     """
     from app.db.target_registry import translate_db_error
     from app.errors import AppError
@@ -219,11 +225,25 @@ def _run_one(session: Session, query: SavedQuery, conn: Connection) -> tuple:
     try:
         payload = query_service.run_saved_query(query, conn)
     except AppError as exc:
+        saved_query_service.log_execution(
+            session, query.id, success=False, error=exc, user_id=user.id
+        )
         return exc.error_code.value, exc.message
     except Exception as exc:  # noqa: BLE001 - normalised below
         translated = translate_db_error(exc)
+        saved_query_service.log_execution(
+            session, query.id, success=False, error=translated, user_id=user.id
+        )
         return translated.error_code.value, translated.message
 
+    saved_query_service.log_execution(
+        session,
+        query.id,
+        success=True,
+        row_count=payload.row_count,
+        duration_ms=payload.duration_ms,
+        user_id=user.id,
+    )
     interval = query_service.poll_interval_for(query)
     result_cache.set(
         query.id, payload.data_hash, payload.as_dict(interval), ttl_ms=interval
@@ -264,7 +284,7 @@ def flagged_for_connection(
     for query in queries:
         error_code = error_message = None
         if refresh:
-            error_code, error_message = _run_one(session, query, conn)
+            error_code, error_message = _run_one(session, query, conn, user)
         section = _section(session, query)
         section["error_code"] = error_code
         section["error_message"] = error_message

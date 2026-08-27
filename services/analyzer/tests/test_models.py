@@ -44,15 +44,53 @@ def test_saved_query_defaults(session):
     assert q.row_limit == 1000
 
 
-def test_duplicate_query_name_per_connection_rejected(session):
+def _analyst(session, email: str) -> User:
+    user = User(
+        email=email,
+        full_name=email.split("@")[0],
+        password_hash=hash_password("a-perfectly-fine-password"),
+        role=UserRole.ANALYST,
+    )
+    session.add(user)
+    session.commit()
+    return user
+
+
+def test_duplicate_query_name_per_owner_and_connection_rejected(session):
     c = _connection()
     session.add(c)
     session.commit()
-    session.add(SavedQuery(connection_id=c.id, name="dupe", sql_text="SELECT 1"))
+    owner = _analyst(session, "one-owner@example.com")
+    session.add(
+        SavedQuery(connection_id=c.id, name="dupe", sql_text="SELECT 1", owner_id=owner.id)
+    )
     session.commit()
-    session.add(SavedQuery(connection_id=c.id, name="dupe", sql_text="SELECT 2"))
+    session.add(
+        SavedQuery(connection_id=c.id, name="dupe", sql_text="SELECT 2", owner_id=owner.id)
+    )
     with pytest.raises(IntegrityError):
         session.commit()
+
+
+def test_two_owners_may_use_the_same_query_name_on_one_connection(session):
+    """Connections are shared by design. A unique ``(connection_id, name)``
+    made every query name on a shared database a global namespace, so one
+    analyst's choice of words refused - and described - another's work."""
+    c = _connection()
+    session.add(c)
+    session.commit()
+    alice = _analyst(session, "alice-models@example.com")
+    bob = _analyst(session, "bob-models@example.com")
+
+    session.add_all(
+        [
+            SavedQuery(connection_id=c.id, name="same", sql_text="SELECT 1", owner_id=alice.id),
+            SavedQuery(connection_id=c.id, name="same", sql_text="SELECT 1", owner_id=bob.id),
+        ]
+    )
+    session.commit()
+
+    assert session.query(SavedQuery).count() == 2
 
 
 def test_same_query_name_allowed_on_different_connections(session):

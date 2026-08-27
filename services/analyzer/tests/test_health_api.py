@@ -121,3 +121,19 @@ def test_startup_never_blocks_on_a_broken_check(monkeypatch, caplog):
     with caplog.at_level(logging.ERROR):
         main_module._report_unreadable_credentials()  # must not raise
     assert "continuing" in caplog.text
+
+
+@pytest.mark.parametrize("path", ["/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"])
+def test_the_documentation_paths_answer_without_a_session(client, path):
+    """Recorded, not accidental.
+
+    These four are on ``PUBLIC_PATHS`` as a deliberate decision - the OpenAPI
+    schema describes the API's shape and holds no customer data, and the
+    engine sits behind a private network - and this pins the fact that they
+    really are open. If a later change puts a session in front of them, this
+    fails and the allowlist entry gets removed with it rather than sitting
+    there describing something untrue. They used to be invisible to
+    ``tests/test_route_coverage.py`` entirely, because FastAPI registers them
+    as plain Starlette routes rather than ``APIRoute`` objects.
+    """
+    assert client.get(path).status_code == 200

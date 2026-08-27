@@ -17,10 +17,18 @@ back into an internal structure, it is calling the function FastAPI itself
 calls to answer "what does this app actually serve", which is the question
 this test is asking.
 
-This sweep walks ``APIRoute`` objects only. It does not expand ``Mount``
-objects or websocket routes - neither exists in this app today, so the gap is
-latent rather than live, but a future author adding either should not assume
-this test's green run means every path is covered.
+The sweep covers *every* route object the app serves, not only the
+``APIRoute`` ones. It used to skip anything that was not an ``APIRoute``, and
+that silently dropped four live, unauthenticated endpoints: FastAPI registers
+``/docs``, ``/docs/oauth2-redirect``, ``/redoc`` and ``/openapi.json`` as
+plain ``starlette.routing.Route`` objects, so they were neither guarded nor
+allowlisted, and this file's stated contract was false while it ran green.
+They are now a recorded decision on ``PUBLIC_PATHS``, and anything else that
+is not an ``APIRoute`` - a ``Mount``, a websocket, another framework-supplied
+route - fails the sweep unless it is allowlisted too. A non-``APIRoute`` has
+no ``dependant``, so there is no way to prove it is guarded; the only
+defensible verdict on one is a human decision written down on the allowlist,
+which is what ``test_every_non_api_route_is_an_explicit_decision`` demands.
 """
 
 from __future__ import annotations
@@ -60,11 +68,29 @@ def _guarded_routes() -> list[APIRoute]:
     for route_context in iter_route_contexts(app.routes):
         original = route_context.original_route
         if not isinstance(original, APIRoute):
+            # Counted by _unlisted_non_api_routes below rather than dropped.
             continue
         if route_context.path in PUBLIC_PATHS:
             continue
         routes.append(route_context)
     return routes
+
+
+def _unlisted_non_api_routes(routes=None) -> list[str]:
+    """Paths served by something other than an ``APIRoute`` and not allowlisted.
+
+    Takes ``routes`` so the planted-route test can hand in a route table
+    without mutating the real app, which would leak into every other test in
+    the session through the module-level ``app`` import.
+    """
+    return [
+        route_context.path
+        for route_context in iter_route_contexts(
+            app.routes if routes is None else routes
+        )
+        if not isinstance(route_context.original_route, APIRoute)
+        and route_context.path not in PUBLIC_PATHS
+    ]
 
 
 def test_there_are_routes_to_check():
@@ -92,10 +118,64 @@ def test_every_route_requires_a_signed_in_user(route):
     )
 
 
+def test_every_non_api_route_is_an_explicit_decision():
+    """A route that is not an ``APIRoute`` cannot be proved guarded - it has no
+    ``dependant`` to inspect - so the only honest verdict is a written
+    decision. Skipping them, which this file used to do, meant four live
+    unauthenticated endpoints were neither checked nor recorded."""
+    assert _unlisted_non_api_routes() == []
+
+
+def test_a_planted_unguarded_non_api_route_is_caught():
+    """The sweep's whole purpose is the route somebody adds next year. A plain
+    Starlette route used to pass through it invisibly; this proves it no
+    longer does."""
+    from starlette.routing import Route as StarletteRoute
+
+    async def _endpoint(request):  # pragma: no cover - never called
+        raise AssertionError("planted route must not be served")
+
+    planted = StarletteRoute("/planted-and-open", endpoint=_endpoint)
+
+    assert _unlisted_non_api_routes([*app.routes, planted]) == ["/planted-and-open"]
+    # And the real table is untouched by the probe.
+    assert _unlisted_non_api_routes() == []
+
+
+def test_a_planted_non_api_route_passes_once_it_is_allowlisted(monkeypatch):
+    """The escape hatch has to work, or the rule above becomes a reason to
+    delete the check rather than record the decision."""
+    from starlette.routing import Route as StarletteRoute
+
+    import tests.test_route_coverage as module
+
+    async def _endpoint(request):  # pragma: no cover - never called
+        raise AssertionError("planted route must not be served")
+
+    planted = StarletteRoute("/planted-and-declared", endpoint=_endpoint)
+    monkeypatch.setattr(module, "PUBLIC_PATHS", PUBLIC_PATHS | {"/planted-and-declared"})
+
+    assert module._unlisted_non_api_routes([*app.routes, planted]) == []
+
+
 def test_the_public_allowlist_stays_small():
-    """Every entry is a decision. Growth here should be noticed."""
+    """Every entry is a decision. Growth here should be noticed.
+
+    The four documentation paths are FastAPI's own, they answer without a
+    session today, and they are listed so that is a recorded exposure rather
+    than an invisible one - see the comment on ``PUBLIC_PATHS``.
+    """
     assert PUBLIC_PATHS == frozenset(
-        {"/health", "/ready", "/auth/login", "/auth/logout"}
+        {
+            "/health",
+            "/ready",
+            "/auth/login",
+            "/auth/logout",
+            "/docs",
+            "/docs/oauth2-redirect",
+            "/redoc",
+            "/openapi.json",
+        }
     )
 
 

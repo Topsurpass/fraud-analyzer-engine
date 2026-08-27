@@ -228,6 +228,16 @@ Interactive docs at http://127.0.0.1:8000/docs. Run the tests with
 
 Every endpoint except `/health`, `/ready`, `/auth/login`, and `/auth/logout` needs a signed-in user.
 
+FastAPI's own documentation paths - `/docs`, `/docs/oauth2-redirect`, `/redoc`
+and `/openapi.json` - also answer without one. That is a deliberate, recorded
+decision rather than an oversight: the OpenAPI schema describes the API's
+shape and carries no rows, credentials or SQL, and the engine sits behind a
+private network with Next.js as its only public face. To switch them off in a
+given deployment, construct the app with `FastAPI(docs_url=None,
+redoc_url=None, openapi_url=None)` in `app/main.py`. They are listed in
+`PUBLIC_PATHS` (`app/security/deps.py`) and `tests/test_route_coverage.py`
+fails the build if any other unauthenticated route appears beside them.
+
 Create the first administrator. This is the only way an admin account comes
 into existence: it is a CLI command, not an HTTP endpoint, because no admin
 exists yet to authenticate a request that could create one. It needs shell

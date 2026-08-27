@@ -14,6 +14,26 @@ from app.errors import AppError, ErrorCode
 from app.models.user import User
 from app.routers.auth import current_user
 
+#: The four interactive-documentation paths FastAPI registers for itself
+#: (``/docs``, its Swagger OAuth2 redirect helper, ``/redoc`` and the schema
+#: they read) answer without a session today, and are listed here so that fact
+#: is recorded rather than invisible. They are not ``APIRoute`` objects, which
+#: is how they escaped ``tests/test_route_coverage.py`` for as long as they
+#: did; that sweep now checks every route object and fails on any unlisted
+#: one, so the next non-APIRoute route is caught rather than silently dropped.
+#:
+#: Deliberate, and narrow: the OpenAPI schema is a description of the API's
+#: shape, not customer data - it holds no rows, no credentials and no SQL -
+#: and the engine sits behind a private network with Next.js as the only
+#: public face (see the design's architecture section). Whether to disable the
+#: docs entirely is a deployment decision, made with ``FastAPI(docs_url=None,
+#: redoc_url=None, openapi_url=None)`` in ``app/main.py`` if an operator wants
+#: them off; it is not a decision this list should pre-empt by pretending they
+#: are guarded.
+_DOCS_PATHS = frozenset(
+    {"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"}
+)
+
 #: Routes that answer without a session, each one a deliberate decision.
 #:
 #: ``/health`` so a load balancer can probe without credentials. ``/ready``
@@ -40,7 +60,12 @@ from app.routers.auth import current_user
 #: ``tests/test_route_coverage.py`` accepts ``current_user`` as a satisfying
 #: dependency for exactly this reason, so both stay covered by the sweep
 #: without being misclassified as reachable with no session at all.
-PUBLIC_PATHS = frozenset({"/health", "/ready", "/auth/login", "/auth/logout"})
+#:
+#: ``_DOCS_PATHS`` above is folded in here, so the sweep treats FastAPI's own
+#: documentation routes as the recorded exposure they are.
+PUBLIC_PATHS = (
+    frozenset({"/health", "/ready", "/auth/login", "/auth/logout"}) | _DOCS_PATHS
+)
 
 
 def require_user(user: User = Depends(current_user)) -> User:

@@ -127,7 +127,7 @@ def test_a_disconnected_connection_is_not_refreshed_behind_your_back(
     admin_client.post(f"/connections/{sqlite_connection['id']}/disconnect")
     _expire(query["id"])
 
-    refresher.request_refresh(query["id"])
+    refresher.request_refresh(query["id"], None)
     _wait_for_refresh()
 
     assert len(admin_client.get(f"/queries/{query['id']}/logs").json()) == before
@@ -140,7 +140,50 @@ def test_a_failing_refresh_does_not_take_the_request_with_it(admin_client, query
     monkeypatch.setattr("app.services.query_service.run_saved_query", explode)
 
     admin_client.post(f"/queries/{query['id']}/run") if False else None
-    refresher.request_refresh(query["id"])
+    refresher.request_refresh(query["id"], None)
     _wait_for_refresh()
     # No exception escaped, and the tracker is clean for the next attempt.
     assert refresher.in_flight_count() == 0
+
+
+def test_the_refresh_a_poll_starts_names_the_person_who_polled(admin_client, query):
+    """The refresh is not anonymous work.
+
+    ``request_refresh`` took only a ``query_id``, so a background run started
+    by a named analyst's poll landed in the execution log with no user - the
+    same shape as the scheduler's rows, which genuinely have nobody behind
+    them. A poll is a person asking; the run it triggers is attributable to
+    that person even though it happens after the response.
+    """
+    admin_client.post(f"/queries/{query['id']}/run")
+    me = admin_client.get("/auth/me").json()["id"]
+    before = len(admin_client.get(f"/queries/{query['id']}/logs").json())
+    _expire(query["id"])
+
+    admin_client.get(f"/queries/{query['id']}/poll")
+    _wait_for_refresh()
+
+    logs = admin_client.get(f"/queries/{query['id']}/logs").json()
+    assert len(logs) > before
+    assert logs[0]["user_id"] == me
+
+
+def test_a_failing_refresh_still_names_the_person_who_polled(admin_client, query, monkeypatch):
+    """A failed background run is still a run against their database, and the
+    execution log is where somebody looks to find out why a card is stale."""
+    admin_client.post(f"/queries/{query['id']}/run")
+    me = admin_client.get("/auth/me").json()["id"]
+    _expire(query["id"])
+
+    def explode(*_args, **_kwargs):
+        from app.errors import AppError, ErrorCode
+
+        raise AppError(ErrorCode.QUERY_EXECUTION_ERROR, "target is down")
+
+    monkeypatch.setattr("app.services.query_service.run_saved_query", explode)
+    refresher.request_refresh(query["id"], me)
+    _wait_for_refresh()
+
+    logs = admin_client.get(f"/queries/{query['id']}/logs").json()
+    assert logs[0]["success"] is False
+    assert logs[0]["user_id"] == me

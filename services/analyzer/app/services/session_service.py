@@ -100,6 +100,8 @@ def issue_with_id(
     session_id: str,
     created_at: datetime,
     expires_at: datetime,
+    ip: str | None = None,
+    user_agent: str | None = None,
 ) -> None:
     """Recreate a session under a digest the caller already holds.
 
@@ -123,6 +125,13 @@ def issue_with_id(
     ``last_seen_at`` alone resets to now: using the session to authenticate
     this very request is genuinely fresh activity, which is exactly what the
     idle clock measures.
+
+    ``ip`` and ``user_agent`` come off the same row for the same reason. They
+    are the session's provenance - the fields somebody reads to answer "was
+    this opened from somewhere I recognise" after a suspected compromise - and
+    dropping them here quietly erased that on every password change, which is
+    one of the two moments a compromise is most likely to be under
+    investigation.
     """
     db.add(
         UserSession(
@@ -131,6 +140,8 @@ def issue_with_id(
             created_at=created_at,
             expires_at=expires_at,
             last_seen_at=utcnow(),
+            ip=ip,
+            user_agent=user_agent,
         )
     )
     db.commit()

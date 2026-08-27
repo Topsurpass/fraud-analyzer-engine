@@ -421,3 +421,24 @@ def test_an_unknown_mode_is_refused(admin_client):
         },
     )
     assert r.status_code == 422
+
+
+def test_every_connections_endpoint_has_resolvable_annotations():
+    """``disconnect_connection`` was annotated ``-> Connection``, a name this
+    module never imports.
+
+    Harmless only by accident: ``response_model`` is explicit on that route so
+    FastAPI never consults the return annotation, and
+    ``from __future__ import annotations`` keeps it an unevaluated string. Any
+    tool that resolves hints - a type checker, a docs generator, or FastAPI
+    itself on a route that omits ``response_model`` - hits a NameError, and
+    the next endpoint copied from that one inherits it.
+    """
+    import typing
+
+    import app.routers.connections as module
+
+    for name, function in vars(module).items():
+        if not callable(function) or not getattr(function, "__module__", "") == module.__name__:
+            continue
+        typing.get_type_hints(function, vars(module))
