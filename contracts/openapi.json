@@ -44,7 +44,10 @@
               "QUERY_NOT_FOUND",
               "TABLE_NOT_FOUND",
               "DASHBOARD_NOT_FOUND",
+              "USER_NOT_FOUND",
               "DUPLICATE_NAME",
+              "DUPLICATE_EMAIL",
+              "LAST_ADMIN",
               "REQUEST_VALIDATION_ERROR",
               "RATE_LIMITED",
               "DB_UNREACHABLE",
@@ -65,6 +68,75 @@
           "message"
         ],
         "title": "ApiError",
+        "type": "object"
+      },
+      "AuditAction": {
+        "description": "Administrative acts worth reconstructing months later.\n\nDeliberately a closed set rather than free text. An audit trail whose\naction names are typed by whoever wrote the call site cannot be filtered\nor counted, and the first person to need it is looking for one specific\nthing under time pressure.",
+        "enum": [
+          "user_created",
+          "user_deactivated",
+          "user_reactivated",
+          "user_role_changed",
+          "user_password_reset"
+        ],
+        "title": "AuditAction",
+        "type": "string"
+      },
+      "AuditEntryRead": {
+        "description": "One row of the audit log, with the actor's email resolved for display.\n\nMirrors ``app.models.audit_log.AuditLog`` field for field, plus\n``actor_email`` - the log stores ``actor_id`` because accounts are never\ndeleted and an id is what survives an email changing, but a page rendering\nthe log for a human needs something readable without a second lookup per\nrow.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/AuditAction"
+          },
+          "actor_email": {
+            "title": "Actor Email",
+            "type": "string"
+          },
+          "actor_id": {
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_type": {
+            "title": "Target Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "actor_id",
+          "actor_email",
+          "action",
+          "target_type",
+          "target_id",
+          "detail",
+          "created_at"
+        ],
+        "title": "AuditEntryRead",
         "type": "object"
       },
       "BatchPollItem": {
@@ -2438,6 +2510,64 @@
         "title": "TableList",
         "type": "object"
       },
+      "TemporaryPasswordResponse": {
+        "description": "The one and only place a reset's temporary password appears.",
+        "properties": {
+          "temporary_password": {
+            "title": "Temporary Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "temporary_password"
+        ],
+        "title": "TemporaryPasswordResponse",
+        "type": "object"
+      },
+      "UserCreate": {
+        "description": "What an admin supplies to open an account.\n\nNo ``password`` field exists here, on purpose - not \"optional and\nignored\", but structurally absent. There is nowhere in this schema for an\nadmin to supply one, which is what makes ``test_the_admin_never_chooses_the_password``\ntrue by construction rather than by a check somewhere in a service\nfunction that a later refactor could drop.",
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "full_name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Full Name",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          }
+        },
+        "required": [
+          "email",
+          "full_name",
+          "role"
+        ],
+        "title": "UserCreate",
+        "type": "object"
+      },
+      "UserCreateResponse": {
+        "description": "The one and only place a freshly issued temporary password appears.",
+        "properties": {
+          "temporary_password": {
+            "title": "Temporary Password",
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserRead"
+          }
+        },
+        "required": [
+          "user",
+          "temporary_password"
+        ],
+        "title": "UserCreateResponse",
+        "type": "object"
+      },
       "UserRead": {
         "properties": {
           "created_at": {
@@ -2503,6 +2633,34 @@
         "title": "UserRole",
         "type": "string"
       },
+      "UserUpdate": {
+        "description": "A partial edit: deactivate/reactivate, change role, or both at once.\n\nBoth fields optional and default to ``None`` so a PATCH that sends only\n``{\"is_active\": false}`` leaves the role untouched, and vice versa. ``None``\nis never itself a value either field can hold in the database, so \"not\nsupplied\" and \"set to null\" cannot be confused.",
+        "properties": {
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "UserUpdate",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -2552,6 +2710,142 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/audit-log": {
+      "get": {
+        "description": "Every audit entry, newest first, with the actor's email resolved.\n\nThe table stores ``actor_id`` rather than an email because accounts are\nnever deleted and an id is what survives an email changing (see\n``AuditEntryRead``'s docstring), but a screen rendering the log for a\nhuman needs something readable without a second lookup per row - hence\nthe join here rather than in the schema or the model.",
+        "operationId": "list_audit_log_audit_log_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AuditEntryRead"
+                  },
+                  "title": "Response List Audit Log Audit Log Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "List Audit Log",
+        "tags": [
+          "users"
+        ]
+      }
+    },
     "/auth/change-password": {
       "post": {
         "operationId": "change_password_auth_change_password_post",
@@ -8611,6 +8905,578 @@
         "summary": "Ready",
         "tags": [
           "meta"
+        ]
+      }
+    },
+    "/users": {
+      "get": {
+        "description": "Every account, newest first, for the admin account list.",
+        "operationId": "list_users_users_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UserRead"
+                  },
+                  "title": "Response List Users Users Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "List Users",
+        "tags": [
+          "users"
+        ]
+      },
+      "post": {
+        "description": "Open an account with a system-generated password.\n\nThe plaintext temporary password appears exactly once, in this response,\nand is never recoverable afterwards - not from a later GET on this\naccount, and not from the audit entry ``user_service.create_user`` writes\nfor it, which records only the email and role.",
+        "operationId": "create_user_users_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserCreateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Create User",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/users/{user_id}": {
+      "patch": {
+        "description": "Deactivate/reactivate an account, change its role, or both at once.\n\nRefused with ``LAST_ADMIN`` (409) if the change would leave the\ninstallation with no active administrator - see\n``user_service.guard_last_admin``. Refused with ``USER_NOT_FOUND`` (404)\nif ``user_id`` does not name an existing account.",
+        "operationId": "update_user_users__user_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Update User",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/users/{user_id}/reset-password": {
+      "post": {
+        "description": "Issue a fresh temporary password and end every live session on this\naccount at once.\n\nA reset is issued exactly when an account is suspected compromised or its\nowner is locked out; either way, the person currently holding the old\ncredential must not keep running alongside the new one.",
+        "operationId": "reset_password_users__user_id__reset_password_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemporaryPasswordResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Reset Password",
+        "tags": [
+          "users"
         ]
       }
     }

@@ -23,7 +23,7 @@ from app.db.migrate import bootstrap_schema
 from app.errors import HTTP_STATUS_BY_CODE, AppError, ErrorCode
 from app.observability import RequestContextMiddleware, configure_logging
 from app.ratelimit import RateLimitMiddleware, RequestSizeLimitMiddleware
-from app.routers import auth, connections, dashboards, flag_rules, introspection, queries
+from app.routers import auth, connections, dashboards, flag_rules, introspection, queries, users
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +256,8 @@ app.include_router(queries.query_scoped)
 app.include_router(flag_rules.connection_scoped)
 app.include_router(flag_rules.query_scoped)
 app.include_router(flag_rules.summary_scoped)
+app.include_router(users.router)
+app.include_router(users.audit_router)
 
 
 # ---------------------------------------------------------------------------

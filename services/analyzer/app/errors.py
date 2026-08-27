@@ -45,9 +45,18 @@ class ErrorCode(StrEnum):
     QUERY_NOT_FOUND = "QUERY_NOT_FOUND"
     TABLE_NOT_FOUND = "TABLE_NOT_FOUND"
     DASHBOARD_NOT_FOUND = "DASHBOARD_NOT_FOUND"
+    USER_NOT_FOUND = "USER_NOT_FOUND"
 
     # --- 409 ---------------------------------------------------------------
     DUPLICATE_NAME = "DUPLICATE_NAME"
+    DUPLICATE_EMAIL = "DUPLICATE_EMAIL"
+    #: 409 rather than 403: the caller is allowed to manage users in general,
+    #: and this one request conflicts with the system's current state (nobody
+    #: else could administer it if this change went through). A 403 would read
+    #: as "you may not manage users", which is false and sends an admin
+    #: hunting a permissions problem that does not exist. See
+    #: ``user_service.guard_last_admin``.
+    LAST_ADMIN = "LAST_ADMIN"
 
     # --- 422 ---------------------------------------------------------------
     REQUEST_VALIDATION_ERROR = "REQUEST_VALIDATION_ERROR"
@@ -90,7 +99,10 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.QUERY_NOT_FOUND: 404,
     ErrorCode.TABLE_NOT_FOUND: 404,
     ErrorCode.DASHBOARD_NOT_FOUND: 404,
+    ErrorCode.USER_NOT_FOUND: 404,
     ErrorCode.DUPLICATE_NAME: 409,
+    ErrorCode.DUPLICATE_EMAIL: 409,
+    ErrorCode.LAST_ADMIN: 409,
     ErrorCode.REQUEST_VALIDATION_ERROR: 422,
     ErrorCode.RATE_LIMITED: 429,
     ErrorCode.DB_UNREACHABLE: 502,

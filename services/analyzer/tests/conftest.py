@@ -41,6 +41,7 @@ _INTEGRATION_MODULES = {
     "test_cli",
     "test_ownership",
     "test_password_change_gate",
+    "test_users_api",
 }
 
 
