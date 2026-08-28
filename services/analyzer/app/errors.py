@@ -57,6 +57,8 @@ class ErrorCode(StrEnum):
     #: hunting a permissions problem that does not exist. See
     #: ``user_service.guard_last_admin``.
     LAST_ADMIN = "LAST_ADMIN"
+    #: The query has a published chart, so its definition is fixed.
+    QUERY_FROZEN = "QUERY_FROZEN"
 
     # --- 422 ---------------------------------------------------------------
     REQUEST_VALIDATION_ERROR = "REQUEST_VALIDATION_ERROR"
@@ -103,6 +105,7 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.DUPLICATE_NAME: 409,
     ErrorCode.DUPLICATE_EMAIL: 409,
     ErrorCode.LAST_ADMIN: 409,
+    ErrorCode.QUERY_FROZEN: 409,
     ErrorCode.REQUEST_VALIDATION_ERROR: 422,
     ErrorCode.RATE_LIMITED: 429,
     ErrorCode.DB_UNREACHABLE: 502,

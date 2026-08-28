@@ -19,12 +19,21 @@ SELECT list after configuring the chart.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Float, ForeignKey, Integer, String, UniqueConstraint
+import sqlalchemy as sa
+from sqlalchemy import (
+    Boolean,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, new_id
+from app.models.base import Base, TimestampMixin, UTCDateTime, new_id
 from app.models.enums import ChartType, enum_column
 
 if TYPE_CHECKING:
@@ -74,6 +83,22 @@ class QueryChart(TimestampMixin, Base):
     #: NULL means "use the app-wide default" and is not the same as storing
     #: that default: an unset chart follows the default when it changes.
     surge_threshold_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    #: Visible to every signed-in user, not just the owner.
+    #:
+    #: Publishing is how the private-work model shares anything at all. An
+    #: analyst may publish a chart they own; an admin may publish anyone's.
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa.false()
+    )
+    #: Who published it, which decides who may unpublish it. An analyst can
+    #: retract their own publication; a chart an admin published stays the
+    #: admin's to retract, so an admin keeps a genuine freeze over anyone's
+    #: work.
+    published_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     query: Mapped["SavedQuery"] = relationship(back_populates="charts")
     #: Deleting a chart takes it off every dashboard that showed it.

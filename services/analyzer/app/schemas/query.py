@@ -202,6 +202,12 @@ class QueryChartRead(BaseModel):
     y_field: str | None
     series_field: str | None
     surge_threshold_pct: float | None
+    #: Visible to every signed-in user. False for every chart until somebody
+    #: publishes it; nothing is published by migration.
+    is_public: bool
+    #: Who published it, which is who may retract it. An admin may always.
+    published_by: str | None
+    published_at: UtcDatetime | None
     created_at: UtcDatetime
     updated_at: UtcDatetime
 

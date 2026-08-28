@@ -18,6 +18,7 @@ from app.schemas.query import (
     PollUnchanged,
     PreviewRequest,
     PreviewResponse,
+    QueryChartRead,
     QueryChartSetRead,
     QueryChartSetUpdate,
     RunResponse,
@@ -141,8 +142,14 @@ def update_query(
     user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> SavedQueryRead:
-    """Update a saved query. New SQL is re-validated and re-dry-run."""
+    """Update a saved query. New SQL is re-validated and re-dry-run.
+
+    Refused while any of the query's charts is published: colleagues are
+    reading those charts, and letting the definition change under them is the
+    drift publishing exists to prevent. An admin may edit regardless.
+    """
     query = svc.get_owned(session, query_id, user)
+    query_chart_service.guard_frozen(session, query, user)
     return SavedQueryRead.model_validate(svc.update_query(session, query, payload))
 
 
@@ -152,8 +159,63 @@ def delete_query(
     user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> Response:
-    svc.delete_query(session, svc.get_owned(session, query_id, user))
+    query = svc.get_owned(session, query_id, user)
+    # Deleting a published query would empty the board for everybody reading
+    # it, which is a louder version of the same drift the freeze prevents.
+    query_chart_service.guard_frozen(session, query, user)
+    svc.delete_query(session, query)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@query_scoped.post("/charts/{chart_id}/publish", response_model=QueryChartRead)
+def publish_chart(
+    chart_id: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> QueryChartRead:
+    """Share one chart with every signed-in user.
+
+    An analyst may publish a chart on a query they own; an admin may publish
+    anyone's. Publishing freezes the query behind it, so a colleague reading
+    the chart cannot have the definition changed under them.
+    """
+    return QueryChartRead.model_validate(
+        query_chart_service.publish(session, chart_id, user)
+    )
+
+
+@query_scoped.post("/charts/{chart_id}/unpublish", response_model=QueryChartRead)
+def unpublish_chart(
+    chart_id: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> QueryChartRead:
+    """Retract a publication, unfreezing the query behind it.
+
+    Whoever published may unpublish, and an admin always may. So an analyst can
+    retract their own, edit, and republish - viewers see the chart leave and
+    return changed, which is visible rather than silent. A chart an admin
+    published stays the admin's to retract.
+    """
+    return QueryChartRead.model_validate(
+        query_chart_service.unpublish(session, chart_id, user)
+    )
+
+
+@query_scoped.get("/charts/published", response_model=list[QueryChartRead])
+def list_published_charts(
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> list[QueryChartRead]:
+    """Every published chart, whoever built it.
+
+    Deliberately unfiltered by owner: published means published, and escaping
+    the owner-only rule is the entire point of the feature.
+    """
+    return [
+        QueryChartRead.model_validate(chart)
+        for chart in query_chart_service.list_published(session)
+    ]
 
 
 @query_scoped.get("/{query_id}/logs", response_model=list[ExecutionLogRead])
@@ -479,5 +541,8 @@ def put_charts(
     from the query.
     """
     query = svc.get_owned(session, query_id, user)
+    # Replacing the set can rewire a published chart's fields or drop it
+    # entirely, both of which change what viewers see.
+    query_chart_service.guard_frozen(session, query, user)
     charts = query_chart_service.replace_charts(session, query, payload.charts)
     return QueryChartSetRead(query_id=query_id, charts=charts)
