@@ -257,3 +257,51 @@ def list_users() -> None:
 
 if __name__ == "__main__":  # pragma: no cover - console script is the entry point
     app()
+
+
+@app.command("claim-unowned")
+def claim_unowned(
+    email: str = typer.Option(..., prompt="Give unowned work to which account"),
+) -> None:
+    """Give every unowned saved query and dashboard to one account.
+
+    Rows created before accounts existed have no owner, and an unowned row is
+    visible to administrators only. That is the safe default at migration time
+    - guessing an owner would hand somebody else's work to whoever signed up
+    first - but it leaves real work stranded: a board can place a card whose
+    query its own owner cannot resolve, and the card simply does not draw.
+
+    ``create-admin`` offers this once, at the moment the first administrator is
+    made. This is the same operation afterwards, for the case where that offer
+    was declined or the right owner was not yet known.
+    """
+    _require_schema()
+    normalised = email.strip().lower()
+
+    db = get_sessionmaker()()
+    try:
+        user = db.scalar(select(User).where(func.lower(User.email) == normalised))
+        if user is None:
+            typer.secho(f"No account for {normalised}.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+        queries, dashboards = _unowned_counts(db)
+        if queries == 0 and dashboards == 0:
+            typer.echo("Nothing is unowned.")
+            return
+
+        typer.echo(f"Target database: {_target_description()}")
+        typer.echo(
+            f"{queries} saved quer{'y' if queries == 1 else 'ies'} and "
+            f"{dashboards} dashboard{'' if dashboards == 1 else 's'} have no owner."
+        )
+        if not typer.confirm(f"Give them all to {normalised}?", default=True):
+            typer.echo("Left unowned.")
+            return
+
+        _claim_unowned(db, user.id)
+        db.commit()
+    finally:
+        db.close()
+
+    typer.secho(f"Claimed for {normalised}.", fg=typer.colors.GREEN)

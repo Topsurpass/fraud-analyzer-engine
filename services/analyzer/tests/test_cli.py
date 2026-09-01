@@ -7,6 +7,9 @@ from typer.testing import CliRunner
 from app.cli import app as cli
 from app.db.app_state import get_sessionmaker
 from app.models.enums import UserRole
+from app.models.connection import Connection
+from app.models.enums import DbType
+from app.models.saved_query import SavedQuery
 from app.models.user import User
 
 runner = CliRunner()
@@ -352,3 +355,80 @@ def test_create_admin_says_nothing_about_claiming_when_there_is_nothing_to_claim
 
     assert result.exit_code == 0, result.output
     assert "unowned" not in result.output.lower()
+
+
+def test_claim_unowned_gives_stranded_work_an_owner(app_db):
+    """The situation this exists for.
+
+    Rows created before accounts have no owner, and an unowned row is
+    admin-only. A board can then place a card whose query its own owner cannot
+    resolve, and the card does not draw for the person who put it there.
+    """
+    runner.invoke(
+        cli,
+        ["create-admin", "--email", "boss@example.com", "--name", "The Boss"],
+        input="a-perfectly-fine-password\na-perfectly-fine-password\nn\n",
+    )
+    db = get_sessionmaker()()
+    try:
+        conn = Connection(name="legacy target", db_type=DbType.SQLITE, sqlite_path="/tmp/x.db")
+        db.add(conn)
+        db.flush()
+        db.add(
+            SavedQuery(
+                connection_id=conn.id,
+                name="legacy",
+                sql_text="SELECT 1 AS n",
+                owner_id=None,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    result = runner.invoke(cli, ["claim-unowned", "--email", "boss@example.com"], input="y\n")
+
+    assert result.exit_code == 0, result.output
+    db = get_sessionmaker()()
+    try:
+        assert db.query(SavedQuery).one().owner_id is not None
+    finally:
+        db.close()
+
+
+def test_claim_unowned_can_be_declined(app_db):
+    runner.invoke(
+        cli,
+        ["create-admin", "--email", "boss@example.com", "--name", "The Boss"],
+        input="a-perfectly-fine-password\na-perfectly-fine-password\nn\n",
+    )
+    db = get_sessionmaker()()
+    try:
+        conn = Connection(name="legacy target", db_type=DbType.SQLITE, sqlite_path="/tmp/x.db")
+        db.add(conn)
+        db.flush()
+        db.add(
+            SavedQuery(
+                connection_id=conn.id,
+                name="legacy",
+                sql_text="SELECT 1 AS n",
+                owner_id=None,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    runner.invoke(cli, ["claim-unowned", "--email", "boss@example.com"], input="n\n")
+
+    db = get_sessionmaker()()
+    try:
+        assert db.query(SavedQuery).one().owner_id is None
+    finally:
+        db.close()
+
+
+def test_claim_unowned_refuses_an_unknown_account(app_db):
+    result = runner.invoke(cli, ["claim-unowned", "--email", "nobody@example.com"])
+
+    assert result.exit_code != 0
