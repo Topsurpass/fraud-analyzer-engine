@@ -217,3 +217,86 @@ def test_publishing_does_not_expose_the_sql(client, app_db, sqlite_connection):
     body = client.get("/queries/charts/published", headers=bob).text
 
     assert SQL not in body
+
+
+def test_a_viewer_can_actually_render_a_published_chart(client, app_db, sqlite_connection):
+    """The bug this endpoint exists to fix.
+
+    Listing a published chart without letting a viewer fetch its rows shares
+    an empty card, which is sharing nothing.
+    """
+    _auth(client, "boss@example.com", UserRole.ADMIN)
+    alice = _auth(client, "alice@example.com", UserRole.ANALYST)
+    bob = _auth(client, "bob@example.com", UserRole.ANALYST)
+    _, chart = _query_with_chart(client, alice, sqlite_connection)
+    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+
+    response = client.get(f"/queries/charts/{chart['id']}/poll?force=true", headers=bob)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["row_count"] >= 0
+    assert "columns" in response.json()
+
+
+def test_a_viewer_cannot_poll_an_unpublished_chart(client, app_db, sqlite_connection):
+    _auth(client, "boss@example.com", UserRole.ADMIN)
+    alice = _auth(client, "alice@example.com", UserRole.ANALYST)
+    bob = _auth(client, "bob@example.com", UserRole.ANALYST)
+    _, chart = _query_with_chart(client, alice, sqlite_connection)
+
+    assert client.get(f"/queries/charts/{chart['id']}/poll", headers=bob).status_code == 404
+
+
+def test_unpublishing_stops_the_viewer_poll(client, app_db, sqlite_connection):
+    """An id remembered from before a retraction must stop working."""
+    _auth(client, "boss@example.com", UserRole.ADMIN)
+    alice = _auth(client, "alice@example.com", UserRole.ANALYST)
+    bob = _auth(client, "bob@example.com", UserRole.ANALYST)
+    _, chart = _query_with_chart(client, alice, sqlite_connection)
+    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    assert client.get(f"/queries/charts/{chart['id']}/poll", headers=bob).status_code == 200
+
+    client.post(f"/queries/charts/{chart['id']}/unpublish", headers=alice)
+
+    assert client.get(f"/queries/charts/{chart['id']}/poll", headers=bob).status_code == 404
+
+
+def test_the_viewer_poll_hides_the_querys_other_charts(client, app_db, sqlite_connection):
+    """Publishing one chart shares one chart. The query's other charts were
+    not shared, and a viewer has no business learning they exist."""
+    _auth(client, "boss@example.com", UserRole.ADMIN)
+    alice = _auth(client, "alice@example.com", UserRole.ANALYST)
+    bob = _auth(client, "bob@example.com", UserRole.ANALYST)
+    query = client.post(
+        f"/connections/{sqlite_connection['id']}/queries",
+        headers=alice,
+        json={"name": "Two charts", "sql_text": SQL},
+    ).json()
+    charts = client.put(
+        f"/queries/{query['id']}/charts",
+        headers=alice,
+        json={
+            "charts": [
+                {"name": "Shared one", "chart_type": "table"},
+                {"name": "Private one", "chart_type": "table"},
+            ]
+        },
+    ).json()["charts"]
+    client.post(f"/queries/charts/{charts[0]['id']}/publish", headers=alice)
+
+    body = client.get(f"/queries/charts/{charts[0]['id']}/poll?force=true", headers=bob).json()
+
+    assert [c["id"] for c in body["charts"]] == [charts[0]["id"]]
+    assert "Private one" not in str(body)
+
+
+def test_the_viewer_poll_never_carries_the_sql(client, app_db, sqlite_connection):
+    _auth(client, "boss@example.com", UserRole.ADMIN)
+    alice = _auth(client, "alice@example.com", UserRole.ANALYST)
+    bob = _auth(client, "bob@example.com", UserRole.ANALYST)
+    _, chart = _query_with_chart(client, alice, sqlite_connection)
+    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+
+    body = client.get(f"/queries/charts/{chart['id']}/poll?force=true", headers=bob).text
+
+    assert SQL not in body

@@ -195,3 +195,21 @@ def list_published(session: Session) -> list[QueryChart]:
             .order_by(QueryChart.published_at.desc())
         )
     )
+
+
+def get_published(session: Session, chart_id: str) -> QueryChart:
+    """One published chart, for a viewer who does not own it.
+
+    Deliberately performs no ownership check: being published is the whole
+    permission. It does check that the chart is *actually* public, so an id
+    guessed or remembered from before an unpublish returns nothing.
+
+    The refusal is ``QUERY_NOT_FOUND`` rather than a distinct "not published"
+    code, so a viewer cannot tell an unpublished chart from one that never
+    existed. That is the same reasoning behind returning 404 instead of 403
+    everywhere else ownership is enforced.
+    """
+    chart = session.get(QueryChart, chart_id)
+    if chart is None or not chart.is_public:
+        raise AppError(ErrorCode.QUERY_NOT_FOUND, "No such published chart.")
+    return chart

@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.db.app_state import get_session
 from app.errors import AppError
 from app.models import utcnow
+from app.models.saved_query import SavedQuery
 from app.models.user import User
 from app.schemas.query import (
     BatchPollRequest,
@@ -202,6 +203,40 @@ def unpublish_chart(
     )
 
 
+@query_scoped.get("/charts/{chart_id}/poll")
+def poll_published_chart(
+    chart_id: str,
+    since_hash: str | None = Query(default=None),
+    force: bool = Query(default=False, description="Bypass the cache"),
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """The rows behind one published chart, for anybody signed in.
+
+    A published chart that a viewer cannot poll renders an empty card, so
+    sharing the chart without sharing its result would be sharing nothing.
+    This is the only read path in the app that deliberately ignores ownership,
+    and it is narrow on purpose: the chart must actually be published, and
+    what comes back is trimmed to that one chart.
+
+    Two things are deliberately withheld. The SQL text never appears in a run
+    payload at all, so a viewer sees the result without the query behind it.
+    And the payload's chart list is filtered to the published chart alone,
+    because the query's other charts were not shared and a viewer has no
+    business learning they exist.
+    """
+    chart = query_chart_service.get_published(session, chart_id)
+    payload = _poll_one(session, chart.query, since_hash, force, user)
+
+    charts = payload.get("charts")
+    if isinstance(charts, list):
+        payload = {
+            **payload,
+            "charts": [spec for spec in charts if spec.get("id") == chart_id],
+        }
+    return payload
+
+
 @query_scoped.get("/charts/published", response_model=list[QueryChartRead])
 def list_published_charts(
     user: User = Depends(require_user),
@@ -315,18 +350,25 @@ def poll_query(
     Returns ``changed: false`` when the current hash equals ``since_hash``, and
     the full payload otherwise.
     """
-    return _poll_one(session, query_id, since_hash, force, user)
+    return _poll_one(session, svc.get_owned(session, query_id, user), since_hash, force, user)
 
 
 def _poll_one(
-    session: Session, query_id: str, since_hash: str | None, force: bool, user: User
+    session: Session,
+    query: SavedQuery,
+    since_hash: str | None,
+    force: bool,
+    user: User,
 ) -> dict:
     """The whole poll decision for one query.
 
-    Shared by the single and batch endpoints so the two cannot drift apart on
-    caching, hashing, or logging behaviour.
+    Takes an already-resolved query rather than an id, because callers earn
+    the right to it in different ways: an owner through ``get_owned``, a
+    viewer of a published chart through the chart being public. Keeping the
+    resolution outside means the caching, hashing and logging below cannot
+    drift between those paths.
     """
-    query = svc.get_owned(session, query_id, user)
+    query_id = query.id
     interval = query_service.poll_interval_for(query)
     # Read once and applied to whichever payload is served. A row the analyst
     # has reviewed should stop being marked on the chart too, not only in the
@@ -492,7 +534,13 @@ def poll_queries(
     for item in payload.queries:
         try:
             results.append(
-                _poll_one(session, item.query_id, item.since_hash, payload.force, user)
+                _poll_one(
+                    session,
+                    svc.get_owned(session, item.query_id, user),
+                    item.since_hash,
+                    payload.force,
+                    user,
+                )
             )
         except AppError as error:
             results.append(

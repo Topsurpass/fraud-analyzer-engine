@@ -6847,6 +6847,179 @@
         ]
       }
     },
+    "/queries/charts/{chart_id}/poll": {
+      "get": {
+        "description": "The rows behind one published chart, for anybody signed in.\n\nA published chart that a viewer cannot poll renders an empty card, so\nsharing the chart without sharing its result would be sharing nothing.\nThis is the only read path in the app that deliberately ignores ownership,\nand it is narrow on purpose: the chart must actually be published, and\nwhat comes back is trimmed to that one chart.\n\nTwo things are deliberately withheld. The SQL text never appears in a run\npayload at all, so a viewer sees the result without the query behind it.\nAnd the payload's chart list is filtered to the published chart alone,\nbecause the query's other charts were not shared and a viewer has no\nbusiness learning they exist.",
+        "operationId": "poll_published_chart_queries_charts__chart_id__poll_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chart_id",
+            "required": true,
+            "schema": {
+              "title": "Chart Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since_hash",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since Hash"
+            }
+          },
+          {
+            "description": "Bypass the cache",
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Bypass the cache",
+              "title": "Force",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Poll Published Chart Queries Charts  Chart Id  Poll Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Poll Published Chart",
+        "tags": [
+          "queries"
+        ]
+      }
+    },
     "/queries/charts/{chart_id}/publish": {
       "post": {
         "description": "Share one chart with every signed-in user.\n\nAn analyst may publish a chart on a query they own; an admin may publish\nanyone's. Publishing freezes the query behind it, so a colleague reading\nthe chart cannot have the definition changed under them.",
