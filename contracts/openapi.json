@@ -926,6 +926,17 @@
             "title": "Name",
             "type": "string"
           },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",

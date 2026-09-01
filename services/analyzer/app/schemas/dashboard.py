@@ -39,5 +39,12 @@ class DashboardRead(BaseModel):
     #: load would be a request per card just to learn what to poll, which is
     #: the per-card cost the query/chart split exists to remove.
     charts: list[QueryChartRead] = Field(default_factory=list)
+    #: Who built this board. Null for boards that predate accounts.
+    #:
+    #: Exposed so a viewer can tell their own board from somebody else's. An
+    #: admin sees every board, and a board they are merely inspecting should
+    #: show what its owner actually placed rather than being dressed up with
+    #: the viewer's own shared cards.
+    owner_id: str | None = None
     created_at: UtcDatetime
     updated_at: UtcDatetime
