@@ -74,12 +74,18 @@ def test_listing_dashboards_does_not_scale_statements_with_board_count(
 
     selects = [s for s in statements if s.strip().upper().startswith("SELECT")]
     # 2 for require_user resolving the caller (one session lookup, one user
-    # lookup - see session_service.resolve) plus the 2 this test actually
-    # exists to pin down. The auth pair is fixed per request, not per board,
-    # so it belongs on this side of the assertion rather than invalidating
-    # the "flat regardless of board count" guarantee the test is for.
-    assert len(selects) == 4, (
-        f"expected 2 auth statements + 2 for the listing regardless of board "
+    # lookup - see session_service.resolve) plus the 3 this test actually
+    # exists to pin down: the boards, their items-and-charts, and their owners.
+    # The auth pair is fixed per request, not per board, so it belongs on this
+    # side of the assertion rather than invalidating the "flat regardless of
+    # board count" guarantee the test is for.
+    #
+    # The owner statement is the third. It is one for the whole list however
+    # many boards it holds - Dashboard.owner is selectin-loaded for exactly
+    # that reason - so it moves this constant by one and leaves the guarantee
+    # test above it untouched.
+    assert len(selects) == 5, (
+        f"expected 2 auth statements + 3 for the listing regardless of board "
         f"count, got {len(selects)}:\n" + "\n".join(selects)
     )
 

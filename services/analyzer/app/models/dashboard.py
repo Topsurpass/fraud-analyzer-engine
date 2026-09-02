@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin, new_id
 
 if TYPE_CHECKING:
+    from app.models.user import User
     from app.models.query_chart import QueryChart
 
 
@@ -68,6 +69,19 @@ class Dashboard(TimestampMixin, Base):
     owner_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True
     )
+
+    #: The account that built this board.
+    #:
+    #: A relationship rather than only the id, because an administrator sees
+    #: every board and "whose is this" is unanswerable from a uuid. Resolving
+    #: it here means the list endpoint can say the name without the client
+    #: fetching every account to find out.
+    #:
+    #: ``selectin`` rather than the default lazy load: a board is read through
+    #: several paths, including ``session.get``, and a lazy many-to-one would
+    #: emit one statement per board while serialising a list. This is one extra
+    #: statement for the whole list, however many boards it holds.
+    owner: Mapped["User | None"] = relationship(lazy="selectin")
 
     items: Mapped[list[DashboardItem]] = relationship(
         back_populates="dashboard",

@@ -31,6 +31,8 @@ def _read(dashboard) -> DashboardRead:
         chart_ids=dashboard.chart_ids,
         charts=[item.chart for item in sorted(dashboard.items, key=lambda i: i.position)],
         owner_id=dashboard.owner_id,
+        owner_name=dashboard.owner.full_name if dashboard.owner else None,
+        owner_email=dashboard.owner.email if dashboard.owner else None,
         created_at=dashboard.created_at,
         updated_at=dashboard.updated_at,
     )

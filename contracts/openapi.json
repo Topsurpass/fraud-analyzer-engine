@@ -926,6 +926,17 @@
             "title": "Name",
             "type": "string"
           },
+          "owner_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Email"
+          },
           "owner_id": {
             "anyOf": [
               {
@@ -936,6 +947,17 @@
               }
             ],
             "title": "Owner Id"
+          },
+          "owner_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Name"
           },
           "updated_at": {
             "format": "date-time",

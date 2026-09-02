@@ -319,3 +319,37 @@ def test_a_dashboard_can_span_connections(admin_client, make_saved_query, target
     )
     assert r.status_code == 201
     assert r.json()["chart_ids"] == [first, second]
+
+
+def test_a_board_says_whose_it_is(client, app_db):
+    """An administrator sees every board, and a uuid answers "whose is this"
+    for nobody."""
+    from app.models.enums import UserRole
+    from tests.test_auth_api import login, make_user
+
+    make_user(email="kemi@example.com", full_name="Kemi Adeyemi", role=UserRole.ANALYST)
+    auth = {"Authorization": f"Bearer {login(client, email='kemi@example.com').json()['token']}"}
+    client.post("/dashboards", headers=auth, json={"name": "Chargebacks"})
+
+    board = client.get("/dashboards", headers=auth).json()[0]
+
+    assert board["owner_name"] == "Kemi Adeyemi"
+    assert board["owner_email"] == "kemi@example.com"
+
+
+def test_listing_boards_does_not_cost_a_query_per_owner(client, app_db):
+    """The owner is eager-loaded. Lazily it would be one statement per board,
+    which is the per-row cost every other list here was written to avoid."""
+    from app.models.enums import UserRole
+    from tests.test_auth_api import login, make_user
+
+    make_user(email="kemi@example.com", full_name="Kemi Adeyemi", role=UserRole.ANALYST)
+    auth = {"Authorization": f"Bearer {login(client, email='kemi@example.com').json()['token']}"}
+    for index in range(4):
+        client.post("/dashboards", headers=auth, json={"name": f"Board {index}"})
+
+    boards = client.get("/dashboards", headers=auth).json()
+
+    # Every board resolves its owner without the caller asking again.
+    assert len(boards) == 4
+    assert all(b["owner_name"] == "Kemi Adeyemi" for b in boards)

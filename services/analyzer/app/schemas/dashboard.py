@@ -46,5 +46,10 @@ class DashboardRead(BaseModel):
     #: show what its owner actually placed rather than being dressed up with
     #: the viewer's own shared cards.
     owner_id: str | None = None
+    #: The owner's name and address, resolved so a list of boards can say whose
+    #: each one is. An administrator sees every board, and a uuid answers that
+    #: question for nobody.
+    owner_name: str | None = None
+    owner_email: str | None = None
     created_at: UtcDatetime
     updated_at: UtcDatetime
