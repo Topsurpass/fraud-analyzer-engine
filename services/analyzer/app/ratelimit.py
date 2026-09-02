@@ -30,6 +30,7 @@ dependency is not worth it for a single-tenant tool.
 from __future__ import annotations
 
 import threading
+import hashlib
 import time
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -123,18 +124,49 @@ def reset() -> None:
 
 
 def client_key(request: Request) -> str:
-    """Identify the caller.
+    """Identify the caller: the session when there is one, the address if not.
 
-    ``X-Forwarded-For``'s first entry is used when present, because behind
-    Fly's proxy every request otherwise arrives from the same peer address and
-    the whole service would share one budget. The header is client-controlled
-    and therefore spoofable; that is acceptable for a containment control and
-    is exactly why this is not an authentication mechanism.
+    ## Why not the address alone
+
+    It used to be the address alone, and that predates this service having
+    accounts. A team of analysts sits behind one office NAT, so they arrived as
+    one client and shared one budget. The numbers make it concrete: a board of
+    twelve cards on the five-second default is 144 polls a minute per analyst,
+    against an execution bucket of 300. The third analyst to open a dashboard
+    took the whole office over the limit, and the failure looked like the
+    engine being broken rather than like a quota - measured, 429s at five
+    concurrent viewers of one board.
+
+    Keying on the session gives each analyst their own budget, which is what
+    the limit was always meant to mean.
+
+    The token is hashed, never stored or logged in the clear, and is used here
+    purely as an opaque identity - this does not validate it, and a request
+    with a bogus token still gets rejected a moment later by the auth
+    dependency. Keying on an unvalidated credential is safe precisely because
+    an attacker cannot use it to get *more* budget than one session's worth,
+    and forging distinct tokens to spread load is no easier than forging
+    distinct ``X-Forwarded-For`` values already was.
+
+    Unauthenticated requests - the login endpoint above all - still key on the
+    address, which is the only identity they have and the one that matters for
+    a password-guessing flood.
     """
+    header = request.headers.get("authorization", "")
+    scheme, _, credential = header.partition(" ")
+    if scheme.lower() == "bearer" and credential.strip():
+        digest = hashlib.sha256(credential.strip().encode("utf-8")).hexdigest()
+        return f"session:{digest[:32]}"
+
+    # ``X-Forwarded-For``'s first entry is used when present, because behind a
+    # proxy every request otherwise arrives from the same peer address and the
+    # whole service would share one budget. The header is client-controlled and
+    # therefore spoofable; that is acceptable for a containment control and is
+    # exactly why this is not an authentication mechanism.
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+        return f"ip:{forwarded.split(',')[0].strip()}"
+    return f"ip:{request.client.host if request.client else 'unknown'}"
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):

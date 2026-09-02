@@ -52,6 +52,12 @@ services:
       # postgres is the service name, resolved on the compose network. Not
       # localhost: inside a container that is the container's own loopback.
       DATABASE_URL: postgresql://fae:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/fae
+      # Worker processes. One is one core, and a poll is GIL-bound Python, so a
+      # busy board saturates a single worker: ten concurrent analysts on one
+      # 25,000-row board measured 200 ms a poll against 29 ms for one analyst.
+      # Raising this buys parallelism and costs cache locality - both result
+      # caches are per process. See the Dockerfile CMD for the full trade.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
       FAE_FERNET_KEY: ${FAE_FERNET_KEY:?set FAE_FERNET_KEY before `docker compose up`; see DOCKER.md}
       # The image ships JSON logs for a shipper. A human is reading these.
       FAE_LOG_JSON: "false"

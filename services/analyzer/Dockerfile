@@ -80,4 +80,22 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
 # Exec form: uvicorn is PID 1 and gets SIGTERM directly, so `docker stop` and a
 # Fly machine shutdown drain in milliseconds instead of waiting out the kill
 # timeout.
+#
+# WEB_CONCURRENCY sets the worker count, defaulting to 1. uvicorn reads it
+# itself, so nothing has to be threaded through here.
+#
+# ## Why the default is 1 and why you may want more
+#
+# A poll is per-cell Python and holds the GIL, so one worker is one core, and
+# a busy board saturates it: measured against this container at 25,000 rows a
+# query, one analyst polling saw 29 ms and ten concurrent analysts saw 200 ms,
+# which is one core running out rather than anything queueing badly.
+#
+# More workers buy real parallelism, at a real cost: the result cache and the
+# rendered-response cache are per process, so N workers means a given result is
+# fetched and rendered up to N times instead of once, and N times the memory
+# holding it. That trade is worth making on a multi-core host with several
+# analysts and is not worth making on a single-core one, which is why it is a
+# deployment decision rather than a baked-in number. Start at the core count
+# and watch the cache hit ratio, not the CPU graph.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -75,20 +75,27 @@ def test_zero_disables_the_limit(admin_client, monkeypatch):
         assert admin_client.get("/connections").status_code == 200
 
 
-def test_clients_have_separate_budgets(admin_client, monkeypatch):
-    """One noisy caller must not lock everyone else out."""
+def test_unauthenticated_clients_have_separate_budgets(client, monkeypatch):
+    """One noisy caller must not lock everyone else out.
+
+    Unauthenticated, so the address really is the key. This used to run on an
+    authenticated client, which no longer demonstrates anything: a request
+    carrying a session is keyed on the session, and two addresses sharing one
+    token are correctly one caller. The authenticated half of the rule is
+    covered by test_two_analysts_behind_one_address_do_not_share_a_budget.
+    """
     monkeypatch.setenv("FAE_RATE_LIMIT_PER_MINUTE", "2")
     get_settings.cache_clear()
 
     for _ in range(3):
-        admin_client.get("/connections", headers={"X-Forwarded-For": "10.0.0.1"})
+        client.get("/connections", headers={"X-Forwarded-For": "10.0.0.1"})
     assert (
-        admin_client.get("/connections", headers={"X-Forwarded-For": "10.0.0.1"}).status_code
-        == 429
+        client.get("/connections", headers={"X-Forwarded-For": "10.0.0.1"}).status_code == 429
     )
+    # A different address, still unauthenticated: 401 rather than 429 is the
+    # point. It got past the bucket and was turned away by auth instead.
     assert (
-        admin_client.get("/connections", headers={"X-Forwarded-For": "10.0.0.2"}).status_code
-        == 200
+        client.get("/connections", headers={"X-Forwarded-For": "10.0.0.2"}).status_code == 401
     )
 
 
@@ -102,3 +109,60 @@ def test_oversized_body_is_refused_before_it_is_read(admin_client, monkeypatch):
     )
     assert response.status_code == 413
     assert response.json()["detail"]["max_request_bytes"] == 500
+
+
+# ---------------------------------------------------------------------------
+# Whose budget is it
+# ---------------------------------------------------------------------------
+
+
+def test_two_analysts_behind_one_address_do_not_share_a_budget(client, app_db, monkeypatch):
+    """The office-NAT bug.
+
+    A board of twelve cards on the five-second default is 144 polls a minute,
+    against an execution bucket of 300. Keyed on the address, the third analyst
+    to open a dashboard took the whole office over the limit, and it looked
+    like the engine was broken rather than like a quota.
+    """
+    from app import ratelimit
+    from app.models.enums import UserRole
+    from tests.test_auth_api import login, make_user
+
+    ratelimit.reset()
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rate_limit_per_minute", 4, raising=False)
+
+    make_user(email="ada@example.com", role=UserRole.ANALYST)
+    make_user(email="kemi@example.com", role=UserRole.ANALYST)
+    first = login(client, email="ada@example.com").json()["token"]
+    second = login(client, email="kemi@example.com").json()["token"]
+
+    # The first analyst spends their whole budget.
+    for _ in range(4):
+        client.get("/dashboards", headers={"Authorization": f"Bearer {first}"})
+    spent = client.get("/dashboards", headers={"Authorization": f"Bearer {first}"})
+    assert spent.status_code == 429
+
+    # The second, from the same address, is unaffected.
+    fresh = client.get("/dashboards", headers={"Authorization": f"Bearer {second}"})
+    assert fresh.status_code == 200, "one analyst's polling throttled another"
+
+
+def test_unauthenticated_floods_are_still_bounded_by_address(client, app_db, monkeypatch):
+    """A password-guessing flood carries no session, and the address is the
+    only identity it has. Keying sign-in attempts on a caller-supplied token
+    would let an attacker mint themselves an unlimited budget."""
+    from app import ratelimit
+
+    ratelimit.reset()
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rate_limit_per_minute", 3, raising=False)
+
+    codes = [
+        client.post(
+            "/auth/login", json={"email": "nobody@example.com", "password": "wrong"}
+        ).status_code
+        for _ in range(5)
+    ]
+
+    assert 429 in codes, "an unauthenticated flood was not bounded"
