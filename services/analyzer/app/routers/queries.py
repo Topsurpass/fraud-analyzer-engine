@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Response, status
+import gzip
+import logging
+
+import orjson
+
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.app_state import get_session
-from app.errors import AppError
+from app.db.app_state import get_session, get_sessionmaker
+from app.errors import AppError, ErrorCode
 from app.models import utcnow
 from app.models.saved_query import SavedQuery
 from app.models.user import User
@@ -36,9 +41,12 @@ from app.services import (
     refresher,
     flagging,
     query_service,
+    rendered_cache,
     result_cache,
 )
 from app.services import saved_query_service as svc
+
+logger = logging.getLogger(__name__)
 
 connection_scoped = APIRouter(
     prefix="/connections", tags=["queries"], dependencies=[Depends(require_user)]
@@ -335,12 +343,13 @@ def run_query(
 
 @query_scoped.get("/{query_id}/poll", response_model=PollChanged | PollUnchanged) # pyright: ignore[reportGeneralTypeIssues]
 def poll_query(
+    request: Request,
     query_id: str,
     since_hash: str | None = Query(default=None),
     force: bool = Query(default=False, description="Bypass the cache"),
     user: User = Depends(require_user),
     session: Session = Depends(get_session),
-) -> dict:
+) -> Response:
     """Cheap endpoint for a dashboard's interval loop.
 
     Inside the cache TTL this compares hashes in memory and never opens a
@@ -350,7 +359,51 @@ def poll_query(
     Returns ``changed: false`` when the current hash equals ``since_hash``, and
     the full payload otherwise.
     """
-    return _poll_one(session, svc.get_owned(session, query_id, user), since_hash, force, user)
+    body = _poll_one(session, svc.get_owned(session, query_id, user), since_hash, force, user)
+    # An unchanged answer carries no rows and is a few dozen bytes, so it goes
+    # out the ordinary way. Only the payload-carrying answer is worth serving
+    # from pre-encoded bytes.
+    if not body.get("changed", False):
+        return Response(content=orjson.dumps(body), media_type="application/json")
+    return _rendered_response(request, body, query_id)
+
+
+def _rendered_response(request: Request, body: dict, query_id: str) -> Response:
+    """Serve a poll body from pre-encoded, pre-gzipped bytes.
+
+    The whole point of the rendered cache: for a given result, these bytes can
+    only ever be one thing, so the second and every later request for them - the
+    next tick of the same card, and every other analyst watching the same board
+    - costs a dict lookup and a socket write instead of re-validating and
+    re-serialising 225,000 cells.
+
+    Returning a ``Response`` also skips FastAPI's response-model round trip.
+    That is not incidental: on a 25,000-row payload the validate-and-re-encode
+    pass was the single largest slice of a warm poll. The ``response_model`` on
+    the route is kept so the OpenAPI contract still documents the shape.
+    """
+    interval = body.get("poll_interval_ms", 0)
+    key = rendered_cache.key_for(
+        query_id, body["data_hash"], interval, bool(body.get("from_cache"))
+    )
+    rendered = rendered_cache.get_or_render(key, lambda: body)
+
+    if not rendered.compressed:
+        return Response(content=rendered.body, media_type="application/json")
+
+    # Every browser sends this. curl and the odd script do not, and they get
+    # the bytes decompressed on the way out, which is still cheaper than
+    # rebuilding them from the payload.
+    if "gzip" not in request.headers.get("accept-encoding", ""):
+        return Response(content=gzip.decompress(rendered.body), media_type="application/json")
+
+    return Response(
+        content=rendered.body,
+        media_type="application/json",
+        # Set explicitly so GZipMiddleware passes the body through untouched
+        # rather than compressing bytes that are already compressed.
+        headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"},
+    )
 
 
 def _poll_one(
@@ -529,31 +582,83 @@ def poll_queries(
     card belonging to somebody else: QUERY_NOT_FOUND lands in that card's slot
     in the results, not as a 404 for the whole batch.
     """
-    results: list[dict] = []
+    return {"results": _poll_many(payload.queries, payload.force, user)}
 
-    for item in payload.queries:
-        try:
-            results.append(
-                _poll_one(
-                    session,
-                    svc.get_owned(session, item.query_id, user),
-                    item.since_hash,
-                    payload.force,
-                    user,
-                )
-            )
-        except AppError as error:
-            results.append(
-                {
-                    "query_id": item.query_id,
-                    "ok": False,
-                    "error_code": error.error_code.value,
-                    "message": error.message,
-                    "detail": error.detail,
-                }
-            )
 
-    return {"results": results}
+def _poll_item(item, force: bool, user: User) -> dict:
+    """One query's slot in a batch, on its own app-state session.
+
+    A Session is not thread-safe and must not be shared across the workers
+    below, so each call opens and closes its own. That is one extra checkout
+    from the app-state pool per card, which is cheap next to what it buys: the
+    cards stop queueing behind each other.
+    """
+    session = get_sessionmaker()()
+    try:
+        return _poll_one(
+            session,
+            svc.get_owned(session, item.query_id, user),
+            item.since_hash,
+            force,
+            user,
+        )
+    except AppError as error:
+        # Reported in this card's slot rather than as a 404 for the whole
+        # batch: eleven working cards must not go blank because the twelfth
+        # has broken SQL or belongs to somebody else.
+        return {
+            "query_id": item.query_id,
+            "ok": False,
+            "error_code": error.error_code.value,
+            "message": error.message,
+            "detail": error.detail,
+        }
+    except Exception as error:  # noqa: BLE001
+        # A worker thread that raises anything else would otherwise surface as
+        # a 500 for the entire board. One card's unexpected failure is still
+        # one card's failure.
+        logger.exception("Unexpected failure polling %s in a batch.", item.query_id)
+        return {
+            "query_id": item.query_id,
+            "ok": False,
+            "error_code": ErrorCode.INTERNAL_ERROR.value,
+            "message": "This card could not be refreshed.",
+            "detail": None,
+        }
+    finally:
+        session.close()
+
+
+def _poll_many(items, force: bool, user: User) -> list[dict]:
+    """Poll a batch, one card after another.
+
+    ## Why this is not parallel
+
+    It was, briefly, and the measurements said no. Eight cards of 25,000 rows,
+    same code otherwise (bench/http_poll.py):
+
+        workers   cold batch   warm batch   cpu (cold)
+        1            1596 ms       222 ms      1596 ms
+        2            3375 ms       310 ms      3984 ms
+        4           19782 ms       631 ms     27977 ms
+
+    Not a wash, and not sublinear: strictly and steeply worse, with CPU rising
+    faster than wall clock. The work in a poll is per-cell Python - coercing
+    225,000 values, hashing them, encoding them - so it holds the GIL almost
+    end to end. Threads cannot overlap that; they only add contention, and the
+    app-state writes each execution makes then serialise on top of it.
+
+    The instinct that a board should not wait for the sum of its cards is
+    right. Threading the server was the wrong lever for it. The right ones,
+    both applied here, are to make each poll cheap enough that the sum is small
+    (a warm poll went from 42.8 ms to 6.0 ms via rendered_cache) and to let
+    each card own its own request so it paints when its own data lands, which
+    is a frontend change rather than a server one.
+
+    Kept in one function rather than inlined so the reasoning above has
+    somewhere to live, and so a future attempt at parallelism has to read it.
+    """
+    return [_poll_item(item, force, user) for item in items]
 
 
 @query_scoped.get("/{query_id}/charts", response_model=QueryChartSetRead)

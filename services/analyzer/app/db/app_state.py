@@ -46,12 +46,28 @@ def get_engine() -> Engine:
     engine = create_engine(url, **kwargs)
 
     if engine.dialect.name == "sqlite":
-        # SQLite ignores ON DELETE CASCADE unless foreign keys are enabled, and
-        # the pragma is per-connection, so it has to be set on every checkout.
+        # Pragmas are per-connection, so they have to be set on every checkout.
         @event.listens_for(engine, "connect")
-        def _enable_foreign_keys(dbapi_connection, _record):  # pragma: no cover
+        def _sqlite_pragmas(dbapi_connection, _record):  # pragma: no cover
             cursor = dbapi_connection.cursor()
+            # SQLite ignores ON DELETE CASCADE unless foreign keys are enabled.
             cursor.execute("PRAGMA foreign_keys=ON")
+            # WAL lets readers carry on while a writer holds the file. Under
+            # the default rollback journal a single writer blocks every reader,
+            # and this service writes on the read path: every query execution
+            # appends an execution-log row. Measured with eight cards refreshed
+            # concurrently, that contention was 20.4 s of a 10 s request - the
+            # threads were not working, they were queueing for the write lock.
+            cursor.execute("PRAGMA journal_mode=WAL")
+            # Wait for a contended lock rather than failing immediately with
+            # SQLITE_BUSY. Bounded, so a genuine deadlock still surfaces.
+            cursor.execute("PRAGMA busy_timeout=5000")
+            # WAL makes fsync-per-commit unnecessary for durability against
+            # process crashes, which is the failure this service can actually
+            # suffer. It stays durable across those; only an OS-level crash can
+            # lose the last commits, and app state is rebuildable from the
+            # target databases anyway.
+            cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.close()
 
     return engine

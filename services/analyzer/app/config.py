@@ -73,7 +73,13 @@ class Settings(BaseSettings):
 
     # Row caps.
     default_row_limit: int = Field(default=1000, gt=0)
-    max_row_limit: int = Field(default=10000, gt=0)
+    # 25,000 is the working figure for a monitoring board, so the ceiling has
+    # to clear it rather than sit on it. It used to be 10,000, which made the
+    # stated workload simply unavailable: a query asking for 25,000 rows was
+    # rejected outright with ROW_LIMIT_EXCEEDED. max_result_bytes below is the
+    # bound that actually protects memory, and it is unchanged - a row limit
+    # says nothing about how wide a row is.
+    max_row_limit: int = Field(default=50000, gt=0)
     preview_row_limit: int = Field(default=100, gt=0)
 
     # Hard ceiling on a single statement's length, in characters.
@@ -210,6 +216,14 @@ class Settings(BaseSettings):
     # small container is OOM-killed long before eviction triggers.
     cache_max_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
 
+    # Bytes the rendered-response cache may hold: poll payloads already encoded
+    # to JSON and gzipped, so they can be written to a socket without being
+    # rebuilt per viewer. Smaller than cache_max_bytes on purpose. Entries here
+    # are compressed, about a fifth the size of the same result sitting in the
+    # result cache as a Python dict, and this cache only ever holds results
+    # somebody is actively polling.
+    rendered_cache_max_bytes: int = Field(default=32 * 1024 * 1024, gt=0)
+
     # Most queries one "refresh flagged" click may re-run against a target
     # database. The flagged view itself reads cache and runs nothing; refresh
     # is the only path that executes, and without a bound one click on a
@@ -256,6 +270,7 @@ class Settings(BaseSettings):
     # SQLAlchemy's default is 30 s, which outlives the frontend's poll deadline
     # and turns pool exhaustion into a hang rather than an error.
     target_pool_timeout_s: int = Field(default=5, gt=0)
+
 
     # Sessions.
     #

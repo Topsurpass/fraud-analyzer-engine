@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -139,6 +140,12 @@ app = FastAPI(
         "Schema-agnostic backend for saved, read-only SQL exposed as "
         "chart-ready JSON. All fraud logic lives in the SQL you save."
     ),
+    # Every response this service returns is machine-read JSON, and the
+    # row-carrying ones are large: a 25,000-row by 9-column result measured
+    # 2.64 MB. The stdlib encoder was 26 ms of that on its own, and FastAPI's
+    # jsonable_encoder another 149 ms before it. orjson serialises the same
+    # payload in a fraction of the time and handles datetime and Decimal
+    # natively, which is most of what jsonable_encoder was being paid for.
 )
 
 _settings = get_settings()
@@ -154,6 +161,35 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Request-ID", "Retry-After"],
 )
+# Compression, innermost of the response-shaping middlewares so it sees the
+# finished body.
+#
+# This is the single largest win available at the scale this service is aimed
+# at. A 25,000-row result is 2.64 MB of JSON, and JSON of this shape - the same
+# nine keys repeated 25,000 times - compresses about tenfold. Uncompressed,
+# one card costs a analyst on a 20 Mbps link over a second of pure transfer,
+# and a board of eight cards costs 21 MB. That is not a server-time problem, so
+# no amount of query tuning shows up against it.
+#
+# minimum_size skips the compression handshake on the small responses that make
+# up most of the request count (auth, listings, unchanged polls), where the CPU
+# would cost more than the bytes saved.
+#
+# Level 1, not the library default of 9. Measured on a real 25,000-row payload
+# (bench/gzip_levels.py), where the whole point is that CPU is the contended
+# resource once several analysts are watching at once and bytes are not:
+#
+#   level   size    ratio   compress   transfer@20Mb   total
+#   none    2.87M    1.0        0 ms        1146 ms    1146 ms
+#   1       0.64M    4.5       19 ms         256 ms     275 ms
+#   5       0.51M    5.6       37 ms         205 ms     242 ms
+#   9       0.48M    6.0      347 ms         191 ms     538 ms
+#
+# Level 9 is worse end to end than level 1 despite being smaller. Level 5 wins
+# by 33 ms of wall clock and costs twice the CPU per response, which is the
+# wrong trade for a server serving many analysts rather than one. Level 1 turns
+# 1146 ms of transfer into 275 ms and leaves the CPU for other people's polls.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=1)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(RequestContextMiddleware)

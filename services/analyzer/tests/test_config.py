@@ -4,7 +4,8 @@ from app.config import Settings
 def test_defaults():
     s = Settings(_env_file=None)
     assert s.default_row_limit == 1000
-    assert s.max_row_limit == 10000
+    # Clears the 25,000-row monitoring workload rather than sitting on it.
+    assert s.max_row_limit == 50000
     assert s.preview_row_limit == 100
     assert s.query_timeout_s == 10
     assert s.poll_interval_ms == 5000

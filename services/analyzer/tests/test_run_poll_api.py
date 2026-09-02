@@ -369,3 +369,91 @@ def test_poll_reports_unchanged_after_a_cold_execution(admin_client, saved):
     assert body["from_cache"] is False
     assert body["data_hash"] == run["data_hash"]
     assert "rows" not in body
+
+
+# ---------------------------------------------------------------------------
+# Serving polls from pre-rendered bytes
+# ---------------------------------------------------------------------------
+
+
+def test_a_repeat_poll_is_served_without_rerendering(admin_client, sqlite_connection):
+    """Ten analysts watching one board must cost what one analyst costs.
+
+    Asserted as a hit ratio rather than a duration: the claim is about work
+    avoided, and a stopwatch on a shared machine measures the machine.
+    """
+    from app.services import rendered_cache
+
+    created = admin_client.post(
+        f"/connections/{sqlite_connection['id']}/queries",
+        json={"name": "repeat", "sql_text": "SELECT day, amount FROM txns"},
+    )
+    query_id = created.json()["id"]
+    admin_client.post(f"/queries/{query_id}/run")
+    rendered_cache.clear()
+
+    bodies = [admin_client.get(f"/queries/{query_id}/poll").json() for _ in range(5)]
+
+    stats = rendered_cache.stats()
+    assert stats["misses"] == 1, "the payload was rebuilt more than once"
+    assert stats["hits"] == 4
+    # Every viewer got the same answer, which is the part a cache can break.
+    assert all(body == bodies[0] for body in bodies)
+
+
+def test_the_poll_body_survives_the_compressed_path(admin_client, sqlite_connection):
+    """A response served as pre-gzipped bytes must decode to the same payload
+    a client would have got from the ordinary path."""
+    created = admin_client.post(
+        f"/connections/{sqlite_connection['id']}/queries",
+        json={"name": "compressed", "sql_text": "SELECT day, amount FROM txns"},
+    )
+    query_id = created.json()["id"]
+    fresh = admin_client.post(f"/queries/{query_id}/run").json()
+
+    polled = admin_client.get(f"/queries/{query_id}/poll").json()
+
+    assert polled["rows"] == fresh["rows"]
+    assert polled["columns"] == fresh["columns"]
+    assert polled["data_hash"] == fresh["data_hash"]
+
+
+def test_a_client_that_will_not_take_gzip_still_gets_json(admin_client, sqlite_connection):
+    """curl and the odd script send no Accept-Encoding. They get the bytes
+    decompressed rather than a body they cannot read."""
+    created = admin_client.post(
+        f"/connections/{sqlite_connection['id']}/queries",
+        json={"name": "identity", "sql_text": "SELECT day, amount FROM txns"},
+    )
+    query_id = created.json()["id"]
+    admin_client.post(f"/queries/{query_id}/run")
+
+    response = admin_client.get(
+        f"/queries/{query_id}/poll", headers={"Accept-Encoding": "identity"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("content-encoding") in (None, "identity")
+    assert response.json()["changed"] is True
+
+
+def test_editing_a_query_does_not_keep_serving_the_old_rendering(
+    admin_client, sqlite_connection
+):
+    """The regression this guards: pre-encoded bytes outliving the result they
+    were built from is a stale chart that refreshing cannot fix."""
+    created = admin_client.post(
+        f"/connections/{sqlite_connection['id']}/queries",
+        json={"name": "edited", "sql_text": "SELECT day, amount FROM txns"},
+    )
+    query_id = created.json()["id"]
+    before = admin_client.post(f"/queries/{query_id}/run").json()
+
+    patched = admin_client.put(
+        f"/queries/{query_id}", json={"sql_text": "SELECT day FROM txns"}
+    )
+    assert patched.status_code == 200, patched.text
+    after = admin_client.get(f"/queries/{query_id}/poll").json()
+
+    assert after["columns"] == ["day"], "served the pre-edit rendering"
+    assert after["data_hash"] != before["data_hash"]
