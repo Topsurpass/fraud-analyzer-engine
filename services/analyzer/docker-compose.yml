@@ -38,6 +38,14 @@ services:
       timeout: 3s
       retries: 15
       start_period: 5s
+    # Same policy as the analyzer, and for a reason that only shows up later:
+    # without it, restarting the Docker daemon or rebooting brings the analyzer
+    # back (it has this line) and leaves Postgres stopped, so the analyzer
+    # crash-loops against a database that is not there. Observed exactly that
+    # way - `Restarting (3)` on the analyzer, `Exited (0) 15 minutes ago` on
+    # this service - and the analyzer's log blames the database, which is true
+    # and unhelpful.
+    restart: unless-stopped
 
   analyzer:
     build: .
