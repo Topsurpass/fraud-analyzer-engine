@@ -253,9 +253,57 @@ sized for what it serves rather than for its worst five minutes.
 
 A micro instance runs this comfortably and cannot build it. So do not make it.
 
-### Before you start
+### What your laptop needs
 
-On the **instance**, once:
+Only three things, and no configuration file — `.env.prod` lives on the
+instance, not here. Nothing you set up on this machine ends up inside an image.
+
+**1. Docker, running.** Docker Desktop on macOS or Windows, Docker Engine on
+Linux or WSL2. Check it:
+
+```bash
+docker run --rm hello-world
+```
+
+**2. Both repositories, side by side, on the branch you intend to deploy.** The
+layout matters: `ship-images.sh` looks for the dashboard at
+`../../fraud-analyzer-dashboard` relative to `deploy/`.
+
+```bash
+git clone <engine-repo>    fraud-analyzer-engine
+git clone <dashboard-repo> fraud-analyzer-dashboard
+
+git -C fraud-analyzer-engine    checkout perf/scale-25k
+git -C fraud-analyzer-dashboard checkout perf/scale-25k
+```
+
+Laid out differently? Point at it instead — either export it, or put
+`DASHBOARD_CONTEXT=/path/to/dashboard` in `deploy/.env.prod` if you keep one
+here:
+
+```bash
+DASHBOARD_CONTEXT=/somewhere/else/fraud-analyzer-dashboard ./ship-images.sh ...
+```
+
+**3. ssh to the instance, without a password prompt.** `ship-images.sh` runs
+non-interactively, so the key has to be offered by the agent or named with
+`-i`. Confirm before you start:
+
+```bash
+ssh -i ~/.ssh/your-key.pem ubuntu@YOUR-INSTANCE-IP true && echo ok
+```
+
+You also want roughly **10 GB free** on the laptop: npm's cache, the two
+images, and Docker's build cache. `docker system df` shows what is already
+there; `docker builder prune` reclaims the build cache alone.
+
+**Optional but worth it the first time:** `./rehearse.sh` runs the entire stack
+locally against a throwaway Postgres and tells you the images are good before
+you spend the transfer on them. `./rehearse.sh --clean` when done.
+
+### What the instance needs first
+
+Once, before the first ship:
 
 ```bash
 cd ~/fraud-analyzer-engine/deploy
@@ -263,13 +311,12 @@ cd ~/fraud-analyzer-engine/deploy
 cp .env.prod.example .env.prod && chmod 600 .env.prod && nano .env.prod
 ```
 
-The configuration lives on the instance, not in the image — nothing
-environment-specific is baked in, which is exactly why the image you build on
-your laptop is correct there. No secret passes through the build or the
-transfer.
+The configuration lives there, not in the image — nothing environment-specific
+is baked in, which is exactly why an image built on your laptop is correct on
+the instance, and why no secret passes through the build or the transfer.
 
-You also need about **3 GB free** on the instance to load the images. If you do
-not have it, do [Not enough disk](#not-enough-disk) first.
+It also needs about **3 GB free** to load the images. If it does not have that,
+do [Not enough disk](#not-enough-disk) first.
 
 ### Ship
 
@@ -281,8 +328,8 @@ cd fraud-analyzer-engine/deploy
 ```
 
 Anything after the host is passed straight to `ssh`, so `-i`, `-p`, `-J` and
-friends all work. If your key is already in the agent (`ssh-add`), the `-i` is
-unnecessary.
+friends all work. If your key is already in the agent (`ssh-add`), drop the
+`-i`.
 
 What it does, and what it refuses to do:
 
@@ -295,12 +342,60 @@ What it does, and what it refuses to do:
    `FAE_FERNET_KEY` on your laptop just to compile TypeScript.
 4. Streams them: `docker save | gzip -1 | ssh 'gunzip | docker load'`. No
    temporary tarball at either end — which is the point when the instance's
-   disk is the constraint. About 550 MB uncompressed, less on the wire.
+   disk is the constraint. Measured: 525 MB of images, **200 MB on the wire**.
 5. Compares image IDs afterwards. Presence is not enough: an older image of the
    same name would otherwise read as success and you would keep running last
    week's build.
 
 Expect 3–6 minutes, most of it the transfer.
+
+### Doing it by hand
+
+The script is five commands with checks around them. If you want to run a step
+yourself — debugging a build, shipping only one of the two images, or working
+somewhere ssh piping is awkward — this is all it does:
+
+```bash
+cd fraud-analyzer-engine/deploy
+
+# 1. build both images, tagged with the names the compose file expects
+docker build -t switchboard-analyzer:latest  ../services/analyzer
+docker build -t switchboard-dashboard:latest ../../fraud-analyzer-dashboard
+
+# 2. what you are about to send (docker images takes only one name, so glob)
+docker images 'switchboard-*'
+
+# 3. stream both to the instance
+docker save switchboard-analyzer:latest switchboard-dashboard:latest \
+  | gzip -1 \
+  | ssh -i ~/.ssh/your-key.pem ubuntu@YOUR-INSTANCE-IP 'gunzip | docker load'
+
+# 4. confirm they landed, and are the same build
+docker image inspect switchboard-analyzer:latest --format '{{.Id}}'
+ssh -i ~/.ssh/your-key.pem ubuntu@YOUR-INSTANCE-IP \
+  "docker image inspect switchboard-analyzer:latest --format '{{.Id}}'"
+```
+
+The tags in step 1 are not cosmetic. `docker-compose.prod.yml` names both
+services' images explicitly, and `deploy.sh --no-build` starts whatever carries
+those names — tag them anything else and compose will try to build instead.
+
+Shipping just one image is the same command with one name:
+
+```bash
+docker save switchboard-dashboard:latest | gzip -1 \
+  | ssh -i ~/.ssh/your-key.pem ubuntu@YOUR-INSTANCE-IP 'gunzip | docker load'
+```
+
+If ssh piping is blocked or unreliable, go via a file instead — this needs the
+space on both ends, which is the tradeoff the streaming form avoids:
+
+```bash
+docker save switchboard-analyzer:latest switchboard-dashboard:latest | gzip -1 > images.tgz
+scp -i ~/.ssh/your-key.pem images.tgz ubuntu@YOUR-INSTANCE-IP:/tmp/
+ssh -i ~/.ssh/your-key.pem ubuntu@YOUR-INSTANCE-IP 'gunzip -c /tmp/images.tgz | docker load && rm /tmp/images.tgz'
+rm images.tgz
+```
 
 ### Start
 
