@@ -43,22 +43,45 @@ fi
 
 CORES="$(nproc 2>/dev/null || echo 1)"
 MEM_MB="$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)"
-info "cpu cores: $CORES, memory: ${MEM_MB} MB"
+SWAP_MB="$(awk '/SwapTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)"
+info "cpu cores: $CORES, memory: ${MEM_MB} MB, swap: ${SWAP_MB} MB"
 
-if [[ $MEM_MB -gt 0 && $MEM_MB -lt 1800 ]]; then
-	# The Next build is the peak, not the running stack. It routinely needs
-	# more than a t3.micro has, and the failure is an OOM kill of a compiler
-	# process that reads as an unexplained "npm run build" exit.
-	warn "under 2 GB of memory" \
-		"The dashboard's Next build is the memory peak and is OOM-killed on small instances. Either build elsewhere and ship the image, or add swap: sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile"
+# Swap counts. The Next build is a memory *peak*, not a sustained working set,
+# and a peak is exactly what swap is for - slowly, but it completes rather than
+# being killed. Judging on RAM alone told an instance with 2 GB of swap already
+# configured that it could not build, which is both wrong and unactionable.
+USABLE_MB=$((MEM_MB + SWAP_MB))
+if [[ $MEM_MB -gt 0 && $USABLE_MB -lt 2600 ]]; then
+	# The failure this prevents has no useful symptom: the kernel kills a
+	# compiler process and `npm run build` exits with no message about memory.
+	fail "only ${USABLE_MB} MB of memory + swap; the dashboard build needs about 2.5 GB" \
+		"Add swap - ./bootstrap-ec2.sh does this, or by hand: sudo fallocate -l 3G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile && echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab. On ${MEM_MB} MB of RAM the build will be slow even then; see 'Building somewhere else' in deploy/README.md for the alternative."
+elif [[ $MEM_MB -lt 1800 ]]; then
+	warn "${MEM_MB} MB of RAM, reaching ${USABLE_MB} MB with swap" \
+		"Enough to finish, but the dashboard build will swap hard and can take 15-30 minutes on ${CORES} cores. 'Building somewhere else' in deploy/README.md avoids it entirely."
 else
-	pass "memory is enough to build the dashboard image (${MEM_MB} MB)"
+	pass "memory is enough to build the dashboard image (${USABLE_MB} MB usable)"
 fi
 
 DISK_AVAIL_GB="$(df -BG --output=avail / 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)"
 if [[ ${DISK_AVAIL_GB:-0} -lt 8 ]]; then
 	fail "only ${DISK_AVAIL_GB} GB free on /" \
-		"Two image builds plus layer cache need roughly 8 GB. Reclaim with: docker system prune -af"
+		"Two image builds plus node_modules and layer cache need roughly 8 GB free."
+	# What is actually using it decides which remedy applies, and guessing
+	# wrong wastes the operator's time: `docker system prune` reclaims nothing
+	# on a fresh instance, where the answer is almost always that the root
+	# volume is still the AMI's default 8 GB.
+	ROOT_DEV="$(findmnt -no SOURCE / 2>/dev/null || true)"
+	ROOT_SIZE="$(df -BG --output=size / 2>/dev/null | tail -1 | tr -dc '0-9' || echo '?')"
+	info "root filesystem is ${ROOT_SIZE} GB on ${ROOT_DEV:-unknown}"
+	if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+		RECLAIM="$(docker system df --format '{{.Type}} {{.Reclaimable}}' 2>/dev/null | tr '\n' ', ' || true)"
+		info "docker holds: ${RECLAIM:-nothing measurable}"
+	fi
+	info "if docker is holding little, the volume is simply too small - grow it:"
+	info "  1. EC2 console -> Volumes -> select this instance's root volume -> Modify -> 30 GiB (the free-tier ceiling)"
+	info "  2. on the instance:  sudo growpart ${ROOT_DEV%%[0-9]*} ${ROOT_DEV##*[!0-9]}  &&  sudo resize2fs ${ROOT_DEV}"
+	info "if docker is holding gigabytes, reclaim first:  docker system prune -af --volumes"
 else
 	pass "disk space on / is sufficient (${DISK_AVAIL_GB} GB free)"
 fi

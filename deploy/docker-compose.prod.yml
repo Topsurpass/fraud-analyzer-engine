@@ -27,6 +27,11 @@ services:
   analyzer:
     build:
       context: ../services/analyzer
+    # Named explicitly, rather than left to compose's project-prefixed default.
+    # `deploy.sh --no-build` and ship-images.sh both depend on the name being
+    # the same on the machine that builds and the machine that runs, and a
+    # default derived from the project name is not that.
+    image: switchboard-analyzer:latest
     environment:
       # App state lives in RDS. `neon` is this setting's name for "managed
       # Postgres addressed by DATABASE_URL"; it predates the move to RDS and
@@ -85,6 +90,7 @@ services:
       # Defaults to the sibling checkout. Override in .env.prod if the two
       # repositories are laid out differently on the host.
       context: ${DASHBOARD_CONTEXT:-../../fraud-analyzer-dashboard}
+    image: switchboard-dashboard:latest
     environment:
       # Resolved on the compose network, not localhost - inside a container
       # that is the container's own loopback. Read at runtime by the server-side

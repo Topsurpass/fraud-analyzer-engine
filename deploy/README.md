@@ -48,6 +48,7 @@ internet.
 | `deploy.sh` | Builds, starts, waits for healthy. |
 | `verify.sh` | Proves the running stack actually works. 8 sections, ~45 checks. |
 | `rehearse.sh` | Runs the whole thing locally against a throwaway Postgres. |
+| `ship-images.sh` | Builds both images elsewhere and sends them over ssh, so a small instance never builds. |
 | `docker-compose.prod.yml` | The three services. |
 | `docker-compose.rehearsal.yml` | Overlay adding a local TLS Postgres, for `rehearse.sh`. |
 | `Caddyfile` | TLS, compression, security headers. |
@@ -158,6 +159,82 @@ cd ~/fraud-analyzer-engine/deploy
 
 Options: `--no-build` restarts from the images already on the host; `--pull`
 rebuilds from scratch, ignoring the layer cache.
+
+---
+
+## Sizing the instance
+
+Building is far more expensive than running, and the gap is what catches
+people out:
+
+| | Building | Running |
+|---|---|---|
+| Memory | ~2.5 GB peak (the Next build) | under 400 MB |
+| Disk | ~8 GB (node_modules, layer cache) | ~1 GB (two images) |
+
+A t2/t3.micro — 1 GB of RAM, 8 GB root volume — runs this comfortably and
+cannot build it. Two ways forward, and the second is usually better.
+
+### Not enough disk
+
+A fresh Ubuntu AMI gives you an 8 GB root volume, of which the OS already uses
+most. `preflight.sh` prints what Docker is holding; if that is small, the
+volume is simply too small and pruning reclaims nothing.
+
+Grow it — 30 GB is the free-tier ceiling, so this costs nothing:
+
+1. EC2 console → **Volumes** → select the instance's root volume → **Modify** →
+   30 GiB → Modify. Takes a minute, no reboot, no downtime.
+2. On the instance, grow the partition and the filesystem to match:
+
+```bash
+lsblk                                  # find the root device, e.g. nvme0n1p1
+sudo growpart /dev/nvme0n1 1
+sudo resize2fs /dev/nvme0n1p1
+df -h /                                # confirm
+```
+
+The two-step is not optional: resizing the EBS volume in AWS does not resize
+the partition on it, and nothing warns you that it did not.
+
+### Not enough memory, or: building somewhere else
+
+Add swap first — `bootstrap-ec2.sh` does it automatically under 3.5 GB of RAM,
+or by hand:
+
+```bash
+sudo fallocate -l 3G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+That is enough to *finish*, but on 1 GB of RAM and 2 cores the dashboard build
+swaps hard and can take 15–30 minutes. **The better answer is not to build
+there at all.** Build on your laptop and ship the images:
+
+```bash
+# on your machine
+cd fraud-analyzer-engine/deploy
+./ship-images.sh ubuntu@1.2.3.4 -i ~/.ssh/your-key.pem
+
+# then on the instance
+cd fraud-analyzer-engine/deploy
+./deploy.sh --no-build && ./verify.sh
+```
+
+`ship-images.sh` builds both images locally, streams them over ssh
+(`docker save | gzip | docker load` — no temporary tarball on either side, which
+matters when the instance's disk is the constraint), and compares image ids
+afterwards so an older image of the same name cannot pass as success. About
+550 MB uncompressed, less on the wire.
+
+`--no-build` then starts them by name without building anything. Nothing
+environment-specific is baked into either image — they read their configuration
+from the environment at run time — so the image you tested locally is the image
+that runs.
+
+This also makes redeploys much faster, and keeps the instance sized for what it
+actually serves rather than for its worst five minutes.
 
 ---
 
