@@ -1,0 +1,127 @@
+# Front door for the production stack. TLS, compression, security headers.
+#
+# One variable, from the environment:
+#   SWITCHBOARD_PUBLIC_HOST   the EC2 public DNS name or IP that people type.
+#
+# Used by docker-compose.prod.yml. Read deploy/README.md before changing
+# anything here: the analyzer behind this proxy executes caller-supplied SQL
+# against customer production databases, and the properties below are what
+# stand between that and the internet.
+
+{
+	# No admin API. It is unauthenticated and can rewrite this whole config at
+	# runtime, so it has no business listening inside a deployment.
+	admin off
+
+	# Caddy would otherwise generate its own HTTP-to-HTTPS redirect on :80,
+	# which would collide with the explicit `:80` block below. This turns the
+	# generated one off and leaves that block as the only thing on port 80.
+	#
+	# It is written out rather than left implicit because the redirect is
+	# load-bearing here, not cosmetic - see the note on the :80 block - and a
+	# redirect nobody can point at in the config is one nobody checks.
+	#
+	# Note this does NOT affect certificates. `tls internal` on the site below
+	# is what stops Caddy trying Let's Encrypt, which could not issue for an IP
+	# address or an *.compute.amazonaws.com name anyway: AWS owns that domain.
+	auto_https disable_redirects
+}
+
+# Redirect plain HTTP to HTTPS.
+#
+# This matters more here than it looks. The session cookie is `Secure`, so a
+# browser will not store it over plain HTTP: signing in at http:// silently
+# fails, the login form posts, succeeds, and returns to the login page with no
+# error anywhere. Sending everyone to HTTPS before they ever see the form is
+# what stops that from being someone's afternoon.
+:80 {
+	redir https://{$SWITCHBOARD_PUBLIC_HOST}{uri} permanent
+}
+
+{$SWITCHBOARD_PUBLIC_HOST}:443 {
+	# A certificate from Caddy's own local CA, valid for whatever
+	# SWITCHBOARD_PUBLIC_HOST is - an IP address included, which public CAs
+	# will not issue for.
+	#
+	# Browsers show a warning on it. That is the honest cost of having no
+	# domain name, and it is still strictly better than plain HTTP: the traffic
+	# is encrypted, and the Secure session cookie works. To remove the warning,
+	# point a domain you own at this instance, set SWITCHBOARD_PUBLIC_HOST to
+	# that name, delete this line, and remove `auto_https disable_redirects`
+	# above - Caddy then provisions a real Let's Encrypt certificate on the
+	# next start with no other change.
+	#
+	# The CA lives in the `caddy_data` volume. Keep that volume across deploys
+	# or every browser that accepted the certificate is warned again.
+	tls internal
+
+	# Compress here, and only here.
+	#
+	# This is the hop that crosses the internet, and it is the only hop that
+	# compresses. The engine's own gzip is bypassed on purpose: Node's `fetch`
+	# in the dashboard's proxy decodes any compressed answer transparently, so
+	# compressing between containers cost the engine 19 ms of CPU per
+	# 25,000-row response and delivered the same number of bytes to the browser
+	# (measured: 209,790 in, 209,790 out). The dashboard now asks the engine for
+	# `identity` and this line does the work once, where it counts.
+	#
+	# zstd first: better ratio and faster than gzip, and every current browser
+	# takes it. gzip is the fallback for anything that does not.
+	#
+	# The result payloads are the reason any of this exists - the same nine
+	# keys repeated 25,000 times compresses about tenfold, turning a second of
+	# transfer on a 20 Mbps link into a quarter of one.
+	encode zstd gzip
+
+	header {
+		# One year, and applied to a self-signed certificate on purpose.
+		# HSTS pins this host to HTTPS in the browser, which is what makes the
+		# Secure cookie reliable rather than dependent on the user having typed
+		# https://. It is scoped to this host only - no includeSubDomains and
+		# no preload, both of which would be irreversible commitments made on
+		# behalf of a domain we do not own.
+		Strict-Transport-Security "max-age=31536000"
+
+		# The dashboard is not a widget. Framing it is only useful to someone
+		# building a clickjacking page around the sign-in form.
+		X-Frame-Options "DENY"
+
+		# Stop a browser from second-guessing a Content-Type. Every response
+		# here is HTML, JSON, CSS, JS or a font, all correctly labelled.
+		X-Content-Type-Options "nosniff"
+
+		# A fraud dashboard's URLs carry connection and query identifiers.
+		# Do not hand those to whatever a user clicks through to.
+		Referrer-Policy "strict-origin-when-cross-origin"
+
+		# None of these are used, and saying so removes them as an attack
+		# surface rather than relying on nobody adding a call.
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+
+		# Do not advertise the proxy and its version.
+		-Server
+	}
+
+	# Everything goes to the dashboard. The analyzer is NOT proxied here and
+	# publishes no port: the only thing that talks to it is the dashboard's
+	# server-side handler, over the compose network. That is what keeps the
+	# engine's /docs console - an interactive form that executes SQL - off the
+	# internet without depending on a path rule staying correct forever.
+	reverse_proxy dashboard:3000 {
+		# The dashboard reads no client address, but a header a caller controls
+		# should never survive a proxy that is meant to be authoritative about
+		# it. {remote_host} is the address Caddy accepted the connection from,
+		# which cannot be forged.
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+
+		# The slowest legitimate answer is a cold 25,000-row query: the engine
+		# bounds it at FAE_QUERY_TIMEOUT_S + FAE_SOCKET_TIMEOUT_GRACE_S (10 + 5
+		# by default), and the dashboard adds a hop. Give the proxy more than
+		# that, so a slow query returns the engine's own 504 - which names the
+		# query - instead of a 502 the proxy invented, which names nothing.
+		transport http {
+			response_header_timeout 60s
+		}
+	}
+}

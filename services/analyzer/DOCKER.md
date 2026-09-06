@@ -6,6 +6,20 @@ command produces an error, the error text is copied from a real run.
 `README.md` explains what the service does and how the safety layer works.
 This file only covers running it in a container.
 
+> **Deploying to a server? Read [`deploy/README.md`](../../deploy/README.md)
+> instead.**
+>
+> This file is about running the analyzer container by itself: on a laptop, for
+> development, or as one piece of a larger stack. Its "3. Production" section
+> predates the service having user accounts, and puts HTTP basic authentication
+> in front of an API that had none of its own. That is no longer the right
+> shape: the analyzer now has real accounts and sessions, the dashboard is the
+> front door, and a basic-auth prompt in front of it would break the dashboard's
+> own sign-in without adding anything.
+>
+> The current production deployment - EC2, RDS, the dashboard, Caddy, and the
+> scripts that check all of it - lives in `deploy/`.
+
 ## Prerequisites
 
 | | Minimum | Why |

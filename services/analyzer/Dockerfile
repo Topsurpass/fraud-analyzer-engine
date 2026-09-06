@@ -53,6 +53,29 @@ COPY --from=builder /app /app
 RUN install -d -m 0700 -o analyzer -g analyzer /app/.secrets \
  && install -d -m 0700 -o analyzer -g analyzer /app/data
 
+# One trust store that covers both the public web and Amazon RDS.
+#
+# TLS verification happens in this process, so the CA bundle has to be a path
+# inside the container: a bundle downloaded onto the EC2 host is invisible from
+# in here. Two sources are concatenated because neither is sufficient alone.
+#
+#   /etc/ssl/certs/ca-certificates.crt  Debian's Mozilla root set. Covers Neon,
+#                                       Supabase, and the newer RDS
+#                                       certificates that chain to Amazon Root
+#                                       CA 1.
+#   certs/rds-global-bundle.pem         AWS's own bundle: 108 regional RDS
+#                                       roots, some of them self-signed and
+#                                       present in no public trust store. An
+#                                       instance still on one of those fails
+#                                       verify-full against the system bundle.
+#
+# The union is a strict superset of the system bundle, so pointing at it can
+# only make more certificates verify, never fewer. 0444: the service account
+# reads it, nothing writes it.
+RUN cat /etc/ssl/certs/ca-certificates.crt /app/certs/rds-global-bundle.pem \
+      > /app/certs/trust-bundle.pem \
+ && chmod 0444 /app/certs/trust-bundle.pem
+
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -67,6 +90,12 @@ ENV PATH="/app/.venv/bin:$PATH" \
     # against this filesystem, so a path from a developer's laptop resolves to
     # nothing. Empty allowlist refuses them with a clear error.
     FAE_SQLITE_ALLOWED_DIRS="" \
+    # Where a verifying TLS mode on a *target* connection finds its CA when the
+    # connection names no certificate of its own. A superset of the system
+    # store, so this is never worse than leaving it unset. The app-state
+    # database points at the same file, but through sslrootcert= in
+    # DATABASE_URL, because that URL is libpq's to parse and not this app's.
+    FAE_TARGET_SSL_ROOT_CERT=/app/certs/trust-bundle.pem \
     FAE_LOG_JSON=true
 
 USER analyzer

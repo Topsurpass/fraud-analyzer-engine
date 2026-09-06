@@ -3,6 +3,10 @@ __pycache__/
 .venv/
 venv/
 .env
+# Production secrets for the EC2 deploy: an RDS password and the Fernet key
+# that every stored target credential is encrypted with. deploy/preflight.sh
+# refuses to run if this file is readable by anyone but its owner.
+deploy/.env.prod
 .secrets/
 *.db
 *.sqlite
@@ -18,3 +22,8 @@ build/
 # Bind-mount target for a container-run analyzer (services/analyzer/DOCKER.md 2c).
 # Created by `mkdir -p ./data` in that recipe; holds a sqlite app-state file.
 services/analyzer/data/
+
+# Local rehearsal state (deploy/rehearse.sh): generated certificates, a
+# throwaway env file, and the log of what was deployed when.
+deploy/.rehearsal/
+deploy/deployed.log

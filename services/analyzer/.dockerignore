@@ -13,6 +13,13 @@
 **/*.key
 **/*.pem
 
+# ...except the AWS RDS certificate authority bundle, which is the opposite of
+# a secret: it is the set of public CAs that sign RDS server certificates, and
+# it is what `sslmode=verify-full` checks the app-state database against. It
+# has to be inside the image because verification happens in this process, and
+# a path on the host is not a path in the container.
+!certs/*.pem
+
 # Build/test detritus. Host __pycache__ is worse than dead weight: stale .pyc
 # files shadow the source they were built from.
 **/.venv

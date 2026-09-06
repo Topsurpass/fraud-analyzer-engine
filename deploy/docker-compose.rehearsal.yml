@@ -1,0 +1,85 @@
+# Rehearsal overlay: run the production stack on a laptop, against a local
+# Postgres that speaks TLS the way RDS does.
+#
+#     ./rehearse.sh
+#
+# This exists so the production compose file, the Caddyfile, deploy.sh and
+# verify.sh can all be exercised end to end before any of them is pointed at a
+# real instance. Shipping five untested shell scripts to a production host and
+# finding out there is the failure mode this file prevents.
+#
+# It changes exactly three things about the production stack and nothing else:
+#
+#   1. adds a `postgres` service, so there is a database to talk to. RDS is on
+#      a private subnet and cannot be reached from a laptop.
+#   2. serves TLS from that Postgres with a self-signed certificate, so
+#      `sslmode=verify-full` is genuinely exercised rather than skipped. A
+#      rehearsal that quietly drops the one setting protecting every stored
+#      credential proves nothing about it.
+#   3. publishes 8080/8443 instead of 80/443, which need root to bind.
+#
+# The analyzer, the dashboard, and Caddy are the production images, with the
+# production configuration, unmodified.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: switchboard
+      POSTGRES_DB: switchboard
+      # Local throwaway, on an unpublished port, wiped by `rehearse.sh --clean`.
+      POSTGRES_PASSWORD: rehearsal-only-not-a-real-password
+    volumes:
+      - ./.rehearsal/certs:/certs:ro
+    # Postgres refuses a key file that is readable beyond its owner, and cannot
+    # use one it has no permission to read. The bind mount arrives owned by the
+    # host user, so the key is copied to a path the server owns before it
+    # starts. `-o postgres` matters: this runs as root (the image's entrypoint
+    # drops to postgres itself, later), and a root-owned 0600 key is one the
+    # server cannot open.
+    #
+    # A `|` block scalar, not `>`. YAML's folded style keeps the newlines on
+    # lines indented further than the first, so the `-c` flags arrived as
+    # separate lines - and in `bash -c` a newline ends a command. Postgres
+    # started with none of these flags and `ssl` stayed off, while the
+    # healthcheck passed and said nothing. The backslashes below are what joins
+    # them now.
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        install -o postgres -g postgres -m 600 \
+          /certs/server.crt /certs/server.key /tmp/
+        exec docker-entrypoint.sh postgres \
+          -c ssl=on \
+          -c ssl_cert_file=/tmp/server.crt \
+          -c ssl_key_file=/tmp/server.key \
+          -c password_encryption=scram-sha-256
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U switchboard -d switchboard"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  analyzer:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # The CA the rehearsal certificate is signed by. In production the bundle
+      # is baked into the image at this path by the Dockerfile; here it is
+      # replaced, so DATABASE_URL can name the same path either way and the
+      # rehearsal tests the real code path rather than a special case.
+      - ./.rehearsal/certs/ca.crt:/app/certs/trust-bundle.pem:ro
+
+  caddy:
+    # `!override` replaces the inherited list. A plain `ports:` here would be
+    # merged with the base file's, so the stack would still try to bind 80 and
+    # 443 - which needs root, and which a rehearsal has no business doing.
+    # verify.sh reads SWITCHBOARD_HTTP_PORT / SWITCHBOARD_HTTPS_PORT, which
+    # rehearse.sh sets to match these.
+    ports: !override
+      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8443:443"

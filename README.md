@@ -16,9 +16,24 @@ uv run uvicorn app.main:app --reload
 | Path | What it holds |
 |---|---|
 | `services/analyzer/` | The service: API, SQL guard, migrations, tests |
+| `deploy/` | Production deployment to EC2 + RDS, and the scripts that check it |
 | `contracts/` | Frozen response shapes and the generated `openapi.json` |
 | `scripts/` | `export_openapi.py` |
 | `docs/superpowers/` | Design spec and implementation plan |
+
+## Deploying
+
+[`deploy/README.md`](deploy/README.md) covers the production stack: Caddy in
+front, the Next.js dashboard as the only thing that talks to the analyzer, and
+app state in RDS Postgres over verified TLS.
+
+```bash
+cd deploy
+./rehearse.sh     # run the whole deploy locally first, against a throwaway database
+./preflight.sh    # check the configuration
+./deploy.sh       # build and start
+./verify.sh       # prove it works
+```
 
 **Before you connect a production database, read the read-only role section in
 [`services/analyzer/README.md`](services/analyzer/README.md#use-a-read-only-database-role).**

@@ -1,0 +1,131 @@
+# Production stack for a single EC2 host.
+#
+#   cd deploy
+#   cp .env.prod.example .env.prod && $EDITOR .env.prod
+#   ./preflight.sh          # refuses to go further on a bad config
+#   ./deploy.sh             # build, migrate, start
+#   ./verify.sh             # prove it actually works
+#
+# Three services and one network. The shape is the point:
+#
+#     internet --443--> caddy --> dashboard --> analyzer --> RDS (private VPC)
+#
+# Only Caddy publishes a port. The dashboard and the analyzer are reachable
+# solely on the internal compose network, which is what makes the engine's
+# private-address property true rather than aspirational: the analyzer executes
+# caller-supplied SQL against customer databases and serves an interactive
+# console at /docs, and nothing about it should ever be one security-group
+# mistake away from the internet.
+#
+# There is no `postgres` service here, unlike docker-compose.yml. App state
+# lives in RDS, so the database survives `docker compose down`, an instance
+# replacement, and an AMI change.
+
+name: switchboard
+
+services:
+  analyzer:
+    build:
+      context: ../services/analyzer
+    environment:
+      # App state lives in RDS. `neon` is this setting's name for "managed
+      # Postgres addressed by DATABASE_URL"; it predates the move to RDS and
+      # names the shape, not the vendor.
+      FAE_DB_BACKEND: neon
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env.prod - see .env.prod.example}
+
+      # Unrecoverable if wrong: every stored target-database password is
+      # encrypted with this key, and a new key makes all of them undecryptable
+      # while every visible field on the connection stays correct. No default,
+      # so a missing value fails the run instead of silently generating a
+      # different key on each restart.
+      FAE_FERNET_KEY: ${FAE_FERNET_KEY:?set FAE_FERNET_KEY in deploy/.env.prod - preflight.sh will generate one}
+
+      # The browser never talks to this service; it talks to the dashboard,
+      # which proxies server-side. So no origin needs to be allowed, and an
+      # empty list is the honest expression of that. A `*` here would be a
+      # standing invitation for any page on the internet to drive the engine
+      # if a port ever did get published.
+      FAE_CORS_ORIGINS: ""
+
+      # Worker processes. One worker is one core, and a poll is GIL-bound
+      # Python, so a busy board saturates a single worker: ten concurrent
+      # analysts on one 25,000-row board measured 200 ms a poll against 29 ms
+      # for one analyst. More workers buy parallelism and cost cache locality,
+      # since the result cache and the rendered-response cache are both per
+      # process. Start at the instance's core count. See the Dockerfile CMD.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+
+      # Structured lines, for whatever ships them off the box.
+      FAE_LOG_JSON: "true"
+      FAE_LOG_LEVEL: ${FAE_LOG_LEVEL:-INFO}
+
+      # Alembic runs at startup. With one instance that is exactly right: there
+      # is no shell step between image build and server start, and a service
+      # that cannot create its own schema answers "no such table" to every
+      # request. Set false and run migrations as a release step if you ever run
+      # more than one instance, so they do not race.
+      FAE_AUTO_MIGRATE: ${FAE_AUTO_MIGRATE:-true}
+
+      FAE_SCHEDULER_ENABLED: ${FAE_SCHEDULER_ENABLED:-true}
+
+    # No `ports:`. Deliberate, and the single most important line in this file.
+    restart: unless-stopped
+    logging: &logging
+      # Container logs are on the instance's root volume. Unbounded, they fill
+      # it, and a full disk takes down Postgres connections, Docker, and ssh at
+      # roughly the same moment.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  dashboard:
+    build:
+      # Defaults to the sibling checkout. Override in .env.prod if the two
+      # repositories are laid out differently on the host.
+      context: ${DASHBOARD_CONTEXT:-../../fraud-analyzer-dashboard}
+    environment:
+      # Resolved on the compose network, not localhost - inside a container
+      # that is the container's own loopback. Read at runtime by the server-side
+      # proxy, never inlined into the client bundle: NEXT_PUBLIC_ is what would
+      # publish this address to every browser, which is why it is not used.
+      ENGINE_BASE_URL: http://analyzer:8000
+      NODE_ENV: production
+    depends_on:
+      analyzer:
+        # Not `depends_on: [analyzer]`, which waits for the container to exist
+        # rather than for it to work. The analyzer's healthcheck hits /ready,
+        # which touches RDS - so this condition also means a deploy against an
+        # unreachable database fails here, loudly, instead of serving a login
+        # page that 502s on submit.
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      SWITCHBOARD_PUBLIC_HOST: ${SWITCHBOARD_PUBLIC_HOST:?set SWITCHBOARD_PUBLIC_HOST in deploy/.env.prod - the EC2 public DNS name or IP}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Named volumes, not bind mounts: /data holds the self-signed CA Caddy
+      # generates. Lose it and every browser that accepted the certificate is
+      # warned again on the next deploy.
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      # All interfaces, unlike the dev stack's 127.0.0.1 binding: this is the
+      # front door. The EC2 security group is what limits who reaches it, so
+      # open 80 and 443 there and nothing else.
+      - "80:80"
+      # 80 is served only to redirect to 443 and to answer nothing else.
+      - "443:443"
+    depends_on:
+      - dashboard
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  caddy_data:
+  caddy_config:
