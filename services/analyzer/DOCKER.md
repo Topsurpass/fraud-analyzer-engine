@@ -25,7 +25,7 @@ This file only covers running it in a container.
 | | Minimum | Why |
 |---|---|---|
 | Docker Engine | 20.10 | `--platform`, BuildKit, healthcheck `start-period` |
-| Docker Compose | **v2.24** | `depends_on.condition: service_healthy` is v2-only, and `ports: !reset` in `docker-compose.proxy.yml` needs 2.24 |
+| Docker Compose | **v2.24** | `depends_on.condition: service_healthy` is v2-only, and `ports: !override` in `deploy/docker-compose.rehearsal.yml` needs 2.24 |
 | Disk | ~1 GB | 254 MB image, plus the Postgres image and its volume |
 
 ```bash
@@ -42,12 +42,12 @@ install the Compose v2 plugin before going further.
 ## Contents
 
 - [Quickstart](#quickstart)
-- [Before you expose this](#before-you-expose-this): read this before any deployment
-- [The reverse proxy](#the-reverse-proxy): TLS, auth, blocked console, a working config
+- [Before you expose this](#before-you-expose-this): the console, loopback, read-only roles
+- [The reverse proxy](#the-reverse-proxy): what it must do, and where the config lives
 - [Concepts](#concepts): build context, baked settings, writable paths, health vs ready, logs
 - [1. Local: first run](#1-local-first-run)
 - [2. Development](#2-development): compose, SQLite, a Postgres by hand, managed
-- [3. Production](#3-production): the reverse proxy, `docker run`, `fly deploy`
+- [3. Production](#3-production): see `deploy/`; the container-level settings that fail quietly
 - [Image delivery](#image-delivery): registries, tags, cross-platform builds
 - [Operating](#operating): backups, log rotation, draining
 - [Configuration reference](#configuration-reference): every `FAE_` variable
@@ -134,228 +134,69 @@ than once.
 
 ## Before you expose this
 
-**The service has no authentication.** Every execution endpoint runs
-caller-supplied SQL against a database you configured, and the interactive API
-console is served on the same port. This was measured, not assumed:
+**This section described a service with no authentication. That is no longer
+true**, and the change matters more than a doc correction: the old advice was
+to put HTTP basic auth in front of the API, which today breaks sign-in rather
+than protecting anything.
 
-```
-/docs          200
-/openapi.json  200
-/redoc         200
-POST /connections  ->  422 REQUEST_VALIDATION_ERROR
-```
+The analyzer now has user accounts, sessions, and an audit log. Administrators
+are created with `fae create-admin`, deliberately never over HTTP. What follows
+is what is still true about exposing this container.
 
-That 422 is the point. It is the request body failing Pydantic validation,
-which means the request already passed through routing, CORS, and the rate
-limiter with no credential of any kind and no `Origin` header. A well-formed
-body would have been executed.
+**1. The interactive console is still served on the API port.** `/docs`,
+`/redoc` and `/openapi.json` are a form that composes and executes SQL against
+a configured database. Authentication gates the endpoints they call, but the
+console itself is an invitation and does not belong on the internet. In the
+production stack it is unreachable because the analyzer publishes no port at
+all; `deploy/verify.sh` checks that all three return 404 from the public
+address.
 
-Three rules follow, and none of them is optional.
-
-**1. Publish on loopback, never on `0.0.0.0`.** `-p 8000:8000` binds every
+**2. Publish on loopback, never on `0.0.0.0`.** `-p 8000:8000` binds every
 interface on the host. Verified: with `-p 8000:8000` the API answered on this
 machine's LAN address; with `-p 127.0.0.1:8000:8000` the same request was
-refused, while loopback still returned 200.
+refused, while loopback still returned 200. Better still, publish no port and
+reach it over a container network - which is what the production stack does.
 
-```bash
--p 127.0.0.1:8000:8000     # correct
--p 8000:8000               # publishes to the LAN, and to the internet on a cloud VM
-```
+**3. Use a read-only database role for every target.** The service blocks
+writes at three layers, and a read-only role is the control that still holds if
+one of those layers has a bug. See the read-only role section in
+[`README.md`](README.md#use-a-read-only-database-role).
 
-Every recipe in this file uses the loopback form. `docker-compose.yml` does
-too.
+**4. `FAE_CORS_ORIGINS` is not access control.** It constrains browsers. It
+does nothing to `curl`, and nothing to anything that is not a browser.
 
-**`0.0.0.0` in the boot log is not the problem, and must stay.** You will see
-this on every start, including a correctly restricted one:
-
-```
-INFO:     Uvicorn running on http://0.0.0.0:8000
-```
-
-That is uvicorn binding every interface **inside the container's own network
-namespace**, which is what makes the port reachable from outside that namespace
-at all. Bind it to `127.0.0.1` inside the container and nothing can reach it,
-including Docker's own port forwarding and the healthcheck. The interface that
-decides your exposure is the one in `-p`, on the host side of the colon, not
-the one uvicorn prints. `0.0.0.0` inside plus `127.0.0.1:` in `-p` is the
-correct combination.
-
-**2. Put an authenticating, TLS-terminating reverse proxy in front.** The
-loopback binding makes the container unreachable from outside the host; a proxy
-on the same host is then what decides who gets in. It must terminate TLS, and
-it must authenticate, because nothing behind it will. Block `/docs`, `/redoc`,
-and `/openapi.json` there unless you specifically want the API console public.
-
-There is no in-application switch for those three paths. `app/main.py`
-constructs `FastAPI(lifespan=..., title=..., version=..., description=...)`
-without `docs_url`, `redoc_url`, or `openapi_url`, and no field in
-`app/config.py` controls them, so FastAPI's defaults apply and the routes are
-always mounted. Blocking them at the proxy is currently the only option. That
-is a gap in the service, not a setting you are missing.
-
-**3. Understand what `FAE_CORS_ORIGINS` does and does not do.** It constrains
-**browsers only**. A browser refuses to hand a cross-origin response back to
-page JavaScript unless the origin is allowed. `curl`, a script, a bot, and any
-server-side caller ignore CORS completely: the request still executes and the
-response still comes back. The 422 above was produced with no `Origin` header
-at all.
-
-So `FAE_CORS_ORIGINS` stops a random web page from driving your API from a
-visitor's browser. It stops nothing else. Set it to the dashboard origin
-anyway, and do not mistake it for access control.
-
-Rate limits are the same shape of control, and directly exposed they are worse
-than they look. `client_key()` in `app/ratelimit.py:116` keys the bucket on the
-first entry of `X-Forwarded-For` and trusts it blindly, because behind a proxy
-that is the only way to tell callers apart. Exposed with no proxy, a caller
-simply sets the header. Measured against the analyzer on a published port with
-`FAE_RATE_LIMIT_PER_MINUTE=3`:
-
-```
-X-Forwarded-For: 10.0.0.1  ->  200        (none)  ->  200
-X-Forwarded-For: 10.0.0.2  ->  200        (none)  ->  200
-X-Forwarded-For: 10.0.0.3  ->  200        (none)  ->  429
-X-Forwarded-For: 10.0.0.4  ->  200        (none)  ->  429
-X-Forwarded-For: 10.0.0.5  ->  200        (none)  ->  429
-X-Forwarded-For: 10.0.0.6  ->  200        (none)  ->  429
-```
-
-Six for six. Rotating one header defeats the limiter completely. The only thing
-that fixes it is a proxy that owns the header, which is what the next section
-builds.
-
+**5. Rate limits are per worker process.** With `WEB_CONCURRENCY=2` the
+effective limit is twice what the setting says. It is a containment control,
+not accounting.
 ## The reverse proxy
 
-`Caddyfile` and `docker-compose.proxy.yml` in this directory are a working
-front end: TLS, HTTP basic authentication, the API console blocked, and
-`X-Forwarded-For` set by the proxy rather than by the caller.
+**The working proxy configuration is [`deploy/Caddyfile`](../../deploy/Caddyfile),
+used by [`deploy/docker-compose.prod.yml`](../../deploy/docker-compose.prod.yml).**
 
-Caddy is the choice because it does all four in about twenty lines and issues
-its own certificate, so the whole thing is testable offline. Nothing below is
-Caddy-specific in intent; if you already run nginx or Traefik, reproduce the
-same four properties.
+`Caddyfile` and `docker-compose.proxy.yml` used to sit in this directory and
+have been removed. They put HTTP basic authentication in front of the API,
+which was right when the service had no authentication of its own and is wrong
+now: the analyzer has accounts and sessions, the dashboard is the front door,
+and a basic-auth prompt in front of that breaks its sign-in without adding
+anything. Leaving a working-looking config that breaks the deployment is worse
+than leaving none.
 
-### Running it
+What the current proxy does, and what any replacement has to do:
 
-```bash
-cd services/analyzer
+- **Terminates TLS.** The session cookie is `Secure`, so a browser will not
+  store it over plain HTTP - sign-in silently fails and returns to the login
+  page with no error. Port 80 exists only to redirect.
+- **Compresses.** `encode zstd gzip`. A 25,000-row result is 2.87 MB of JSON
+  that compresses about tenfold, and this is the only hop that does it.
+- **Is the only thing with a published port.** The analyzer publishes none. It
+  is reachable solely on the internal network, from the dashboard, which is
+  what keeps the console below off the internet without depending on a path
+  rule staying correct.
+- **Sets `X-Forwarded-For` itself** rather than passing through what the caller
+  sent, since the rate limiter reads it.
 
-export FAE_FERNET_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
-export FAE_BASIC_AUTH_HASH=$(docker run --rm caddy:2-alpine \
-  caddy hash-password --plaintext 'the-password-you-will-use')
-
-docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
-
-until curl -skf -u analyst:the-password-you-will-use \
-  https://localhost:8443/health >/dev/null; do sleep 1; done
-```
-
-The overlay removes the analyzer's published port entirely (`ports: !reset []`)
-and publishes Caddy on `127.0.0.1:8443` instead, so the only way in is through
-the proxy. Verified: `docker port` on the analyzer container prints nothing.
-
-**Use the hostname, not the IP.** `https://127.0.0.1:8443` fails the TLS
-handshake with `tlsv1 alert internal error`, because an IP address carries no
-SNI and Caddy has no certificate to offer for it. `https://localhost:8443`
-works. In production `FAE_PUBLIC_HOST` is your real hostname and Caddy
-provisions a public certificate for it automatically.
-
-`-k` skips verification of Caddy's local CA certificate. It is for this local
-test only; against a real hostname the certificate verifies normally.
-
-### What it actually does, measured
-
-Console blocked, with or without credentials:
-
-```
-/docs                    404
-/docs/oauth2-redirect    404
-/redoc                   404
-/openapi.json            404
-```
-
-404 rather than 401 or 403 on purpose: a 401 confirms something is there.
-
-Authentication required on everything else:
-
-```
-GET  /health       no credentials  ->  401
-GET  /connections  no credentials  ->  401
-POST /connections  no credentials  ->  401
-GET  /health       wrong password  ->  401
-GET  /health       correct         ->  200  {"status":"ok"}
-GET  /ready        correct         ->  200  {"status":"ready"}
-```
-
-TLS terminated, verified from the handshake:
-
-```
-SSL connection using TLSv1.3 / TLS_AES_128_GCM_SHA256
-issuer: CN=Caddy Local Authority - ECC Intermediate
-```
-
-And the rate limiter now sees a real client. Same spoofing attempt as above,
-same `FAE_RATE_LIMIT_PER_MINUTE=3`, this time through the proxy:
-
-```
-X-Forwarded-For: 10.0.0.1  ->  200
-X-Forwarded-For: 10.0.0.2  ->  200
-X-Forwarded-For: 10.0.0.3  ->  429
-X-Forwarded-For: 10.0.0.4  ->  429
-X-Forwarded-For: 10.0.0.5  ->  429
-```
-
-The spoofed values are discarded and every request lands in one bucket keyed on
-the real peer address.
-
-### The `X-Forwarded-For` rule, and what happens if you get it wrong
-
-The `Caddyfile` states it explicitly:
-
-```
-reverse_proxy analyzer:8000 {
-    header_up X-Forwarded-For {remote_host}
-    header_up X-Real-IP {remote_host}
-}
-```
-
-`{remote_host}` is the address the proxy accepted the connection from, which a
-caller cannot forge. Overwriting means the analyzer's
-`forwarded.split(",")[0]` reads the real client and nothing else.
-
-Two things worth being precise about, because the common advice is out of date:
-
-- **Caddy 2.7 and later already do the safe thing by default.** Measured on
-  2.11.4 with `header_up` removed entirely: a client sending
-  `X-Forwarded-For: 1.2.3.4` still arrived at the backend as the real peer
-  address. Caddy replaces an untrusted client-supplied value rather than
-  appending to it. The explicit line is kept because that default is
-  version-dependent and is relaxed the moment you configure `trusted_proxies`.
-- **A proxy that appends or forwards blindly reintroduces the bug**, and this
-  is the historical default for several proxies and the behaviour you get from
-  a hand-rolled `proxy_set_header X-Forwarded-For $http_x_forwarded_for`. If
-  the caller's value survives as the first entry, `client_key()` reads it and
-  the limiter is back to being one header away from useless. Whatever proxy you
-  use, verify it the way this section does rather than trusting the default.
-
-### Production differences
-
-The overlay is layered on the development compose file, so it inherits the
-local `postgres` service. For production:
-
-- Drop `postgres` and point `DATABASE_URL` at a managed database with
-  `?sslmode=require`.
-- Set `FAE_PUBLIC_HOST` to your real hostname and delete `tls internal` from
-  the `Caddyfile`, so Caddy provisions a public certificate.
-- Publish Caddy on `443` on a public interface. Caddy is the only service that
-  should have a public port.
-- Basic auth is the floor, not the ceiling. It is one shared credential with no
-  revocation and no per-user audit trail. If more than a couple of people use
-  this, put an identity-aware proxy in front instead. The properties to
-  preserve are the four this section verifies.
-
----
-
+Nothing there is Caddy-specific in intent. If you already run nginx or Traefik,
+reproduce those four properties.
 ## Concepts
 
 ### The build context is `services/analyzer`, not the repo root
@@ -423,7 +264,7 @@ The image does **not** run with a read-only root filesystem on its own. Nothing
 in the Dockerfile can do that; `--read-only` is a flag the operator passes at
 `docker run`. What the image does is make it possible, by keeping every write
 in two directories you can avoid using. See
-[the production section](#docker-run-form).
+[3. Production](#3-production).
 
 ### Environment variable precedence
 
@@ -983,235 +824,53 @@ dumping the environment; see [the note on that](#printing-the-environment-prints
 
 ## 3. Production
 
-Managed Postgres, a fixed encryption key, a read-only filesystem, loopback
-publishing behind an authenticating proxy, and explicit resource limits.
+**The production deployment lives in [`deploy/`](../../deploy/README.md).** Not
+here.
 
-Read [Before you expose this](#before-you-expose-this) first. It is not
-optional background.
+That directory holds the whole stack - the analyzer, the Next.js dashboard in
+front of it, Caddy terminating TLS, app state in managed Postgres - plus
+`preflight.sh`, `deploy.sh` and a `verify.sh` that makes 38 checks against the
+running result. This file stops at the edge of one container.
 
-### The three that decide whether the deployment works
+What used to be written here was a single-container recipe from before the
+service had user accounts: publish on loopback, put HTTP basic authentication
+in front of it, block the console at the proxy. Following it today would break
+the deployment rather than secure it - see [The reverse
+proxy](#the-reverse-proxy).
 
-Get any of these wrong and the failure shows up later, as missing tables,
-blocked dashboard requests, or unreadable credentials, not at deploy time.
+Three container-level facts still belong here, because they are true wherever
+this image runs and each one fails quietly rather than loudly.
 
-**`DATABASE_URL`** with `?sslmode=require`. The image already sets
-`FAE_DB_BACKEND=neon`, so this is the only piece missing. Without it the
-container will not start, which is intended: a silent fallback to SQLite would
-write saved queries to a container filesystem that is wiped on the next deploy.
-
-**`FAE_FERNET_KEY`**, and this is the one that fails quietly. `crypto.py`
-resolves the key in three steps: the environment variable, then
-`.secrets/fernet.key` on disk, then generate one and write it there. Step three
-is what happens in production if you forget. The generated key lands on the
-container filesystem, which is wiped on every deploy, while the Fernet-encrypted
+**`FAE_FERNET_KEY` is the one that fails silently.** `crypto.py` resolves the
+key in three steps: the environment variable, then `.secrets/fernet.key` on
+disk, then generate one and write it there. Step three is what happens in
+production when you forget. The generated key lands on the container
+filesystem, which is wiped on the next deploy, while the Fernet-encrypted
 target-database passwords sit in a durable Postgres. Redeploy and the service
-comes up with a fresh key against ciphertext it can no longer read. Every stored
-credential is permanently undecryptable, and nothing tells you until someone
-runs a saved query.
+comes up with a fresh key against ciphertext it can no longer read - every
+stored credential unreadable, every visible field on the connection still
+correct.
 
-Startup warns when the key was generated rather than supplied:
+Back the key up somewhere that is not the instance. The startup log prints its
+fingerprint (never the key); comparing that across two deploys is what turns
+"the passwords broke again" into "these are two different keys".
 
-```
-WARNING  app.db.migrate: FAE_FERNET_KEY is not set, so a credential encryption key was generated on local disk. ...
-```
+**`DATABASE_URL` decides whether anything survives a restart.** The image sets
+`FAE_DB_BACKEND=neon`, meaning "managed Postgres addressed by `DATABASE_URL`" -
+the name predates the move to RDS and describes the shape, not the vendor.
+Without the URL the container refuses to start, which is intended: a silent
+fallback to SQLite would write saved queries to a container filesystem that is
+wiped on the next deploy.
 
-Grep for that line after a deploy. It should not be there.
+Set the TLS mode on that URL. `sslmode=verify-full` encrypts *and* checks the
+server is who it claims to be; `require` only encrypts, and libpq's own default
+(`prefer`) will silently accept an unencrypted connection. The image carries a
+CA bundle at `/app/certs/trust-bundle.pem` covering the public roots plus AWS's
+RDS roots. See "TLS to RDS" in `deploy/README.md`.
 
-**`FAE_CORS_ORIGINS`**, set to the dashboard origin. The default is `*`. Read
-[what it actually constrains](#before-you-expose-this) before relying on it.
-
-```bash
-openssl rand -base64 32 | tr '+/' '-_'
-```
-
-### `docker run` form
-
-```bash
-docker run -d --name fae \
-  -p 127.0.0.1:8000:8000 \
-  --read-only --tmpfs /tmp \
-  --memory 512m --memory-swap 512m --cpus 1 \
-  --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
-  --restart unless-stopped \
-  -e DATABASE_URL='postgresql://USER:PASSWORD@HOST/DB?sslmode=require' \
-  -e FAE_FERNET_KEY='<your production key>' \
-  -e FAE_CORS_ORIGINS='https://dashboard.example.com' \
-  -e FAE_LOG_JSON=true \
-  -e FAE_RATE_LIMIT_PER_MINUTE=600 \
-  -e FAE_RATE_LIMIT_EXECUTION_PER_MINUTE=300 \
-  registry.example.com/fae/analyzer:0.1.0-a8f47a6
-```
-
-Line by line, on the parts that are not obvious:
-
-**`-p 127.0.0.1:8000:8000`.** Loopback only. This container is not the public
-surface; [the reverse proxy](#the-reverse-proxy) is, and it is the piece that
-terminates TLS, authenticates, blocks the API console, and owns
-`X-Forwarded-For`. Running this without one publishes an unauthenticated SQL
-executor to whatever can reach the host. If you are deploying with compose,
-`docker-compose.proxy.yml` does this and the proxy in one step.
-
-**`--read-only --tmpfs /tmp`.** With `FAE_FERNET_KEY` supplied and a Postgres
-backend, the process writes to neither `/app/.secrets` nor `/app/data`, so the
-whole root filesystem can be read-only. That turns "the code is root-owned so
-the service cannot rewrite it" into "nothing can rewrite anything". `/tmp` gets
-a tmpfs because Python and its libraries expect a writable temp directory.
-
-This also checks your configuration. Forget the key and a read-only container
-refuses to start rather than starting with an ephemeral one:
-
-```
-OSError: [Errno 30] Read-only file system: '.secrets/fernet.key'
-```
-
-A loud failure at deploy time instead of a silent one three deploys later.
-
-**`--memory 512m --memory-swap 512m --cpus 1`.** Docker imposes no limit by
-default, and this service has two configurable buffers that are sized in
-megabytes:
-
-| Budget | Default | What it holds |
-|---|---|---|
-| `FAE_CACHE_MAX_BYTES` | 64 MB | Poll result cache, across all saved queries |
-| `FAE_MAX_RESULT_BYTES` | 32 MB | Ceiling on one in-flight result while rows are coerced |
-
-Measured idle footprint of this image on Postgres: **77 MB**. So a 512 MB
-container is roughly 77 idle, plus up to 64 cached, plus 32 per concurrent
-result being materialised. Every endpoint is sync and runs on anyio's 40-thread
-pool, so the worst case is bounded by concurrency, not by the pool being
-unbounded. 512 MB is comfortable at the defaults and is what `fly.toml` pins
-(`memory = "512mb"`). If you raise `FAE_CACHE_MAX_BYTES` or
-`FAE_MAX_RESULT_BYTES`, raise `--memory` with it, or the container is
-OOM-killed with exit 137 and no application-level error at all.
-
-Set `--memory-swap` equal to `--memory` so the container cannot swap its way
-past the limit and turn an OOM into a machine-wide slowdown.
-
-**`--log-driver json-file --log-opt max-size=10m --log-opt max-file=3`.**
-Docker's default `json-file` driver has **no size limit**, and this service
-logs a line per request. A busy dashboard fills a disk. This caps it at 30 MB
-per container. Verified applied via
-`docker inspect --format '{{.HostConfig.LogConfig}}'`. If you ship logs
-elsewhere, point `--log-driver` there instead; the point is that the default is
-unbounded.
-
-**`FAE_LOG_JSON=true`** is already the image default; it is listed so the
-configuration reads complete in one place. See
-[what the logs actually look like](#what-the-logs-actually-look-like) for which
-lines are JSON and which are not.
-
-**Rate limits.** There is no authentication, so the per-IP budget is the only
-thing between a caller and an endpoint that runs SQL against a customer's
-production database. The buckets are separate because they bound different
-costs: `FAE_RATE_LIMIT_PER_MINUTE` (600) covers every request,
-`FAE_RATE_LIMIT_EXECUTION_PER_MINUTE` (300) covers anything opening a target
-connection. The execution bucket must absorb a real dashboard: twelve cards at
-the default five-second poll is 144 polls a minute from one browser tab. Both
-are fixed one-minute windows held **per process**, so behind N instances the
-effective limit is N times what you set.
-
-**A tagged image from a registry**, not a bare `fae`. See
-[Image delivery](#image-delivery).
-
-**`sslmode=require`.** Neon rejects a non-TLS connection outright, and any
-managed host reached over the public internet should. It is part of the URL, so
-it survives the `postgresql://` to `postgresql+psycopg://` rewrite untouched.
-
-**Migrations.** `FAE_AUTO_MIGRATE` defaults to `true`, so the container brings
-its own schema to head before serving. A container deploy has no shell step
-between "image built" and "server started", and a service that cannot create
-its own schema answers every request with `relation "connections" does not
-exist`. Set `FAE_AUTO_MIGRATE=false` if you run migrations as a release step or
-start several instances at once and would rather they not race.
-
-`bootstrap_schema()` calls `verify_schema()` **unconditionally**
-(`app/db/migrate.py:145`), whether or not it migrated. With auto-migrate on
-that confirms the upgrade actually produced the tables; with it off it is the
-gate that refuses to serve against an unmigrated database, naming the command
-to run.
-
-### `fly deploy` form
-
-Run every Fly command from `services/analyzer`, the directory holding
-`fly.toml`, or pass `-c services/analyzer/fly.toml`.
-
-```bash
-cd services/analyzer
-
-fly secrets set \
-  FAE_DB_BACKEND=neon \
-  DATABASE_URL='postgresql://USER:PASSWORD@HOST/DB?sslmode=require' \
-  FAE_FERNET_KEY='<your production key>'
-
-fly deploy
-```
-
-Secrets are set once and deliberately not in `fly.toml`, which is committed.
-`[env]` there holds only non-secret configuration: `FAE_LOG_JSON=true`,
-`FAE_LOG_LEVEL=INFO`, `FAE_SQLITE_ALLOWED_DIRS=""`. Uncomment and set
-`FAE_CORS_ORIGINS` for your dashboard origin.
-
-`fly.toml` already encodes the container facts this document explains:
-
-- Two checks, not one. `/health` on a 10s grace is liveness and deliberately
-  checks nothing, so a database outage does not become a restart loop.
-  `/ready` on a **60s** grace is readiness, and the long grace keeps Fly from
-  killing a machine waiting on a cold Neon connection or mid-migration.
-- `soft_limit = 25`, `hard_limit = 35`. Every endpoint is sync and runs on
-  anyio's 40-thread pool. Admitting more concurrent requests than that pool can
-  serve does not make the service faster, it queues them somewhere with no
-  visibility.
-- `auto_stop_machines = "suspend"` with `min_machines_running = 0`. Combined
-  with a serverless Postgres that also suspends, expect the first request after
-  an idle period to be slow. That is what the 30s
-  `FAE_APP_DB_CONNECT_TIMEOUT_S` default is sized for.
-- `memory = "512mb"`, which is the same budget the `--memory` flag above sets.
-- `force_https = true`, and `[build] dockerfile = "Dockerfile"`, the same file
-  `docker build` uses. There is no second image definition to keep in sync.
-
-Fly terminates TLS and its proxy sits in front, but it does **not**
-authenticate. The service is still open to anyone who knows the hostname. On
-Fly, restrict access with Fly's own private networking or an authenticating
-service in front; `force_https` is transport security, not access control.
-
-### Verify
-
-```bash
-# Behind the proxy from "The reverse proxy", with credentials.
-until curl -sf -u analyst:<password> https://<your-host>/health >/dev/null; do sleep 1; done
-
-curl -s -u analyst:<password> https://<your-host>/health   # {"status":"ok"}
-curl -s -u analyst:<password> https://<your-host>/ready    # {"status":"ready"}
-
-# These must be 404, not 200 and not 401.
-curl -so /dev/null -w '%{http_code}\n' https://<your-host>/docs
-curl -so /dev/null -w '%{http_code}\n' https://<your-host>/openapi.json
-
-# This must be 401.
-curl -so /dev/null -w '%{http_code}\n' https://<your-host>/connections
-```
-
-On a plain `docker run`:
-
-```bash
-# Names only, so the key and the database password do not reach your terminal.
-docker exec fae env | grep -oE '^(FAE_[A-Z_]+|DATABASE_URL)=' | sort
-
-# Non-secret values, and a length check for the ones that are secret.
-docker exec fae sh -c 'echo "$FAE_CORS_ORIGINS"; echo "key is ${#FAE_FERNET_KEY} chars"'
-
-docker logs fae 2>&1 | grep 'App-state backend'
-# App-state backend=neon (from FAE_DB_BACKEND) url=postgresql+psycopg://USER:***@HOST/DB auto_migrate=True
-
-# Both should print nothing.
-docker logs fae 2>&1 | grep 'FAE_FERNET_KEY is not set'   # ephemeral key
-docker logs fae 2>&1 | grep 'App-state is SQLite'         # ephemeral app-state
-```
-
-On Fly, `fly logs` and `fly ssh console` are the equivalents.
-
----
-
+**Two writable paths, and only two.** `/app/.secrets` and `/app/data`. Run with
+`--read-only` and mount a tmpfs or volume on both, or the container dies at
+boot with `PermissionError: '.secrets'`.
 ## Image delivery
 
 Outside Fly, which builds from source on every deploy, the image has to get to
@@ -1409,7 +1068,7 @@ says otherwise. The **Image** column is filled in only where the Dockerfile's
 | `FAE_MAX_SQL_LENGTH` | `8000` | | No | Bounds how much CPU one statement can spend in `sqlparse`, which is pure Python and superlinear in token density. Raising it above ~10,000 costs nothing (sqlparse bails at its own token ceiling); lowering it below ~8,000 is the only way to cut the worst case. |
 | `FAE_SQL_VALIDATION_CACHE_SIZE` | `512` | | No | Distinct validated statements memoised, so a saved query pays parsing once instead of on every poll. `0` disables. |
 | `FAE_MAX_RESULT_BYTES` | `33554432` (32 MB) | | No | Ceiling on one result payload, measured while rows are coerced. Row count says nothing about row width. Counts against `--memory`; raise both together or neither. |
-| `FAE_CACHE_MAX_BYTES` | `67108864` (64 MB) | | No | Poll result cache budget. Bounding it by entry count instead measured out at roughly 1 GB for wide results. Counts against `--memory`; see [the production run](#docker-run-form). |
+| `FAE_CACHE_MAX_BYTES` | `67108864` (64 MB) | | No | Poll result cache budget. Bounding it by entry count instead measured out at roughly 1 GB for wide results. Counts against `--memory`; see [3. Production](#3-production). |
 | `FAE_POLL_INTERVAL_MS` | `5000` | | No | Interval the API advertises to a polling dashboard. |
 
 ### Target connection pooling
@@ -1705,7 +1364,6 @@ variable:
 
 ```bash
 FAE_HOST_PORT=8080 docker compose up -d
-FAE_HTTPS_PORT=9443 docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
 ```
 
 To find what holds the port: `ss -ltnp | grep 8000`, or
@@ -1722,7 +1380,7 @@ docker inspect --format 'OOMKilled={{.State.OOMKilled}} exit={{.State.ExitCode}}
 
 Raise `--memory`, or lower `FAE_CACHE_MAX_BYTES` (64 MB default) and
 `FAE_MAX_RESULT_BYTES` (32 MB default). The arithmetic is in
-[the production run](#docker-run-form).
+[3. Production](#3-production).
 
 Exit 137 also appears for a different reason: a `docker stop` whose 10-second
 grace elapsed. `OOMKilled` is what distinguishes them. See
@@ -1799,12 +1457,6 @@ docker rm -f fae fae-dev fae-local fae-look fae-pg
 docker network rm fae-net
 docker volume rm fae-data          # deletes the SQLite app-state database
 docker image rm fae
-```
-
-With the proxy overlay, name both files or compose will not know about Caddy:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.proxy.yml down -v
 ```
 
 The bind-mount directory from [2c](#2c-sqlite-on-a-bind-mount). It is untracked
