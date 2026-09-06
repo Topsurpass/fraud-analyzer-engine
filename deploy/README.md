@@ -355,16 +355,21 @@ Linux or WSL2. Check it:
 docker run --rm hello-world
 ```
 
-**2. Both repositories, side by side, on the branch you intend to deploy.** The
-layout matters: `ship-images.sh` looks for the dashboard at
+**2. Both repositories, side by side, on the branch you intend to deploy.**
+`master` is production for both. Build from the same branch the instance runs,
+or you will ship images that do not match the compose file and Caddyfile the
+instance reads from its own checkout - `deploy.sh` records both, and
+`deploy/deployed.log` is where that mismatch becomes visible after the fact.
+
+The layout matters too: `ship-images.sh` looks for the dashboard at
 `../../fraud-analyzer-dashboard` relative to `deploy/`.
 
 ```bash
 git clone <engine-repo>    fraud-analyzer-engine
 git clone <dashboard-repo> fraud-analyzer-dashboard
 
-git -C fraud-analyzer-engine    checkout perf/scale-25k
-git -C fraud-analyzer-dashboard checkout perf/scale-25k
+git -C fraud-analyzer-engine    checkout master
+git -C fraud-analyzer-dashboard checkout master
 ```
 
 Laid out differently? Point at it instead — either export it, or put
