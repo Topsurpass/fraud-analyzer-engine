@@ -58,6 +58,20 @@ internet.
 
 ## First deploy
 
+**Pick your route first.** The two differ only in *where the images get built*,
+and on a small instance that is the whole difference between working and not:
+
+| | Build on the instance | Build on your laptop, ship |
+|---|---|---|
+| Instance needs | ~2.5 GB RAM, ~8 GB free disk | ~400 MB RAM, ~3 GB free disk |
+| Suits | t3.small and up | t2/t3.micro |
+| Steps | 1 → 6 below | 1 → 3, then [Build on your laptop, ship to the instance](#build-on-your-laptop-ship-to-the-instance), then 5 → 6 |
+
+`preflight.sh` tells you which you are on before anything is built. If it fails
+the memory or disk check, take the ship route — it is not a workaround, it is
+the better shape: building is a five-minute peak, and sizing an instance for
+its worst five minutes is how you pay for a t3.small to idle.
+
 ### 1. On your laptop, rehearse it
 
 Nothing here needs AWS. It builds both images, runs a real Postgres with TLS,
@@ -112,6 +126,10 @@ Three values have to be right. `.env.prod.example` explains each in place.
 ./verify.sh
 ```
 
+If `preflight.sh` failed on memory or disk, stop here and go to
+[Build on your laptop, ship to the instance](#build-on-your-laptop-ship-to-the-instance).
+Come back at step 5.
+
 ### 5. Create the first administrator
 
 There is no HTTP route that mints an administrator, deliberately — an endpoint
@@ -160,6 +178,9 @@ cd ~/fraud-analyzer-engine/deploy
 Options: `--no-build` restarts from the images already on the host; `--pull`
 rebuilds from scratch, ignoring the layer cache.
 
+On a small instance, redeploy the other way instead — build on your laptop and
+ship: [Redeploying afterwards](#redeploying-afterwards).
+
 ---
 
 ## Sizing the instance
@@ -197,10 +218,10 @@ df -h /                                # confirm
 The two-step is not optional: resizing the EBS volume in AWS does not resize
 the partition on it, and nothing warns you that it did not.
 
-### Not enough memory, or: building somewhere else
+### Not enough memory
 
-Add swap first — `bootstrap-ec2.sh` does it automatically under 3.5 GB of RAM,
-or by hand:
+Add swap — `bootstrap-ec2.sh` does it automatically under 3.5 GB of RAM, or by
+hand:
 
 ```bash
 sudo fallocate -l 3G /swapfile && sudo chmod 600 /swapfile
@@ -209,32 +230,130 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
 That is enough to *finish*, but on 1 GB of RAM and 2 cores the dashboard build
-swaps hard and can take 15–30 minutes. **The better answer is not to build
-there at all.** Build on your laptop and ship the images:
+swaps hard and can take 15–30 minutes. The section below avoids it entirely.
+
+---
+
+## Build on your laptop, ship to the instance
+
+The instance never builds anything. You build both images where there are
+resources, stream them over ssh, and start them there.
+
+This is the recommended route on a t2/t3.micro, and it is worth reading even if
+your instance is bigger: redeploys get much faster, and the instance stays
+sized for what it serves rather than for its worst five minutes.
+
+### Why
+
+| | Building | Running |
+|---|---|---|
+| Memory | ~2.5 GB peak (the Next build) | under 400 MB |
+| Disk | ~8 GB (node_modules, layer cache) | ~1 GB (two images) |
+| Time | 3–5 min on a laptop, 15–30 min on a micro | — |
+
+A micro instance runs this comfortably and cannot build it. So do not make it.
+
+### Before you start
+
+On the **instance**, once:
 
 ```bash
-# on your machine
-cd fraud-analyzer-engine/deploy
-./ship-images.sh ubuntu@1.2.3.4 -i ~/.ssh/your-key.pem
+cd ~/fraud-analyzer-engine/deploy
+./bootstrap-ec2.sh          # installs Docker; log out and back in afterwards
+cp .env.prod.example .env.prod && chmod 600 .env.prod && nano .env.prod
+```
 
-# then on the instance
+The configuration lives on the instance, not in the image — nothing
+environment-specific is baked in, which is exactly why the image you build on
+your laptop is correct there. No secret passes through the build or the
+transfer.
+
+You also need about **3 GB free** on the instance to load the images. If you do
+not have it, do [Not enough disk](#not-enough-disk) first.
+
+### Ship
+
+On your **laptop**:
+
+```bash
 cd fraud-analyzer-engine/deploy
+./ship-images.sh ubuntu@YOUR-INSTANCE-IP -i ~/.ssh/your-key.pem
+```
+
+Anything after the host is passed straight to `ssh`, so `-i`, `-p`, `-J` and
+friends all work. If your key is already in the agent (`ssh-add`), the `-i` is
+unnecessary.
+
+What it does, and what it refuses to do:
+
+1. Checks ssh works non-interactively and that Docker is usable as that user —
+   before spending minutes on a build it cannot deliver.
+2. Checks the instance has room to load the images.
+3. Builds `switchboard-analyzer:latest` and `switchboard-dashboard:latest` with
+   plain `docker build`. Not `docker compose build`, which interpolates the
+   whole compose file first and would demand `DATABASE_URL` and
+   `FAE_FERNET_KEY` on your laptop just to compile TypeScript.
+4. Streams them: `docker save | gzip -1 | ssh 'gunzip | docker load'`. No
+   temporary tarball at either end — which is the point when the instance's
+   disk is the constraint. About 550 MB uncompressed, less on the wire.
+5. Compares image IDs afterwards. Presence is not enough: an older image of the
+   same name would otherwise read as success and you would keep running last
+   week's build.
+
+Expect 3–6 minutes, most of it the transfer.
+
+### Start
+
+On the **instance**:
+
+```bash
+cd ~/fraud-analyzer-engine/deploy
+./deploy.sh --no-build
+./verify.sh
+```
+
+`--no-build` is what makes the whole thing worthwhile: compose finds the images
+by the names `ship-images.sh` tagged them with and starts them without building.
+Migrations still run at analyzer startup, as usual.
+
+Then, on a first deploy only:
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml \
+    exec analyzer fae create-admin
+```
+
+### Redeploying afterwards
+
+```bash
+# laptop: after pulling or committing changes in either repository
+cd fraud-analyzer-engine/deploy
+./ship-images.sh ubuntu@YOUR-INSTANCE-IP -i ~/.ssh/your-key.pem
+
+# instance
+cd ~/fraud-analyzer-engine/deploy
+git pull                      # picks up compose/Caddyfile/script changes
 ./deploy.sh --no-build && ./verify.sh
 ```
 
-`ship-images.sh` builds both images locally, streams them over ssh
-(`docker save | gzip | docker load` — no temporary tarball on either side, which
-matters when the instance's disk is the constraint), and compares image ids
-afterwards so an older image of the same name cannot pass as success. About
-550 MB uncompressed, less on the wire.
+`git pull` on the instance still matters: the compose file, the Caddyfile and
+the scripts are read from the checkout, not from the image.
 
-`--no-build` then starts them by name without building anything. Nothing
-environment-specific is baked into either image — they read their configuration
-from the environment at run time — so the image you tested locally is the image
-that runs.
+Docker layer caching means the second and later ships are much faster — usually
+only the layers that actually changed are rebuilt, though the transfer sends
+whole layers, so a change to application source moves more bytes than a change
+to a comment.
 
-This also makes redeploys much faster, and keeps the instance sized for what it
-actually serves rather than for its worst five minutes.
+### If something goes wrong
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Cannot ssh to ... non-interactively` | key not offered | `ssh-add ~/.ssh/your-key.pem`, or pass `-i` |
+| `docker is not usable as that user` | not in the docker group yet | run `./bootstrap-ec2.sh` on the instance, then log out and back in |
+| `Only N GB free on the instance` | root volume too small | [Not enough disk](#not-enough-disk) |
+| Dashboard build killed with no error | your laptop ran out of memory too | close things, or build on a bigger machine |
+| Transfer stops partway | connection dropped | nothing on the instance changed — `docker load` applies an image only once the stream completes. Run it again. |
+| `deploy.sh --no-build` says an image is missing | ship did not finish, or names drifted | `ssh HOST 'docker images \| grep switchboard'` — expect `switchboard-analyzer` and `switchboard-dashboard` |
 
 ---
 

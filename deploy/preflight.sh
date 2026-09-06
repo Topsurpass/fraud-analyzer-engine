@@ -55,10 +55,10 @@ if [[ $MEM_MB -gt 0 && $USABLE_MB -lt 2600 ]]; then
 	# The failure this prevents has no useful symptom: the kernel kills a
 	# compiler process and `npm run build` exits with no message about memory.
 	fail "only ${USABLE_MB} MB of memory + swap; the dashboard build needs about 2.5 GB" \
-		"Add swap - ./bootstrap-ec2.sh does this, or by hand: sudo fallocate -l 3G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile && echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab. On ${MEM_MB} MB of RAM the build will be slow even then; see 'Building somewhere else' in deploy/README.md for the alternative."
+		"Add swap - ./bootstrap-ec2.sh does this, or by hand: sudo fallocate -l 3G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile && echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab. On ${MEM_MB} MB of RAM the build will be slow even then. Better: do not build here at all - see 'Build on your laptop, ship to the instance' in deploy/README.md, or just run ./ship-images.sh from your laptop."
 elif [[ $MEM_MB -lt 1800 ]]; then
 	warn "${MEM_MB} MB of RAM, reaching ${USABLE_MB} MB with swap" \
-		"Enough to finish, but the dashboard build will swap hard and can take 15-30 minutes on ${CORES} cores. 'Building somewhere else' in deploy/README.md avoids it entirely."
+		"Enough to finish, but the dashboard build will swap hard and can take 15-30 minutes on ${CORES} cores. 'Build on your laptop, ship to the instance' in deploy/README.md avoids it entirely."
 else
 	pass "memory is enough to build the dashboard image (${USABLE_MB} MB usable)"
 fi
