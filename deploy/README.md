@@ -48,6 +48,7 @@ internet.
 | `deploy.sh` | Builds, starts, waits for healthy. |
 | `verify.sh` | Proves the running stack actually works. 8 sections, ~45 checks. |
 | `rehearse.sh` | Runs the whole thing locally against a throwaway Postgres. |
+| `api-docs.sh` | Opens an ssh tunnel to the engine's `/docs`, which is deliberately not public. |
 | `ship-images.sh` | Builds both images elsewhere and sends them over ssh, so a small instance never builds. |
 | `docker-compose.prod.yml` | The three services. |
 | `docker-compose.rehearsal.yml` | Overlay adding a local TLS Postgres, for `rehearse.sh`. |
@@ -180,6 +181,32 @@ rebuilds from scratch, ignoring the layer cache.
 
 On a small instance, redeploy the other way instead — build on your laptop and
 ship: [Redeploying afterwards](#redeploying-afterwards).
+
+---
+
+## Reading the API documentation
+
+`/docs` is deliberately unreachable from the internet, and `verify.sh` asserts
+it returns 404 from the public address. That is not a misconfiguration to work
+around: `/docs` is not a reference page, it is an interactive form that composes
+and executes SQL against whichever customer database a connection points at,
+with a Try-it-out button beside every endpoint.
+
+Reach it over ssh instead:
+
+```bash
+./api-docs.sh ubuntu@YOUR-IP -i ~/.ssh/your-key.pem
+# then open http://localhost:8899/docs
+```
+
+It looks up the analyzer container's address on the instance (it changes
+whenever the stack is recreated, so a pasted-in address silently forwards to
+nothing), forwards a local port to it, and closes when you press Ctrl-C.
+Nothing is published on the instance and no configuration changes.
+
+If you only want the contract rather than a live instance,
+`contracts/openapi.json` in this repository is the same specification, and CI
+fails if it drifts from the code.
 
 ---
 
