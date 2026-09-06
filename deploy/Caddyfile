@@ -13,6 +13,24 @@
 	# runtime, so it has no business listening inside a deployment.
 	admin off
 
+	# Which certificate to present when the client sends no SNI at all.
+	#
+	# Required whenever SWITCHBOARD_PUBLIC_HOST is an IP address, and the
+	# failure without it is total: SNI cannot carry an IP literal (RFC 6066),
+	# so a browser opening https://<ip> sends none, Caddy cannot tell which
+	# site is wanted, and the handshake dies as
+	#
+	#     tlsv1 alert internal error   (SSL alert 80)
+	#
+	# Caddy has the right certificate the whole time and never gets to offer
+	# it. Measured against this exact deployment: with -servername the
+	# handshake succeeded, without it the connection was refused at TLS - which
+	# is what every browser was doing.
+	#
+	# Harmless once a real domain is in use: clients then send SNI and this is
+	# never consulted.
+	default_sni {$SWITCHBOARD_PUBLIC_HOST}
+
 	# Caddy would otherwise generate its own HTTP-to-HTTPS redirect on :80,
 	# which would collide with the explicit `:80` block below. This turns the
 	# generated one off and leaves that block as the only thing on port 80.

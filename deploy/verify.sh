@@ -278,12 +278,15 @@ section "3. The analyzer is not reachable from anywhere it should not be"
 # The most important section here. Everything else being correct does not
 # matter if this is wrong.
 
-# `compose port` prints ":0" for an unpublished port, not an empty string, so
-# testing for emptiness alone reported the safe case as a failure. Both spellings
-# mean "no host port", and "0.0.0.0:0" is the third the CLI has been seen to use.
+# An unpublished port is reported differently by every compose version that has
+# ever been asked: "" on some, ":0" on others, "0.0.0.0:0", and on Docker 29
+# "invalidIP:0". They all mean the same thing, and the port number is the part
+# that carries the meaning - so match on that rather than trying to enumerate
+# the spellings, which is how this check produced a false FAIL on a correctly
+# configured production host.
 PUBLISHED="$(compose port analyzer 8000 2>/dev/null </dev/null || true)"
 PUBLISHED="$(printf '%s' "$PUBLISHED" | tr -d '[:space:]')"
-if [[ -z "$PUBLISHED" || "$PUBLISHED" == ":0" || "$PUBLISHED" == "0.0.0.0:0" ]]; then
+if [[ -z "$PUBLISHED" || "$PUBLISHED" == *:0 ]]; then
 	pass "the analyzer publishes no host port"
 else
 	fail "the analyzer is published on the host at $PUBLISHED" \
