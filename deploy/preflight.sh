@@ -288,11 +288,17 @@ elif [[ ! -f "$DASH_ABS/Dockerfile" ]]; then
 		"That directory is not the dashboard checkout, or it is on a branch that predates the production image."
 else
 	pass "dashboard checkout found at $DASH_ABS"
-	if grep -q 'output: "standalone"' "$DASH_ABS/next.config.ts" 2>/dev/null; then
+	# A regex, not the literal string. The setting is conditional -
+	# `output: process.env.VERCEL ? undefined : "standalone"` - because
+	# standalone breaks Vercel's own file tracing, and an exact-string grep
+	# would report that correct config as broken. deploy.sh refuses to run on a
+	# preflight failure, so this check being too strict would block deploys
+	# rather than merely mislead.
+	if grep -qE 'output:.*"standalone"' "$DASH_ABS/next.config.ts" 2>/dev/null; then
 		pass "next.config.ts emits a standalone bundle, which the Dockerfile expects"
 	else
 		fail "next.config.ts does not set output: \"standalone\"" \
-			"The image copies .next/standalone, which is not produced without it, and the build fails at the COPY."
+			"The image copies .next/standalone, which is not produced without it, and the build fails at the COPY. Note the setting is Docker-only: it is switched off when VERCEL is set, so check the condition rather than expecting a bare string."
 	fi
 fi
 

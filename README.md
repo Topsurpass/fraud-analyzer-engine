@@ -109,6 +109,13 @@ npm run dev                    # http://localhost:3000
 variable is inlined into the client bundle, which would publish the engine's
 address to every browser and undo the whole design.
 
+If you also build the dashboard on Vercel for previews, note that
+`output: "standalone"` in `next.config.ts` is switched off there. Vercel traces
+files itself and reads those traces from `.next/`; standalone moves them, and the
+deploy fails on a file it cannot open after a build that looked fine. The
+production image needs standalone, Vercel must not have it, and the config keys
+off `VERCEL` so neither side needs configuring.
+
 ### 4. Something to look at
 
 An empty dashboard is hard to develop against, so there is a seeder that builds
