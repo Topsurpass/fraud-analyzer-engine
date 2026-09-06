@@ -121,17 +121,32 @@ fi
 
 section "Confirm"
 
+# Compare layer DiffIDs, not `.Id`.
+#
+# `.Id` is not stable across a save/load boundary. Docker 29 defaults to the
+# containerd image store, which derives the image ID from the OCI manifest,
+# while the classic graph store derives it from the config blob - so loading an
+# image built on an older Docker onto a newer one produces a different `.Id`
+# for byte-identical content. Measured against this exact pair: local
+# sha256:418fd6c5..., remote sha256:9f2159ed..., same image.
+#
+# `.RootFS.Layers` is the list of DiffIDs - the sha256 of each uncompressed
+# layer tar. That is content, not bookkeeping, so it survives save/load and
+# survives the store change. Hashed here only to keep the message short.
+#
+# Still a real check, and still the point of doing it: an older image of the
+# same name sitting on the instance has different layers and is caught.
 for image in "$ANALYZER_IMAGE" "$DASHBOARD_IMAGE"; do
-	LOCAL_ID="$(docker image inspect "$image" --format '{{.Id}}' 2>/dev/null || echo local-unknown)"
-	REMOTE_ID="$(ssh "${SSH_OPTS[@]}" "$TARGET" "docker image inspect '$image' --format '{{.Id}}' 2>/dev/null" || echo remote-missing)"
-	if [[ "$LOCAL_ID" == "$REMOTE_ID" ]]; then
-		pass "$image is on the instance, same image id"
+	LOCAL_FP="$(docker image inspect "$image" --format '{{range .RootFS.Layers}}{{.}}{{end}}' 2>/dev/null | sha256sum | cut -c1-16)"
+	REMOTE_FP="$(ssh "${SSH_OPTS[@]}" "$TARGET" "docker image inspect '$image' --format '{{range .RootFS.Layers}}{{.}}{{end}}' 2>/dev/null" | sha256sum | cut -c1-16)"
+
+	if [[ -z "$LOCAL_FP" || "$LOCAL_FP" == "$(printf '' | sha256sum | cut -c1-16)" ]]; then
+		fail "$image was not built here" "Nothing to compare against. Re-run the build."
+	elif [[ "$LOCAL_FP" == "$REMOTE_FP" ]]; then
+		pass "$image is on the instance, layer-for-layer identical ($LOCAL_FP)"
 	else
-		# Comparing ids, not just presence: an older image of the same name
-		# sitting there would otherwise read as success, and the instance would
-		# quietly keep running last week's build.
 		fail "$image on the instance does not match what was built here" \
-			"local ${LOCAL_ID:0:19}, remote ${REMOTE_ID:0:19}. Run this script again."
+			"local layers $LOCAL_FP, remote $REMOTE_FP. The transfer did not land, or an older image of that name is in the way. Run this script again."
 	fi
 done
 
