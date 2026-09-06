@@ -44,8 +44,25 @@ HOST="$(env_value SWITCHBOARD_PUBLIC_HOST || echo localhost)"
 HTTPS_PORT="${SWITCHBOARD_HTTPS_PORT:-$(env_value SWITCHBOARD_HTTPS_PORT || echo 443)}"
 HTTP_PORT="${SWITCHBOARD_HTTP_PORT:-$(env_value SWITCHBOARD_HTTP_PORT || echo 80)}"
 HTTPS_PORT="${HTTPS_PORT:-443}"; HTTP_PORT="${HTTP_PORT:-80}"
-BASE="https://${HOST}$([[ "$HTTPS_PORT" != "443" ]] && printf ':%s' "$HTTPS_PORT")"
-HTTP_BASE="http://${HOST}$([[ "$HTTP_PORT" != "80" ]] && printf ':%s' "$HTTP_PORT")"
+
+# Written as if/else rather than `$( [[ test ]] && printf ... )`.
+#
+# That shorter form is a trap under `set -e`: when the port IS the default the
+# test is false, so the command substitution exits non-zero, so the assignment
+# does - and the script dies silently on its own second line, printing nothing
+# at all. It failed exactly that way in production, and could not fail that way
+# in rehearsal, which runs on 8443/8080 and therefore always took the true
+# branch. The one configuration never exercised locally was the default one.
+if [[ "$HTTPS_PORT" == "443" ]]; then
+	BASE="https://${HOST}"
+else
+	BASE="https://${HOST}:${HTTPS_PORT}"
+fi
+if [[ "$HTTP_PORT" == "80" ]]; then
+	HTTP_BASE="http://${HOST}"
+else
+	HTTP_BASE="http://${HOST}:${HTTP_PORT}"
+fi
 
 printf '%sSwitchboard verification%s  %s\n' "$C_BOLD" "$C_RESET" "$(date -u +%FT%TZ)"
 info "target: $BASE"
