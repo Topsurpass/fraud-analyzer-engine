@@ -74,14 +74,44 @@ if [[ ${DISK_AVAIL_GB:-0} -lt 8 ]]; then
 	ROOT_DEV="$(findmnt -no SOURCE / 2>/dev/null || true)"
 	ROOT_SIZE="$(df -BG --output=size / 2>/dev/null | tail -1 | tr -dc '0-9' || echo '?')"
 	info "root filesystem is ${ROOT_SIZE} GB on ${ROOT_DEV:-unknown}"
+
+	# Reclaimable first: it is instant, needs no AWS, and a failed build leaves
+	# layers that are usually the largest thing on the volume.
 	if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-		RECLAIM="$(docker system df --format '{{.Type}} {{.Reclaimable}}' 2>/dev/null | tr '\n' ', ' || true)"
+		RECLAIM="$(docker system df --format '{{.Type}}: {{.Reclaimable}}' 2>/dev/null | tr '\n' ', ' || true)"
 		info "docker holds: ${RECLAIM:-nothing measurable}"
+		info "try this first, it needs no AWS change:  docker system prune -af"
 	fi
-	info "if docker is holding little, the volume is simply too small - grow it:"
-	info "  1. EC2 console -> Volumes -> select this instance's root volume -> Modify -> 30 GiB (the free-tier ceiling)"
-	info "  2. on the instance:  sudo growpart ${ROOT_DEV%%[0-9]*} ${ROOT_DEV##*[!0-9]}  &&  sudo resize2fs ${ROOT_DEV}"
-	info "if docker is holding gigabytes, reclaim first:  docker system prune -af --volumes"
+
+	# Then say WHICH resize is needed, rather than listing both and leaving the
+	# reader to work it out. Running growpart when the disk has not been
+	# enlarged prints "NOCHANGE: partition N ... cannot be grown", which reads
+	# like growpart is broken when in fact the AWS-side step has not happened.
+	if [[ -n "$ROOT_DEV" ]] && command -v lsblk >/dev/null 2>&1; then
+		PART_NAME="$(basename "$ROOT_DEV")"
+		DISK_NAME="$(lsblk -no PKNAME "$ROOT_DEV" 2>/dev/null | head -1 || true)"
+		if [[ -n "$DISK_NAME" ]]; then
+			DISK_BYTES="$(lsblk -bdno SIZE "/dev/$DISK_NAME" 2>/dev/null || echo 0)"
+			PART_BYTES="$(lsblk -bdno SIZE "$ROOT_DEV" 2>/dev/null || echo 0)"
+			# A gigabyte of slack: the other partitions on an Ubuntu AMI (/boot,
+			# EFI) legitimately account for a little over 1 GB, so an exact
+			# comparison would always claim there is room to grow.
+			SLACK=$(( (DISK_BYTES - PART_BYTES) / 1024 / 1024 / 1024 ))
+			info "disk /dev/${DISK_NAME} is $((DISK_BYTES / 1024 / 1024 / 1024)) GB, partition ${ROOT_DEV} is $((PART_BYTES / 1024 / 1024 / 1024)) GB"
+			if [[ $SLACK -ge 2 ]]; then
+				info "the disk is already bigger than the partition - grow the partition into it:"
+				info "  sudo growpart /dev/${DISK_NAME} ${PART_NAME##*[!0-9]}  &&  sudo resize2fs ${ROOT_DEV}"
+			else
+				info "the partition already fills the disk, so growpart has nothing to grow into."
+				info "enlarge the VOLUME in AWS first - growpart cannot make a disk bigger, only AWS can:"
+				info "  EC2 console -> Elastic Block Store -> Volumes -> this instance's volume"
+				info "  -> Actions -> Modify volume -> Size 30 -> Modify   (free-tier ceiling, no reboot)"
+				info "then confirm 'lsblk /dev/${DISK_NAME}' shows the new size, and only then:"
+				info "  sudo growpart /dev/${DISK_NAME} ${PART_NAME##*[!0-9]}  &&  sudo resize2fs ${ROOT_DEV}"
+			fi
+		fi
+	fi
+	info "full walkthrough: 'Not enough disk' in deploy/README.md"
 else
 	pass "disk space on / is sufficient (${DISK_AVAIL_GB} GB free)"
 fi

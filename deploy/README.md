@@ -198,39 +198,129 @@ cannot build it. Two ways forward, and the second is usually better.
 
 ### Not enough disk
 
-A fresh Ubuntu AMI gives you an 8 GB root volume, of which the OS already uses
-most. `preflight.sh` prints what Docker is holding; if that is small, the
-volume is simply too small and pruning reclaims nothing.
-
-Grow it — 30 GB is the free-tier ceiling, so this costs nothing:
-
-1. EC2 console → **Volumes** → select the instance's root volume → **Modify** →
-   30 GiB → Modify. Takes a minute, no reboot, no downtime.
-2. On the instance, grow the partition and the filesystem to match:
+**Try this first — it is instant and often enough.** A failed build leaves
+layers behind, and they are usually the largest thing on the volume:
 
 ```bash
-lsblk                                  # find the root device, e.g. nvme0n1p1
-sudo growpart /dev/nvme0n1 1
-sudo resize2fs /dev/nvme0n1p1
-df -h /                                # confirm
+docker system df                  # what Docker is holding
+docker system prune -af           # reclaim all of it
+df -h /
 ```
 
-The two-step is not optional: resizing the EBS volume in AWS does not resize
-the partition on it, and nothing warns you that it did not.
+The ship route needs about **3 GB free**. If pruning gets you there, stop here;
+you never have to touch AWS.
+
+If it does not, the volume itself is too small. A fresh Ubuntu AMI gives you
+8 GB, of which the OS takes most.
+
+#### Step 1 — enlarge the volume in AWS
+
+This is the step that is easy to skip, and skipping it makes step 2 fail in a
+way that looks like step 2 is broken:
+
+```
+NOCHANGE: partition 1 is size 14452703. it cannot be grown
+```
+
+That message means the *disk* is still 8 GB. `growpart` expands a partition
+into free space on the disk; it cannot make the disk bigger. Only AWS can.
+
+30 GiB is the free-tier ceiling, so this costs nothing:
+
+> EC2 console → **Elastic Block Store → Volumes** → select the volume attached
+> to this instance → **Actions → Modify volume** → Size `30` → **Modify**.
+>
+> No reboot, no downtime. State goes `in-use - optimizing` and is usable
+> immediately.
+
+Or from the instance, if it has an IAM role with `ec2:DescribeVolumes` and
+`ec2:ModifyVolume` (`aws` is not preinstalled on Ubuntu:
+`sudo snap install aws-cli --classic`):
+
+```bash
+TOKEN=$(curl -sX PUT http://169.254.169.254/latest/api/token \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')
+IID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/instance-id)
+AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/placement/availability-zone)
+REGION=${AZ%?}
+
+VOL=$(aws ec2 describe-volumes --region "$REGION" \
+  --filters "Name=attachment.instance-id,Values=$IID" \
+  --query 'Volumes[0].VolumeId' --output text)
+echo "root volume: $VOL"
+
+aws ec2 modify-volume --region "$REGION" --volume-id "$VOL" --size 30
+```
+
+#### Step 2 — confirm AWS actually did it
+
+**Do not skip this.** It is the difference between step 3 working and step 3
+printing `NOCHANGE` at you:
+
+```bash
+lsblk /dev/nvme0n1
+```
+
+The **disk** line must now read `30G`. If it still says `8G`, step 1 has not
+taken effect yet — wait ten seconds and look again. The partition under it will
+still show the old size; that is what step 3 fixes.
+
+```
+nvme0n1      259:0    0   30G  0 disk     <-- must say 30G before continuing
+└─nvme0n1p1  259:1    0  6.9G  0 part /   <-- still small, that is expected
+```
+
+#### Step 3 — grow the partition and the filesystem
+
+Two commands, because they are two different things and neither implies the
+other. Note the argument style: `growpart` takes the disk and the partition
+number **as separate arguments**, `resize2fs` takes the partition device.
+
+```bash
+sudo growpart /dev/nvme0n1 1      # disk, then partition number
+sudo resize2fs /dev/nvme0n1p1     # the partition itself
+df -h /                           # confirm
+```
+
+On a t2 instance the device is `/dev/xvda` and `/dev/xvda1` instead. `lsblk`
+tells you which you have.
 
 ### Not enough memory
 
-Add swap — `bootstrap-ec2.sh` does it automatically under 3.5 GB of RAM, or by
-hand:
+**On the ship route you can skip this entirely.** Running the stack needs under
+400 MB; the 2.5 GB peak is the *build*, and the build happens on your laptop.
+Disk is the only constraint that matters on the instance.
+
+If you are building on the instance, it needs swap. `bootstrap-ec2.sh` adds it
+automatically under 3.5 GB of RAM, so check before creating one:
 
 ```bash
-sudo fallocate -l 3G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+swapon --show
+free -h
 ```
 
-That is enough to *finish*, but on 1 GB of RAM and 2 cores the dashboard build
-swaps hard and can take 15–30 minutes. The section below avoids it entirely.
+If that lists `/swapfile`, you already have it — leave it alone. Trying to
+`fallocate` over an active swapfile fails with:
+
+```
+fallocate: fallocate failed: Text file busy
+```
+
+which means it is in use, not that anything is wrong. To replace it with a
+bigger one, turn it off first — and note it needs the free disk to exist:
+
+```bash
+sudo swapoff /swapfile && sudo rm /swapfile
+sudo fallocate -l 3G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+grep -q '^/swapfile ' /etc/fstab || \
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+Even with swap, on 1 GB of RAM and 2 cores the dashboard build swaps hard and
+can take 15–30 minutes. The section below avoids it entirely.
 
 ---
 
