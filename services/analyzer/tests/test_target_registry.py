@@ -333,6 +333,35 @@ def test_postgres_connect_args_pin_read_only_and_timeout(monkeypatch):
     assert "idle_in_transaction_session_timeout=7000" in options
 
 
+def test_pooled_neon_host_sends_no_startup_options():
+    """Regression: Neon's pooler rejects `options` with "unsupported startup
+    parameter in options: statement_timeout"."""
+    conn = _pg(host="ep-cool-name-123456-pooler.us-east-1.aws.neon.tech")
+    assert reg.is_pooled_postgres(conn)
+    args = reg.postgres_connect_args(conn)
+    assert "options" not in args
+    assert args["sslmode"] == "require"
+
+
+def test_direct_host_still_sends_startup_options():
+    conn = _pg(host="ep-cool-name-123456.us-east-1.aws.neon.tech")
+    assert not reg.is_pooled_postgres(conn)
+    assert "statement_timeout" in reg.postgres_connect_args(conn)["options"]
+
+
+def test_pooled_guard_runs_first_and_is_transaction_scoped():
+    executed = []
+
+    class Fake:
+        def execute(self, stmt):
+            executed.append(str(stmt))
+
+    reg._guard_pooled_transaction(Fake(), 7000)
+    assert executed[0] == "SET TRANSACTION READ ONLY"
+    assert executed[1] == "SET LOCAL statement_timeout = 7000"
+    assert executed[2] == "SET LOCAL idle_in_transaction_session_timeout = 7000"
+
+
 def test_sqlite_interrupt_message_maps_to_timeout():
     orig = sqlite3.OperationalError("interrupted")
     assert reg.translate_db_error(_wrap(orig)).error_code == ErrorCode.QUERY_TIMEOUT

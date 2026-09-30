@@ -418,7 +418,11 @@ bounded by the statement timeout, which is what actually protects the target.
 | SQLite | opened with the `mode=ro` URI flag | progress handler aborting past a deadline |
 
 PostgreSQL gets the setting as a connection option rather than a per-transaction
-`SET TRANSACTION READ ONLY`, so it cannot be forgotten on some code path. SQLite
+`SET TRANSACTION READ ONLY`, so it cannot be forgotten on some code path.
+The exception is a PgBouncer-fronted host (Neon's `-pooler` endpoints), which
+rejects startup options with "unsupported startup parameter". For those,
+`read_only_connection` runs `SET TRANSACTION READ ONLY` and `SET LOCAL
+statement_timeout` as the first statements of each transaction instead. SQLite
 has no server-side statement timeout at all, so the only way to bound a runaway
 query is the progress handler, which SQLite calls every N virtual-machine
 instructions.

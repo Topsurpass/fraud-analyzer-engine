@@ -362,6 +362,33 @@ def resolve_ca_bundle(conn: Connection) -> str | None:
     return None
 
 
+def is_pooled_postgres(conn: Connection) -> bool:
+    """True for a PgBouncer-fronted endpoint, which rejects startup options.
+
+    Neon's pooled hostname carries ``-pooler`` in the first label
+    (``ep-x-pooler.region.aws.neon.tech``). The pooler answers any startup
+    ``options`` packet with "unsupported startup parameter", so the guards
+    must be sent as statements instead (see :func:`_guard_pooled_transaction`).
+    """
+    if conn.db_type != DbType.POSTGRES or not conn.host:
+        return False
+    return "-pooler" in conn.host.split(".")[0].lower()
+
+
+def _guard_pooled_transaction(sa_conn: SAConnection, timeout_ms: int) -> None:
+    """Apply the read-only and timeout guards inside the open transaction.
+
+    Must be the first statements of the transaction: ``SET TRANSACTION`` is
+    refused after a query, and ``SET LOCAL`` is used so nothing leaks into
+    the next client that PgBouncer hands this server connection to.
+    """
+    sa_conn.execute(text("SET TRANSACTION READ ONLY"))
+    sa_conn.execute(text(f"SET LOCAL statement_timeout = {int(timeout_ms)}"))
+    sa_conn.execute(
+        text(f"SET LOCAL idle_in_transaction_session_timeout = {int(timeout_ms)}")
+    )
+
+
 def postgres_connect_args(conn: Connection) -> dict:
     """libpq options for a read-only, time-bounded, TLS-configured session.
 
@@ -377,14 +404,15 @@ def postgres_connect_args(conn: Connection) -> dict:
     timeout_ms = settings.query_timeout_ms
     args = {
         "connect_timeout": settings.connect_timeout_s,
-        "options": (
-            f"-c default_transaction_read_only=on "
-            f"-c statement_timeout={timeout_ms} "
-            f"-c idle_in_transaction_session_timeout={timeout_ms}"
-        ),
         # libpq speaks these spellings natively, so the enum is the mapping.
         "sslmode": conn.ssl_mode.value,
     }
+    if not is_pooled_postgres(conn):
+        args["options"] = (
+            f"-c default_transaction_read_only=on "
+            f"-c statement_timeout={timeout_ms} "
+            f"-c idle_in_transaction_session_timeout={timeout_ms}"
+        )
     bundle = resolve_ca_bundle(conn)
     if bundle:
         args["sslrootcert"] = bundle
@@ -605,6 +633,8 @@ def read_only_connection(
         with engine.connect() as sa_conn:
             if conn.db_type == DbType.SQLITE:
                 raw_sqlite = _install_sqlite_deadline(sa_conn, timeout_s, state)
+            elif is_pooled_postgres(conn):
+                _guard_pooled_transaction(sa_conn, int(timeout_s * 1000))
             try:
                 yield sa_conn
             finally:
