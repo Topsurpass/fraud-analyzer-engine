@@ -46,6 +46,7 @@ class ErrorCode(StrEnum):
     TABLE_NOT_FOUND = "TABLE_NOT_FOUND"
     DASHBOARD_NOT_FOUND = "DASHBOARD_NOT_FOUND"
     USER_NOT_FOUND = "USER_NOT_FOUND"
+    LIST_NOT_FOUND = "LIST_NOT_FOUND"
 
     # --- 409 ---------------------------------------------------------------
     DUPLICATE_NAME = "DUPLICATE_NAME"
@@ -59,6 +60,9 @@ class ErrorCode(StrEnum):
     LAST_ADMIN = "LAST_ADMIN"
     #: The query has a published chart, so its definition is fixed.
     QUERY_FROZEN = "QUERY_FROZEN"
+    LIST_NAME_TAKEN = "LIST_NAME_TAKEN"
+    #: A flag rule still uses the list. ``detail.rules`` names each one.
+    LIST_IN_USE = "LIST_IN_USE"
 
     # --- 422 ---------------------------------------------------------------
     REQUEST_VALIDATION_ERROR = "REQUEST_VALIDATION_ERROR"
@@ -106,6 +110,9 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.DUPLICATE_EMAIL: 409,
     ErrorCode.LAST_ADMIN: 409,
     ErrorCode.QUERY_FROZEN: 409,
+    ErrorCode.LIST_NAME_TAKEN: 409,
+    ErrorCode.LIST_IN_USE: 409,
+    ErrorCode.LIST_NOT_FOUND: 404,
     ErrorCode.REQUEST_VALIDATION_ERROR: 422,
     ErrorCode.RATE_LIMITED: 429,
     ErrorCode.DB_UNREACHABLE: 502,

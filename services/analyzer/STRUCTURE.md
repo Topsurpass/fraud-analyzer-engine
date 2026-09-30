@@ -12,6 +12,7 @@ is this?".
 | Add or remove a chart type | `app/policy/chart_types.py`: the enum member and its `REQUIRED_FIELDS` entry | Frontend must learn to draw it. No migration to add. Removing one also breaks old migrations that import it (see the file header) |
 | Add a flag-rule comparison (a new operator) | `app/policy/flag_rules.py`, then `app/features/flag_rules/engine.py` (`evaluate_condition`) | Add a row to `_OPERATOR_TRUE_CASES` in `tests/test_policy.py`; it fails until you do |
 | Add a flag severity | `app/policy/flag_rules.py` (member and rank in `SEVERITY_ORDER`) | Nothing else; every ranking in the code reads `SEVERITY_ORDER`, and `tests/test_policy.py` checks it |
+| Add a list operator (a comparison against a named list) | `app/policy/flag_rules.py` (member and `LIST_OPERATORS`), then `app/features/flag_rules/engine.py` (`evaluate_condition`, reads `ConditionSpec.members`) | Add a row to `_OPERATOR_TRUE_CASES` in `tests/test_policy.py` and cases to `tests/test_list_matching.py`. How a cell becomes a match key is `list_key` in `app/features/lists/matching.py` |
 | Change what a rule matches on, or how conditions combine | `app/features/flag_rules/engine.py` | `tests/test_flagging.py` |
 | Add or edit a flag rule, chart, or saved query itself | It is data, not code: use the API (`PUT /queries/{id}/flag-rules`, `PUT /queries/{id}/charts`, `POST /connections/{id}/queries`) or the dashboard | |
 | Change a limit or timeout (row limit, query timeout, poll interval, rate limit, cache size) | `app/config.py` (default) or the matching `FAE_*` env var | `.env.example` lists them |
@@ -46,6 +47,7 @@ services/analyzer/
       charts/          how a query's result is drawn; publishing charts
       flag_rules/      rules that mark rows, and the reviewed queue
       dashboards/      boards that place charts
+      lists/           named, described lists of values that flag rules test against
       auth/            login, logout, sessions, password change
       users/           user accounts and the audit-log endpoint
       audit/           the audit log table and writer
@@ -78,6 +80,7 @@ Extra files appear only where a feature has a distinct second job:
 | `queries/` | `refresher.py`, `scheduler.py` | Background refresh and the timer that runs queries |
 | `flag_rules/` | `engine.py` | Pure evaluation: rows and rules in, flags out |
 | `flag_rules/` | `flagged_rows.py`, `dismissals.py` | The stored queue of matches and dismissals |
+| `lists/` | `matching.py` | Pure: how an item or a cell becomes a match key, and the member-set cache (keyed by list id and `ItemList.version`). `flag_rules/engine.py` imports it, never the reverse |
 | `auth/` | `sessions.py` | Session create, validate, expire |
 
 ### Dependency direction
@@ -125,3 +128,12 @@ at import so a typo cannot fail open:
 A wrong-case entry matches nothing, so the service refuses to start instead.
 Loosening the policy (removing a function, allowing another statement type) is a
 security decision: the comments in that file say what each group protects.
+
+## Lists: known limit
+
+Saving a list invalidates `result_cache` in the process that handled the request,
+the same as saving a rule. With more than one worker, the others converge after
+the cache TTL plus the stale grace, and a background refresh already in flight can
+re-store pre-edit flags for one TTL. There is deliberately no cross-process
+machinery for this. The member-set cache is safe regardless: it keys on
+`ItemList.version`, which every save increments.

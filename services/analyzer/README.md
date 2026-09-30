@@ -489,6 +489,7 @@ it, so creating a connection to an unreachable host blocks for up to
 | `FAE_RATE_LIMIT_PER_MINUTE` | `600` | General per-IP budget. 0 disables. |
 | `FAE_RATE_LIMIT_EXECUTION_PER_MINUTE` | `300` | Budget for anything opening a target connection. |
 | `FAE_MAX_REQUEST_BYTES` | `1MB` | Refuses an oversized body before it is read. |
+| `FAE_MAX_LIST_ITEMS` | `20000` | Most items one named list may hold. A list is one request body under `FAE_MAX_REQUEST_BYTES` (1MB), so a larger list needs both raised together. |
 | `FAE_LOG_RETENTION_DAYS` | `30` | Execution logs are pruned at startup past this age. 0 disables. |
 | `FAE_MAX_LOGS_PER_QUERY` | `1000` | Caps log depth per query, so one busy card cannot bury the rest. |
 

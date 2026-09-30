@@ -31,6 +31,7 @@ from app.features.connections import (
 )
 from app.features.dashboards import router as dashboards
 from app.features.flag_rules import router as flag_rules
+from app.features.lists import router as lists
 from app.features.queries import refresher, scheduler
 from app.features.queries import router as queries
 from app.features.users import router as users
@@ -298,6 +299,7 @@ app.include_router(auth.router)
 app.include_router(connections.router)
 app.include_router(dashboards.router)
 app.include_router(introspection.router)
+app.include_router(lists.router)
 app.include_router(queries.connection_scoped)
 app.include_router(charts.query_scoped)
 app.include_router(queries.query_scoped)

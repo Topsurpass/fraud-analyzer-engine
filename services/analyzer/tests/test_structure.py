@@ -28,6 +28,7 @@ KNOWN_ROLES = {
     "introspection", "introspection_router", "sessions",
     "execution", "polling", "refresher", "scheduler", "result_cache", "rendered_cache", "sizing",
     "engine", "dismissals", "flagged_rows",
+    "matching",
 }
 
 #: Package names that the restructure removed. Importing them again means someone

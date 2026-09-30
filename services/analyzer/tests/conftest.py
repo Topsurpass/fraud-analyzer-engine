@@ -43,6 +43,7 @@ _INTEGRATION_MODULES = {
     "test_password_change_gate",
     "test_users_api",
     "test_chart_publishing",
+    "test_lists_api",
 }
 
 

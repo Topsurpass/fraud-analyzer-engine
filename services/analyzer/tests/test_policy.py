@@ -12,11 +12,14 @@ import pytest
 from app.errors import ErrorCode, SqlValidationError
 from app.features.charts.schemas import QueryChartBase
 from app.features.flag_rules.engine import ConditionSpec, evaluate_condition
+from app.features.flag_rules.schemas import FlagConditionBase
+from app.features.lists.matching import members_from_items
 from app.policy import sql_allowlist
 from app.features.flag_rules.flagged_rows import _worst
 from app.policy.chart_types import REQUIRED_FIELDS, ChartType
 from app.policy.flag_rules import (
     BINARY_OPERATORS,
+    LIST_OPERATORS,
     NULLARY_OPERATORS,
     SEVERITY_ORDER,
     FlagOperator,
@@ -118,7 +121,14 @@ _OPERATOR_TRUE_CASES = [
     (FlagOperator.IS_NULL, None, None, None),
     (FlagOperator.IS_NOT_NULL, 1, None, None),
     (FlagOperator.BETWEEN, 5, "1", "10"),
+    # List operators read ``members`` (keys built by the lists feature), not
+    # ``value``; the evaluator test below supplies them.
+    (FlagOperator.IN_LIST, "B", None, None),
+    (FlagOperator.NOT_IN_LIST, "z", None, None),
 ]
+
+#: What a list holding "a", "b" and "c" resolves to.
+_LIST_MEMBERS = members_from_items(["a", "b", "c"])
 
 
 def test_every_operator_has_an_evaluator():
@@ -131,14 +141,34 @@ def test_every_operator_has_an_evaluator():
 
 @pytest.mark.parametrize("operator, cell, value, value2", _OPERATOR_TRUE_CASES)
 def test_operator_matches_its_documented_case(operator, cell, value, value2):
-    condition = ConditionSpec("col", operator, value, value2)
+    members = _LIST_MEMBERS if operator in LIST_OPERATORS else None
+    condition = ConditionSpec("col", operator, value, value2, members)
     assert evaluate_condition(condition, cell) is True
 
 
 def test_operator_arity_sets_only_name_real_operators():
     assert NULLARY_OPERATORS <= set(FlagOperator)
     assert BINARY_OPERATORS <= set(FlagOperator)
+    assert LIST_OPERATORS <= set(FlagOperator)
     assert not (NULLARY_OPERATORS & BINARY_OPERATORS)
+    assert not (LIST_OPERATORS & (NULLARY_OPERATORS | BINARY_OPERATORS))
+
+
+def test_list_operators_are_exactly_the_ones_that_read_a_list():
+    assert LIST_OPERATORS == {FlagOperator.IN_LIST, FlagOperator.NOT_IN_LIST}
+
+
+@pytest.mark.parametrize("operator", sorted(LIST_OPERATORS, key=lambda o: o.value))
+def test_list_operators_fit_the_operator_column(operator):
+    assert len(operator.value) <= 20, "enum_column stores operators in VARCHAR(20)"
+
+
+@pytest.mark.parametrize("operator", sorted(LIST_OPERATORS, key=lambda o: o.value))
+def test_every_list_operator_demands_a_list_id_in_the_api_schema(operator):
+    with pytest.raises(ValueError):
+        FlagConditionBase(column_name="c", operator=operator.value)
+    ok = FlagConditionBase(column_name="c", operator=operator.value, list_id="abc")
+    assert ok.list_id == "abc" and ok.value is None
 
 
 def test_every_severity_has_a_unique_rank():

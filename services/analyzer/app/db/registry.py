@@ -17,6 +17,7 @@ from app.features.charts import models as _charts  # noqa: F401
 from app.features.connections import models as _connections  # noqa: F401
 from app.features.dashboards import models as _dashboards  # noqa: F401
 from app.features.flag_rules import models as _flag_rules  # noqa: F401
+from app.features.lists import models as _lists  # noqa: F401
 from app.features.queries import models as _queries  # noqa: F401
 from app.features.users import models as _users  # noqa: F401
 

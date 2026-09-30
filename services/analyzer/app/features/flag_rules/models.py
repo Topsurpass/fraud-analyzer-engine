@@ -38,6 +38,7 @@ from app.enums import enum_column
 from app.policy.flag_rules import FlagOperator, FlagSeverity
 
 if TYPE_CHECKING:
+    from app.features.lists.models import ItemList
     from app.features.queries.models import SavedQuery
 
 
@@ -74,7 +75,25 @@ class FlagCondition(Base):
     #: Upper bound for ``between``. Unused by every other operator.
     value2: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    #: The list ``in_list`` / ``not_in_list`` compares against; unused by every
+    #: other operator. RESTRICT so the database itself refuses to delete a list
+    #: a rule still reads, even if two requests race past the service's check.
+    list_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("item_lists.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+
     rule: Mapped["FlagRule"] = relationship(back_populates="conditions")
+    #: selectin: a rule set is read as a whole and evaluated on every poll, so a
+    #: lazy load here would cost one statement per list condition. Only the list
+    #: row loads; its items stay lazy until the member set is actually needed.
+    list: Mapped["ItemList | None"] = relationship(lazy="selectin")
+
+    @property
+    def list_name(self) -> str | None:
+        return self.list.name if self.list is not None else None
 
 
 class FlagRule(TimestampMixin, Base):

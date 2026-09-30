@@ -232,6 +232,13 @@ class Settings(BaseSettings):
     # response says it truncated.
     flagged_refresh_max_queries: int = Field(default=20, gt=0)
 
+    # Most items one named list may hold. A list is one request body, so this
+    # is also bounded by max_request_bytes (default 1 MiB): 20,000 items of up
+    # to about 40 characters fit under it, whereas 50,000 items of 20 characters
+    # is already 1.2 MB and would be refused with 413 before this limit is ever
+    # reached. Raise both together for larger lists.
+    max_list_items: int = Field(default=20_000, gt=0)
+
     # HTTP.
     cors_origins: str = "*"
 

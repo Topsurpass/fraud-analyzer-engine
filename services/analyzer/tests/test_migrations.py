@@ -164,6 +164,8 @@ def test_migration_creates_the_expected_tables(tmp_path, alembic_for):
         "users",
         "sessions",
         "audit_logs",
+        "item_lists",
+        "list_items",
     }
 
 
@@ -189,6 +191,8 @@ def test_migration_sets_on_delete_cascade(tmp_path, alembic_for):
         # A rule must not outlive its query, nor a condition its rule.
         "flag_rules": {"query_id"},
         "flag_conditions": {"rule_id"},
+        # Items must not outlive their list.
+        "list_items": {"list_id"},
     }
     for table, expected_columns in cascading_columns.items():
         fks = inspector.get_foreign_keys(table)
@@ -519,3 +523,51 @@ def test_audit_logs_survive_a_downgrade_and_reapply(tmp_path, alembic_for):
     command.upgrade(cfg, "head")
     tables = set(inspect(create_engine(url)).get_table_names())
     assert "audit_logs" in tables
+
+
+def test_list_foreign_keys_restrict_and_set_null(tmp_path, alembic_for):
+    """0016: a rule's list is RESTRICT (a used list cannot be deleted even by a
+    racing request); a list's creator is SET NULL (a list outlives its author)."""
+    url = f"sqlite:///{tmp_path / 'lists_fk.db'}"
+    command.upgrade(alembic_for(url), "head")
+    inspector = inspect(create_engine(url))
+
+    def fk_on(table, column):
+        return next(
+            fk for fk in inspector.get_foreign_keys(table) if fk["constrained_columns"] == [column]
+        )
+
+    assert fk_on("flag_conditions", "list_id")["referred_table"] == "item_lists"
+    assert fk_on("flag_conditions", "list_id")["options"].get("ondelete") == "RESTRICT"
+    assert fk_on("item_lists", "created_by")["options"].get("ondelete") == "SET NULL"
+
+
+def test_list_name_key_is_unique_in_the_migrated_schema(tmp_path, alembic_for):
+    url = f"sqlite:///{tmp_path / 'lists_uq.db'}"
+    command.upgrade(alembic_for(url), "head")
+    engine = create_engine(url)
+    insert = "INSERT INTO item_lists (id, name, name_key) VALUES ('{}', '{}', '{}')"
+    with engine.begin() as conn:
+        conn.execute(text(insert.format("a", "Watch", "watch")))
+        # version defaults to 1 for a row that does not say.
+        assert conn.execute(text("SELECT version FROM item_lists")).scalar() == 1
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(text(insert.format("b", "WATCH", "watch")))
+
+
+def test_lists_survive_a_downgrade_and_reapply(tmp_path, alembic_for):
+    url = f"sqlite:///{tmp_path / 'lists_cycle.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+
+    command.downgrade(cfg, "0015_chart_publishing")
+    inspector = inspect(create_engine(url))
+    assert "item_lists" not in inspector.get_table_names()
+    assert "list_items" not in inspector.get_table_names()
+    assert "list_id" not in {c["name"] for c in inspector.get_columns("flag_conditions")}
+
+    command.upgrade(cfg, "head")
+    inspector = inspect(create_engine(url))
+    assert {"item_lists", "list_items"} <= set(inspector.get_table_names())
+    assert "list_id" in {c["name"] for c in inspector.get_columns("flag_conditions")}

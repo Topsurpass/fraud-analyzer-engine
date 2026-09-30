@@ -21,6 +21,7 @@ from app.features.flag_rules import (
 from app.features.flag_rules import (
     engine as flagging,
 )
+from app.features.lists import service as list_service
 from app.features.queries import (
     execution as query_service,
 )
@@ -340,20 +341,27 @@ def preview_query(
         truncated=result.truncated,
         columns=result.columns,
         rows=result.rows,
-        flags=preview_flags(payload.flag_rules, result.columns, result.rows),
+        flags=preview_flags(session, payload.flag_rules, result.columns, result.rows),
     )
 
 
-def preview_flags(rules, columns: list[str], rows: list[list]) -> dict:
+def preview_flags(session: Session, rules, columns: list[str], rows: list[list]) -> dict:
     """Evaluate unsaved rules against preview rows.
 
     The rules have no database identity yet, so each is given its index as an
     id. That is enough for the editor to map a flagged row back to the rule
     the user is editing, and nothing outside this response ever sees it.
+
+    List conditions name a stored list, so their member sets are resolved here
+    (the engine is session-free). An unknown list id is LIST_NOT_FOUND.
     """
     if not rules:
         return flagging.FlagOutcome().as_dict()
 
+    members = list_service.members_for(
+        session,
+        {c.list_id for rule in rules for c in rule.conditions if c.list_id},
+    )
     specs = [
         flagging.RuleSpec(
             id=str(position),
@@ -366,6 +374,7 @@ def preview_flags(rules, columns: list[str], rows: list[list]) -> dict:
                     operator=condition.operator,
                     value=condition.value,
                     value2=condition.value2,
+                    members=members.get(condition.list_id) if condition.list_id else None,
                 )
                 for condition in rule.conditions
             ),

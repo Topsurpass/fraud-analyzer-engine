@@ -26,10 +26,14 @@ usually compares the string ``"500.25"`` against the number 500, and
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Sequence
 
+from app.features.lists.matching import as_bool, as_number, is_member
+from app.features.lists.matching import is_bool_word as _is_bool_word
 from app.policy.flag_rules import FlagOperator, FlagSeverity
+
+# ``as_number``, ``as_bool`` and the bool-word test live in app.features.lists.matching (list matching needs it and
+# this module needs list matching); it stays importable from here.
 
 
 @dataclass(slots=True, frozen=True)
@@ -40,6 +44,9 @@ class ConditionSpec:
     operator: FlagOperator
     value: str | None = None
     value2: str | None = None
+    #: Match keys of the list for ``in_list`` / ``not_in_list``. Resolved by the
+    #: caller (the engine is session-free); None for every other operator.
+    members: frozenset | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -114,83 +121,6 @@ class FlagOutcome:
 # ---------------------------------------------------------------------------
 # Value coercion
 # ---------------------------------------------------------------------------
-
-
-def as_number(value: Any) -> Decimal | None:
-    """Return ``value`` as a Decimal, or None if it is not a number.
-
-    ``Decimal`` rather than ``float`` because the values that arrive here are
-    frequently *strings that used to be Decimals* -- ``to_jsonable`` converts
-    them precisely so that money does not round-trip through binary floating
-    point. Parsing them back as floats would reintroduce the error the string
-    conversion existed to avoid: ``0.1 + 0.2 > 0.3`` is True in float and False
-    in Decimal, and a threshold rule sitting exactly on a boundary would flag
-    inconsistently.
-
-    ``bool`` is excluded on purpose even though it is an ``int`` subclass.
-    ``True > 0`` is technically valid Python and completely meaningless as a
-    flag condition; treating booleans as text keeps ``eq true`` working the way
-    an analyst expects.
-    """
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, Decimal):
-        return None if value.is_nan() else value
-    if isinstance(value, int):
-        return Decimal(value)
-    if isinstance(value, float):
-        # NaN and infinities cannot participate in an ordering that means
-        # anything. to_jsonable already nulls them out of result rows, but a
-        # rule's own value string could still spell one.
-        if value != value or value in (float("inf"), float("-inf")):
-            return None
-        return Decimal(str(value))
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            parsed = Decimal(text)
-        except (InvalidOperation, ValueError):
-            return None
-        # "nan" and "infinity" parse as Decimal but are not comparable.
-        return None if not parsed.is_finite() else parsed
-    return None
-
-
-#: Words a two-valued column spells itself with, excluding the digits 0 and 1.
-#: Kept word-only on purpose. Bridging digits to words here would make the rule
-#: ``country eq 0`` match a cell of ``"NO"``, which is Norway's ISO code, not a
-#: false. Digits reach booleans only through a genuine ``bool`` cell below.
-_TRUE_WORDS = frozenset({"true", "t", "yes", "y"})
-_FALSE_WORDS = frozenset({"false", "f", "no", "n"})
-_BOOL_WORDS = _TRUE_WORDS | _FALSE_WORDS
-
-
-def as_bool(value: Any) -> bool | None:
-    """Interpret a driver's idea of a boolean, or None if it is not one.
-
-    Drivers disagree: Postgres hands back ``True``, SQLite hands back ``1``,
-    and a text column holding a flag might say ``"t"`` or ``"yes"``. An analyst
-    should not have to know which of those their database chose.
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        if value in (0, 1):
-            return bool(value)
-        return None
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in _TRUE_WORDS or text == "1":
-            return True
-        if text in _FALSE_WORDS or text == "0":
-            return False
-    return None
-
-
-def _is_bool_word(value: Any) -> bool:
-    return isinstance(value, str) and value.strip().lower() in _BOOL_WORDS
 
 
 def as_text(value: Any) -> str:
@@ -319,6 +249,16 @@ def evaluate_condition(condition: ConditionSpec, cell: Any) -> bool:
         members = split_list(condition.value)
         hit = any(_equals(cell, member) for member in members)
         return hit if operator is FlagOperator.IN else not hit
+
+    if operator in (FlagOperator.IN_LIST, FlagOperator.NOT_IN_LIST):
+        # A NULL cell already returned False above, so neither operator matches
+        # it. A spec whose list was never resolved (members is None) matches
+        # nothing under either operator: guessing "empty list" would make
+        # not_in_list flag every row, which is the wrong way to fail.
+        if condition.members is None:
+            return False
+        hit = is_member(condition.members, cell)
+        return hit if operator is FlagOperator.IN_LIST else not hit
 
     if operator is FlagOperator.BETWEEN:
         low_raw, high_raw = condition.value, condition.value2
@@ -481,6 +421,23 @@ def _why_nothing_matched(
     return f"Rule {rule.name!r} matched no rows.{detail}"
 
 
+def _members_of(condition: Any) -> frozenset | None:
+    """Member keys for a stored list condition, or None for any other kind.
+
+    Goes through the lists service, which caches per (list, version) and loads
+    items with a column select, so a poll neither rebuilds a 50,000-key set nor
+    builds 50,000 ORM objects.
+    """
+    item_list = getattr(condition, "list", None)
+    if item_list is None:
+        return None
+    # Imported here: the lists service imports the query models, which import
+    # this module's callers.
+    from app.features.lists.service import members_of
+
+    return members_of(item_list)
+
+
 def specs_from_models(rules: Iterable[Any]) -> list[RuleSpec]:
     """Adapt ORM ``FlagRule`` rows into the pure specs this module evaluates.
 
@@ -499,6 +456,7 @@ def specs_from_models(rules: Iterable[Any]) -> list[RuleSpec]:
                     operator=condition.operator,
                     value=condition.value,
                     value2=condition.value2,
+                    members=_members_of(condition),
                 )
                 for condition in sorted(rule.conditions, key=lambda c: c.position)
             ),

@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.policy.flag_rules import (
     BINARY_OPERATORS,
+    LIST_OPERATORS,
     NULLARY_OPERATORS,
     FlagOperator,
     FlagSeverity,
@@ -31,10 +32,23 @@ class FlagConditionBase(BaseModel):
     operator: FlagOperator
     value: str | None = None
     value2: str | None = None
+    #: The named list for ``in_list`` / ``not_in_list``; cleared for every other
+    #: operator. Whether the id exists is checked where a database is at hand.
+    list_id: str | None = None
 
     @model_validator(mode="after")
     def _check_operator_arity(self) -> "FlagConditionBase":
         operator = self.operator
+
+        if operator in LIST_OPERATORS:
+            if not self.list_id:
+                raise ValueError(f"operator {operator.value!r} needs a list_id")
+            # The list is the comparand. A stray value would round-trip through
+            # the editor and start being honoured if the operator changed.
+            self.value = None
+            self.value2 = None
+            return self
+        self.list_id = None
 
         if operator in NULLARY_OPERATORS:
             # Not an error to send a stray value, but keeping it would let the
@@ -67,6 +81,9 @@ class FlagConditionRead(FlagConditionBase):
 
     id: str
     position: int
+    #: The list's current name, so the editor can show it without a second
+    #: request. None when the condition uses no list.
+    list_name: str | None = None
 
 
 class FlagRuleBase(BaseModel):

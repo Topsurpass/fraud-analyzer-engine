@@ -34,7 +34,10 @@ Every non-2xx response, without exception, has this shape:
 | `QUERY_NOT_FOUND` | 404 | No saved query with that id |
 | `TABLE_NOT_FOUND` | 404 | No such table or view on that connection |
 | `DASHBOARD_NOT_FOUND` | 404 | No dashboard with that id |
+| `LIST_NOT_FOUND` | 404 | No list with that id, or a rule names a `list_id` that does not exist (`detail.list_ids`) |
 | `DUPLICATE_NAME` | 409 | A connection, query, or dashboard already has that name |
+| `LIST_NAME_TAKEN` | 409 | Another list has that name, ignoring case |
+| `LIST_IN_USE` | 409 | A rule still reads the list; `detail.rules` is `[{rule_name, query_id, query_name}]` for queries the caller can see, `detail.hidden_rule_count` counts the rest |
 | `REQUEST_VALIDATION_ERROR` | 422 | The request body or query params failed validation |
 | `RATE_LIMITED` | 429 | Per-client request budget exhausted; see `Retry-After` |
 | `INTERNAL_ERROR` | 500 | Unexpected failure; details are logged, never returned |
@@ -170,9 +173,15 @@ reordering needs no separate call, and an empty array removes every rule. Rule
 names must be distinct within a query.
 
 Operators: `gt`, `gte`, `lt`, `lte`, `eq`, `neq`, `contains`, `not_contains`,
-`starts_with`, `in`, `not_in`, `is_null`, `is_not_null`, `between`. `is_null` and
-`is_not_null` take no value; `between` takes `value` and `value2`; everything
-else takes `value`. `in`/`not_in` split `value` on commas.
+`starts_with`, `in`, `not_in`, `in_list`, `not_in_list`, `is_null`, `is_not_null`,
+`between`. `is_null` and `is_not_null` take no value; `between` takes `value` and
+`value2`; `in_list` and `not_in_list` take `list_id` (see Lists below) and no
+value; everything else takes `value`. `in`/`not_in` split `value` on commas.
+`list_id` is `null` on every condition that does not use a list, and is cleared
+if sent with any other operator. Reads add `list_name` (the list's current name,
+or `null`) to each condition. A `list_id` that names no list is refused with
+`LIST_NOT_FOUND` and nothing is saved. The preview endpoint accepts the same
+conditions.
 
 Comparison is numeric when both sides parse as numbers and lexical otherwise,
 which is what makes `amount > 500` work against a `Decimal` that arrives as
@@ -338,6 +347,82 @@ reference honest. Deleting a saved query removes it from every dashboard that
 showed it, and deleting a connection cascades through its queries to the same
 effect. Deleting a dashboard is the reverse: the board goes, the saved queries
 it showed are untouched.
+
+## Lists
+
+A list is a named, described set of values that any number of flag rules can test
+a column against with `in_list` / `not_in_list`. Lists are shared: every signed-in
+user can list, read and use every list. Only the creator or an admin can replace
+or delete one; anyone else gets `403 FORBIDDEN`.
+
+| Method | Path | Success |
+|---|---|---|
+| `GET` | `/lists` | 200, `ItemListSummary[]` sorted by name (no items) |
+| `POST` | `/lists` | 201, `ItemListWriteResult` |
+| `GET` | `/lists/{id}` | 200, `ItemListRead` |
+| `PUT` | `/lists/{id}` | 200, `ItemListWriteResult` (replaces name, description and items) |
+| `DELETE` | `/lists/{id}` | 204 |
+
+Request body of `POST` and `PUT`: `{"name": string(1-200), "description": string(<=1000)|null, "items": string[]}`.
+
+```json
+{
+  "id": "0f0c...", "name": "Blocked terminals", "description": "From chargebacks",
+  "item_count": 2, "rule_count": 1, "created_by": "a1b2...",
+  "created_at": "2026-09-30T09:12:44Z", "updated_at": "2026-09-30T09:12:44Z",
+  "items": ["T-100", "T-200"],
+  "received": 3, "kept": 2, "duplicates_dropped": 1
+}
+```
+
+`ItemListSummary` is the object without `items`, `received`, `kept` and
+`duplicates_dropped`; `ItemListRead` adds `items`; `ItemListWriteResult` adds all
+four. `rule_count` is the number of distinct rules that use the list.
+
+Items are trimmed; blanks are dropped; repeats are dropped by *match key*, keeping
+the first spelling. `received` is how many were sent, `kept` how many were stored,
+`duplicates_dropped` is `received - kept` (repeats plus blanks). Each item is at
+most 500 characters (`422`), and a list holds at most `FAE_MAX_LIST_ITEMS` items
+(default 20,000, counted before de-duplication, `422` with `detail.max_items`).
+The list travels as one request body, capped by `FAE_MAX_REQUEST_BYTES` (1 MiB by
+default; a body over it is refused before the item limit is checked), so a larger
+list needs both settings raised together.
+
+Matching: an item and a cell are compared by key.
+
+* Numbers compare as numbers at full precision (`2`, `2.0` and `"2.00"` are one
+  value; 31-digit ids stay distinct).
+* Booleans bridge exactly as `in` does: a boolean cell matches an item spelled
+  `true/t/yes/y/1` (or `false/f/no/n/0`), and a text cell that is a bool word
+  matches an item that is a bool word. A digit never bridges to a word.
+* Everything else compares trimmed and **case-insensitively**, and **without
+  Unicode normalisation** (a composed and a decomposed accented letter differ).
+  Unlike inline `in`, which is case-sensitive and does not trim the cell. So
+  "same rows as `in`" holds for case-consistent, unpadded data.
+* NULL cells match neither `in_list` nor `not_in_list`, so `not_in_list` is the
+  complement over non-null cells.
+
+List names are unique after NFC normalisation and case folding (`Éclair` and
+`éclair` collide on every database). NUL characters in names, descriptions and
+items are refused with `422`.
+
+Saving a list's items invalidates the cached result of every query whose rules use
+it; the next poll re-evaluates and `data_hash` changes if flags moved. No rule edit
+is needed.
+
+Known limit, shared with editing a rule: that invalidation happens in the process
+that handled the save. With several workers (`WEB_CONCURRENCY` above 1) the other
+workers converge after the cache TTL plus the stale-while-revalidate grace, and a
+background refresh that was already running when the list was saved can store its
+pre-edit flags for one TTL. Stored findings in the flagged view update when the
+next run syncs them.
+
+`DELETE` of a list a rule still reads (enabled or not) is `409 LIST_IN_USE`, with
+the rules on queries the caller can see in `detail.rules` and a count of the rest
+in `detail.hidden_rule_count` (queries are private to their owner, so another
+analyst's are never named). Remove the list from those rules first; the database
+also refuses the delete with a foreign key, so a delete racing a rule save cannot
+leave a dangling reference. Deleting a query or its rules frees the list.
 
 ## Credentials
 

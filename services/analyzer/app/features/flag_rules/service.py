@@ -14,9 +14,11 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
+from app.errors import ErrorCode, NotFoundError
 from app.features.connections.models import Connection
 from app.features.flag_rules import (
     dismissals as flag_dismissal_service,
@@ -25,6 +27,7 @@ from app.features.flag_rules import (
     flagged_rows as flagged_row_service,
 )
 from app.features.flag_rules.models import FlagCondition, FlagRule
+from app.features.lists.models import ItemList
 from app.features.queries import (
     execution as query_service,
 )
@@ -55,6 +58,25 @@ def list_rules(session: Session, query_id: str) -> list[FlagRule]:
     return list(session.scalars(statement))
 
 
+def ensure_lists_exist(session: Session, list_ids: set[str]) -> None:
+    """Raise LIST_NOT_FOUND naming every id that is not a stored list.
+
+    Checked here so a bad id is a clear error that names the id, not a foreign
+    key failure at commit. 404 with the ids in ``detail`` (as a missing chart id
+    on a dashboard does) so the editor can point at the condition.
+    """
+    if not list_ids:
+        return
+    found = set(session.scalars(select(ItemList.id).where(ItemList.id.in_(list_ids))))
+    missing = sorted(list_ids - found)
+    if missing:
+        raise NotFoundError(
+            ErrorCode.LIST_NOT_FOUND,
+            f"No list with id {missing[0]!r}.",
+            {"list_ids": missing},
+        )
+
+
 def replace_rules(session: Session, query: SavedQuery, rules: list) -> list[FlagRule]:
     """Replace a query's entire rule set.
 
@@ -64,6 +86,11 @@ def replace_rules(session: Session, query: SavedQuery, rules: list) -> list[Flag
     stable across a save; nothing references a rule id across a request
     boundary, and the outcome carries names as well as ids for display.
     """
+    ensure_lists_exist(
+        session,
+        {c.list_id for spec in rules for c in spec.conditions if c.list_id},
+    )
+
     # delete-orphan on the relationship does the deletion, so clearing the
     # collection is enough. Assigning a fresh list would leave the old rows
     # orphaned but present until the cascade noticed.
@@ -85,6 +112,7 @@ def replace_rules(session: Session, query: SavedQuery, rules: list) -> list[Flag
                     operator=condition.operator,
                     value=condition.value,
                     value2=condition.value2,
+                    list_id=condition.list_id,
                 )
                 for condition_position, condition in enumerate(spec.conditions)
             ],
@@ -92,7 +120,15 @@ def replace_rules(session: Session, query: SavedQuery, rules: list) -> list[Flag
         query.flag_rules.append(rule)
         built.append(rule)
 
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        # A referenced list was deleted between the check above and here.
+        session.rollback()
+        raise NotFoundError(
+            ErrorCode.LIST_NOT_FOUND,
+            "A list used by these rules no longer exists.",
+        ) from exc
 
     # A rule change alters the payload without altering a single row, so a
     # cached entry would keep serving the old flags and polling would report
