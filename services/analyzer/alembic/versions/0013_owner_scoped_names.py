@@ -35,6 +35,7 @@ constraint in place, so Alembic recreates each table.
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0013_owner_scoped_names"

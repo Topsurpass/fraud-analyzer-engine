@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from app.db.app_state import get_sessionmaker
-from app.models.enums import AuditAction, UserRole
-from app.models.audit_log import AuditLog
-from app.models.user import User
+from app.enums import AuditAction, UserRole
+from app.features.audit.models import AuditLog
+from app.features.users.models import User
 from tests.test_auth_api import login, make_user
 
 PASSWORD = "a-perfectly-fine-password"

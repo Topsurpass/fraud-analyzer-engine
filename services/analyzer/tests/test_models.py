@@ -3,19 +3,13 @@ from datetime import timedelta
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.models import (
-    ChartType,
-    Connection,
-    ConnectionStatus,
-    DbType,
-    QueryChart,
-    QueryExecutionLog,
-    SavedQuery,
-    User,
-    UserRole,
-    UserSession,
-)
-from app.models.base import utcnow
+from app.db.base import utcnow
+from app.enums import ConnectionStatus, DbType, UserRole
+from app.features.charts.models import QueryChart
+from app.features.connections.models import Connection
+from app.features.queries.models import QueryExecutionLog, SavedQuery
+from app.features.users.models import User, UserSession
+from app.policy.chart_types import ChartType
 from app.security.passwords import hash_password
 
 
@@ -207,7 +201,8 @@ def test_a_row_written_without_the_orm_is_readable_by_it(session):
 
 
 def test_server_defaults_match_the_stored_spelling():
-    from app.models import ChartType, ConnectionStatus
+    from app.enums import ConnectionStatus
+    from app.policy.chart_types import ChartType
 
     assert Connection.__table__.c.status.server_default.arg == ConnectionStatus.UNTESTED.value
     assert Connection.__table__.c.status.type.enums == [e.value for e in ConnectionStatus]
@@ -215,7 +210,7 @@ def test_server_defaults_match_the_stored_spelling():
 
 
 def test_a_session_timestamp_read_from_sqlite_stays_comparable_to_now(session):
-    """Regression test for UTCDateTime (app/models/base.py).
+    """Regression test for UTCDateTime (app/db/base.py).
 
     SQLite has no timezone-aware storage: a plain ``DateTime(timezone=True)``
     formats a datetime to text and hands back a *naive* one on the next real
@@ -226,7 +221,7 @@ def test_a_session_timestamp_read_from_sqlite_stays_comparable_to_now(session):
     an empty identity map loads the row. Before UTCDateTime existed on
     UserSession's three timestamp columns, the final line below raised
     ``TypeError: can't compare offset-naive and offset-aware datetimes`` -
-    this is the failure `app.services.session_service.resolve` hits on every
+    this is the failure `app.features.auth.sessions.resolve` hits on every
     single call unless the column type carries this fix.
     """
     user = User(

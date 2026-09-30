@@ -149,7 +149,7 @@ def test_run_payload_does_not_copy_the_rows():
     """
     from datetime import datetime, timezone
 
-    from app.services.query_service import RunPayload
+    from app.features.queries.execution import RunPayload
 
     rows = [[1, "a"], [2, "b"]]
     payload = RunPayload(

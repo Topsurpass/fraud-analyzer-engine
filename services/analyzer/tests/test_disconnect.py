@@ -71,7 +71,7 @@ def test_the_scheduler_skips_a_disconnected_connection(admin_client, sqlite_conn
     from sqlalchemy.orm import Session
 
     from app.db.app_state import get_engine
-    from app.services import scheduler
+    from app.features.queries import scheduler
 
     admin_client.put(
         f"/queries/{query['id']}/flag-rules",

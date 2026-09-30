@@ -125,7 +125,7 @@ def test_two_analysts_behind_one_address_do_not_share_a_budget(client, app_db, m
     like the engine was broken rather than like a quota.
     """
     from app import ratelimit
-    from app.models.enums import UserRole
+    from app.enums import UserRole
     from tests.test_auth_api import login, make_user
 
     ratelimit.reset()

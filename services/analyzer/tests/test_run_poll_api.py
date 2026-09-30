@@ -6,8 +6,8 @@ import sqlite3
 
 import pytest
 
-from app.models import QueryExecutionLog, SavedQuery
-from app.services import result_cache
+from app.features.queries import result_cache
+from app.features.queries.models import QueryExecutionLog, SavedQuery
 
 RUN_KEYS = {
     "query_id",
@@ -291,7 +291,7 @@ def test_poll_uses_the_per_query_interval(admin_client, sqlite_connection):
 
 
 def test_preview_runs_without_saving(admin_client, sqlite_connection, session):
-    from app.models import SavedQuery
+    from app.features.queries.models import SavedQuery
 
     r = admin_client.post(
         f"/connections/{sqlite_connection['id']}/query/preview",
@@ -382,7 +382,7 @@ def test_a_repeat_poll_is_served_without_rerendering(admin_client, sqlite_connec
     Asserted as a hit ratio rather than a duration: the claim is about work
     avoided, and a stopwatch on a shared machine measures the machine.
     """
-    from app.services import rendered_cache
+    from app.features.queries import rendered_cache
 
     created = admin_client.post(
         f"/connections/{sqlite_connection['id']}/queries",

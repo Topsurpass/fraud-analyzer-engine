@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.models.enums import UserRole
+from app.enums import UserRole
 from tests.test_auth_api import login, make_user
 
 SQL = "SELECT day, count(*) AS n FROM txns GROUP BY day ORDER BY day"

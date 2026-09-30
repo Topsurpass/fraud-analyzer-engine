@@ -16,14 +16,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect
 from sqlalchemy.engine import make_url
 
+from alembic import command
 from app.config import get_settings
 from app.db.app_state import get_engine
-from app.models import Base
+from app.db.registry import Base
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@
 
 Task 5 built the gate itself: ``require_user`` in ``app/security/deps.py``
 raises ``PASSWORD_CHANGE_REQUIRED`` whenever ``user.must_change_password`` is
-set, and every router in ``app/routers/`` is wired to ``require_user`` (or
+set, and every router in ``app/features/*/router.py`` is wired to ``require_user`` (or
 ``require_admin``, which is built on it) at the router level. This module
 writes no new behaviour. It proves the one rule that is enforced across every
 endpoint at once, which is exactly why it earns its own test module rather
@@ -25,9 +25,9 @@ from __future__ import annotations
 from datetime import timedelta
 
 from app.db.app_state import get_sessionmaker
-from app.models.base import utcnow
-from app.models.enums import UserRole
-from app.models.user import User
+from app.db.base import utcnow
+from app.enums import UserRole
+from app.features.users.models import User
 from tests.test_auth_api import login, make_user
 
 TEMPORARY = "a-temporary-password"

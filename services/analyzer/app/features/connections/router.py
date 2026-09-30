@@ -1,0 +1,183 @@
+"""Connection profile endpoints."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Response, status
+from sqlalchemy.orm import Session
+
+from app.db.app_state import get_session
+from app.db.base import utcnow
+from app.features.connections import service as connection_service
+from app.features.connections.schemas import (
+    ConnectionCreate,
+    ConnectionCreateResult,
+    ConnectionRead,
+    ConnectionTestResult,
+    ConnectionUpdate,
+)
+from app.features.users.models import User
+from app.security.deps import require_admin, require_user
+
+# require_user at the router level: connections are admin-managed, but an
+# analyst still has to be able to list and read them to pick one to query
+# against. Every write endpoint below layers require_admin on top.
+router = APIRouter(
+    prefix="/connections",
+    tags=["connections"],
+    dependencies=[Depends(require_user)],
+)
+
+
+@router.post(
+    "",
+    response_model=ConnectionCreateResult,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_admin)],
+)
+def create_connection(
+    payload: ConnectionCreate,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> ConnectionCreateResult:
+    """Create a connection profile and test it immediately.
+
+    A failing test still saves the profile, with ``status="failed"`` and the
+    error attached, so credentials can be corrected without re-entering
+    everything.
+    """
+    conn, error = connection_service.create_connection(session, payload, created_by=user.id)
+    return ConnectionCreateResult(
+        connection=ConnectionRead.model_validate(conn),
+        test_ok=error is None,
+        test_error=error.message if error else None,
+        test_error_code=error.error_code.value if error else None,
+    )
+
+
+@router.get("", response_model=list[ConnectionRead])
+def list_connections(session: Session = Depends(get_session)) -> list[ConnectionRead]:
+    """List every connection. Credentials are never included."""
+    return [
+        ConnectionRead.model_validate(c)
+        for c in connection_service.list_connections(session)
+    ]
+
+
+@router.get("/{connection_id}", response_model=ConnectionRead)
+def get_connection(
+    connection_id: str, session: Session = Depends(get_session)
+) -> ConnectionRead:
+    """Fetch one connection. Credentials are never included."""
+    return ConnectionRead.model_validate(
+        connection_service.get_connection(session, connection_id)
+    )
+
+
+@router.put(
+    "/{connection_id}",
+    response_model=ConnectionCreateResult,
+    dependencies=[Depends(require_admin)],
+)
+def update_connection(
+    connection_id: str,
+    payload: ConnectionUpdate,
+    session: Session = Depends(get_session),
+) -> ConnectionCreateResult:
+    """Partially update a connection, then re-test it."""
+    conn = connection_service.get_connection(session, connection_id)
+    conn, error = connection_service.update_connection(session, conn, payload)
+    return ConnectionCreateResult(
+        connection=ConnectionRead.model_validate(conn),
+        test_ok=error is None,
+        test_error=error.message if error else None,
+        test_error_code=error.error_code.value if error else None,
+    )
+
+
+@router.post(
+    "/{connection_id}/test",
+    response_model=ConnectionTestResult,
+    dependencies=[Depends(require_admin)],
+)
+def test_connection(
+    connection_id: str, session: Session = Depends(get_session)
+) -> ConnectionTestResult:
+    """Re-test an existing connection and update its status."""
+    conn = connection_service.get_connection(session, connection_id)
+    error = connection_service.test_connection(session, conn)
+    return ConnectionTestResult(
+        connection_id=conn.id,
+        status=conn.status,
+        tested_at=conn.last_tested_at or utcnow(),
+        ok=error is None,
+        error=error.message if error else None,
+        error_code=error.error_code.value if error else None,
+    )
+
+
+@router.delete(
+    "/{connection_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_admin)],
+)
+def delete_connection(
+    connection_id: str, session: Session = Depends(get_session)
+) -> Response:
+    """Delete a connection.
+
+    This cascades: every saved query on the connection, every execution log
+    row for those queries, and the log rows from ad-hoc previews run against
+    it are deleted with it.
+    """
+    conn = connection_service.get_connection(session, connection_id)
+    connection_service.delete_connection(session, conn)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{connection_id}/disconnect",
+    response_model=ConnectionRead,
+    dependencies=[Depends(require_admin)],
+)
+def disconnect_connection(
+    connection_id: str, session: Session = Depends(get_session)
+) -> ConnectionRead:
+    """Stop using this connection until it is reconnected.
+
+    Closes its pooled connections immediately, so the target database sees them
+    go away rather than merely being ignored, and stops the scheduler running
+    its queries. Everything else is kept: saved queries, flag rules, and every
+    flagged row already found.
+
+    Runs against a disconnected connection are refused with CONNECTION_PAUSED
+    rather than silently reconnecting - "disconnected" that reconnects itself
+    on the next poll would not be worth having.
+    """
+    conn = connection_service.get_connection(session, connection_id)
+    return connection_service.pause_connection(session, conn)
+
+
+@router.post(
+    "/{connection_id}/reconnect",
+    response_model=ConnectionTestResult,
+    dependencies=[Depends(require_admin)],
+)
+def reconnect_connection(
+    connection_id: str, session: Session = Depends(get_session)
+) -> ConnectionTestResult:
+    """Put a disconnected connection back into service, and test it.
+
+    Tested rather than trusted: one paused for a week may have had its password
+    rotated or its host moved, and reporting "connected" without checking only
+    moves the failure to the next scheduled run, where nobody is watching.
+    """
+    conn = connection_service.get_connection(session, connection_id)
+    conn, error = connection_service.resume_connection(session, conn)
+    return ConnectionTestResult(
+        connection_id=conn.id,
+        status=conn.status,
+        tested_at=conn.last_tested_at or utcnow(),
+        ok=error is None,
+        error=error.message if error else None,
+        error_code=error.error_code.value if error else None,
+    )

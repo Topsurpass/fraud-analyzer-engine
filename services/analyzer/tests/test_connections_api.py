@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from app.models import Connection
+from app.features.connections.models import Connection
 
 
 def test_create_tests_immediately_and_returns_ok(admin_client, target_sqlite):
@@ -436,7 +436,7 @@ def test_every_connections_endpoint_has_resolvable_annotations():
     """
     import typing
 
-    import app.routers.connections as module
+    import app.features.connections.router as module
 
     for name, function in vars(module).items():
         if not callable(function) or not getattr(function, "__module__", "") == module.__name__:

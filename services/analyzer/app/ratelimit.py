@@ -29,8 +29,8 @@ dependency is not worth it for a single-tenant tool.
 
 from __future__ import annotations
 
-import threading
 import hashlib
+import threading
 import time
 
 from starlette.middleware.base import BaseHTTPMiddleware

@@ -7,17 +7,15 @@ are, and nothing about how much the process then holds.
 from __future__ import annotations
 
 import math
-
 import time
 
 import pytest
 
 from app.config import get_settings
 from app.errors import ErrorCode, ResultTooLargeError
-from app.services import result_cache
-from app.services.query_service import canonical_hash, to_jsonable
-from app.services.sizing import approx_json_size
-
+from app.features.queries import result_cache
+from app.features.queries.execution import canonical_hash, to_jsonable
+from app.features.queries.sizing import approx_json_size
 
 # --------------------------------------------------------------------------
 # Non-finite floats

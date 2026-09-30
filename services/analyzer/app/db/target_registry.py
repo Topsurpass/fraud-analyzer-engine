@@ -1,6 +1,6 @@
 """Pooled, read-only engines for target databases.
 
-One SQLAlchemy engine per :class:`~app.models.Connection`, kept in a bounded
+One SQLAlchemy engine per :class:`~app.features.connections.models.Connection`, kept in a bounded
 LRU registry so a request never pays for engine construction and a long-lived
 process never accumulates unbounded pools.
 
@@ -42,6 +42,7 @@ from sqlalchemy.pool import QueuePool
 
 from app.config import get_settings
 from app.db.addressing import routable_addresses
+from app.enums import VERIFYING_SSL_MODES, DbType, SslMode
 from app.errors import (
     AppError,
     ConnectionPausedError,
@@ -53,8 +54,7 @@ from app.errors import (
     QueryExecutionError,
     QueryTimeoutError,
 )
-from app.models import Connection, DbType
-from app.models.enums import VERIFYING_SSL_MODES, SslMode
+from app.features.connections.models import Connection
 from app.security.crypto import decrypt
 from app.security.sqlite_paths import resolve_sqlite_path
 
@@ -442,7 +442,7 @@ def mysql_connect_args(conn: Connection) -> dict:
     which maps to 502 DB_UNREACHABLE and tells the frontend the database is
     down. The server must get the chance to return errno 3024 first.
 
-    pymysql has no ``sslmode``, so :class:`~app.models.enums.SslMode` is mapped
+    pymysql has no ``sslmode``, so :class:`~app.enums.SslMode` is mapped
     onto its own flags. The mapping is not one-to-one and cannot be: passing
     *any* ``ssl`` argument makes pymysql insist on TLS, so there is no way to
     express "try TLS, fall back to plaintext". ``disable``, ``allow`` and

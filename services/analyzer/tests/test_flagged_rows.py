@@ -54,7 +54,7 @@ def test_the_queue_survives_the_result_cache_expiring(
     The old view read the cache, so once the entry aged out it reported "not
     run yet" about a query that had been flagging rows for days.
     """
-    from app.services import result_cache
+    from app.features.queries import result_cache
 
     admin_client.post(f"/queries/{flagging_query['id']}/run")
     result_cache.invalidate(flagging_query["id"])
@@ -132,9 +132,10 @@ def test_dismissing_deletes_the_stored_row(admin_client, sqlite_connection, flag
         json={"fingerprints": [victim]},
     )
 
-    from app.db.app_state import get_engine
-    from app.models import FlaggedRow
     from sqlalchemy.orm import Session
+
+    from app.db.app_state import get_engine
+    from app.features.flag_rules.models import FlaggedRow
 
     with Session(get_engine()) as session:
         stored = [r.row_fingerprint for r in session.query(FlaggedRow).all()]
@@ -180,9 +181,10 @@ def test_deleting_the_query_takes_its_findings(admin_client, flagging_query):
     admin_client.post(f"/queries/{flagging_query['id']}/run")
     admin_client.delete(f"/queries/{flagging_query['id']}")
 
-    from app.db.app_state import get_engine
-    from app.models import FlaggedRow
     from sqlalchemy.orm import Session
+
+    from app.db.app_state import get_engine
+    from app.features.flag_rules.models import FlaggedRow
 
     with Session(get_engine()) as session:
         assert session.query(FlaggedRow).count() == 0
@@ -286,7 +288,7 @@ def test_re_running_does_not_move_the_newest(admin_client, flagging_query):
 def test_stored_timestamps_carry_utc_on_the_wire(
     admin_client, sqlite_connection, flagging_query
 ):
-    """The bug app.schemas.types exists for, in the flagged view.
+    """The bug app.types exists for, in the flagged view.
 
     The app-state backend is SQLite in tests and can be SQLite in production,
     and it drops the timezone. An untyped response then sends a naive string,

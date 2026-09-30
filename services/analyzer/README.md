@@ -298,6 +298,9 @@ Response shapes and the full `error_code` table are in
 
 Every statement, saved or ad-hoc, goes through `app/security/sql_guard.py`
 before any target database sees it. The order of checks is load-bearing.
+The lists it checks against (forbidden keywords and functions, allowed statement
+types) are in `app/policy/sql_allowlist.py`; that is the file to edit to change
+what is permitted.
 
 **1. Comments are stripped first, and the stripped text is what executes.**
 This is what defeats statement stacking hidden behind a comment:
@@ -589,22 +592,22 @@ set of attack inputs with a hard pass threshold of zero bypasses. Writing an
 
 ## Layout
 
+One folder per feature under `app/features/`, and the things you are likely to
+edit (allowed SQL, chart types, flag operators) as plain files in `app/policy/`.
+[`STRUCTURE.md`](STRUCTURE.md) has the "I want to..." table and the recipes for
+adding or removing a feature.
+
 ```
 services/analyzer/
 ├── app/
-│   ├── main.py                  FastAPI app, CORS, exception handlers
-│   ├── config.py                env-var settings
-│   ├── errors.py                ErrorCode enum, single code -> HTTP mapping
-│   ├── db/
-│   │   ├── app_state.py         this service's own database
-│   │   └── target_registry.py   pooled read-only engines per connection
-│   ├── models/                  app-state SQLAlchemy models
-│   ├── schemas/                 Pydantic request/response models
-│   ├── security/
-│   │   ├── sql_guard.py         the SELECT-only validator
-│   │   └── crypto.py            Fernet credential encryption
-│   ├── routers/                 connections, introspection, queries
-│   └── services/                business logic, result cache
-├── alembic/                     app-state migrations
+│   ├── main.py            FastAPI app, middleware, router wiring
+│   ├── config.py          env-var settings
+│   ├── errors.py          ErrorCode enum, single code -> HTTP mapping
+│   ├── policy/            editable: sql_allowlist.py, chart_types.py, flag_rules.py
+│   ├── features/          connections, queries, charts, flag_rules, dashboards,
+│   │                      auth, users, audit; each has models/schemas/service/router
+│   ├── security/          sql_guard.py (the validator), crypto, passwords, auth deps
+│   └── db/                app_state.py, target_registry.py, registry.py, migrations
+├── alembic/               app-state migrations
 └── tests/
 ```

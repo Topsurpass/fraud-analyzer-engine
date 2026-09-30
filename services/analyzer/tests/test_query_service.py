@@ -10,15 +10,19 @@ from decimal import Decimal
 import pytest
 
 from app.config import get_settings
+from app.enums import DbType
 from app.errors import AppError, ErrorCode, SqlValidationError
-from app.models import ChartType, Connection, DbType, QueryChart, SavedQuery
-from app.services.query_service import (
+from app.features.charts.models import QueryChart
+from app.features.connections.models import Connection
+from app.features.queries.execution import (
     build_chart,
     canonical_hash,
     execute_sql,
     resolve_row_limit,
     to_jsonable,
 )
+from app.features.queries.models import SavedQuery
+from app.policy.chart_types import ChartType
 
 
 def sqlite_conn(path: str) -> Connection:

@@ -18,9 +18,10 @@ connections are opened read-only.
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 
-from app.models.enums import FlagSeverity, enum_column
+from alembic import op
+from app.enums import enum_column
+from app.policy.flag_rules import FlagSeverity
 
 revision = "0008_flagged_rows"
 down_revision = "0007_flag_dismissals"

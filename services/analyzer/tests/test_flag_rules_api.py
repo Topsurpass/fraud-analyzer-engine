@@ -132,7 +132,7 @@ def test_rules_on_an_unknown_query_are_a_404(admin_client):
 
 
 def test_deleting_a_query_takes_its_rules_with_it(admin_client, query, session):
-    from app.models import FlagCondition, FlagRule
+    from app.features.flag_rules.models import FlagCondition, FlagRule
 
     admin_client.put(
         f"/queries/{query['id']}/flag-rules",
@@ -463,7 +463,7 @@ def test_a_broken_query_does_not_empty_the_whole_view(
     admin_client, sqlite_connection, session
 ):
     """One card's SQL failing must not hide the other card's flagged rows."""
-    from app.models import SavedQuery
+    from app.features.queries.models import SavedQuery
 
     good = make_query(
         admin_client,
@@ -738,9 +738,10 @@ def test_deleting_the_query_takes_its_dismissals_with_it(
     )
     assert admin_client.delete(f"/queries/{query['id']}").status_code == 204
     # A dismissal describes rows a deleted query can no longer produce.
-    from app.models import FlagDismissal
-    from app.db.app_state import get_engine
     from sqlalchemy.orm import Session
+
+    from app.db.app_state import get_engine
+    from app.features.flag_rules.models import FlagDismissal
 
     with Session(get_engine()) as session:
         assert session.query(FlagDismissal).count() == 0

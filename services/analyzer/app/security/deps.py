@@ -11,8 +11,8 @@ from __future__ import annotations
 from fastapi import Depends
 
 from app.errors import AppError, ErrorCode
-from app.models.user import User
-from app.routers.auth import current_user
+from app.features.auth.router import current_user
+from app.features.users.models import User
 
 #: The four interactive-documentation paths FastAPI registers for itself
 #: (``/docs``, its Swagger OAuth2 redirect helper, ``/redoc`` and the schema
@@ -47,7 +47,7 @@ _DOCS_PATHS = frozenset(
 #: ``/auth/me`` and ``/auth/change-password`` are deliberately NOT on this
 #: list, and are also deliberately not wired to ``require_user`` below: both
 #: sit behind ``current_user`` (imported above, defined in
-#: ``app/routers/auth.py``), which is a real, strictly weaker guard - a valid
+#: ``app/features/auth/router.py``), which is a real, strictly weaker guard - a valid
 #: session, full stop, still 401 with none - that ``require_user`` layers the
 #: password-change gate on top of. ``/auth/change-password`` is the one
 #: endpoint an account with ``must_change_password`` set must still be able to

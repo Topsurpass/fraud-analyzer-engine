@@ -11,8 +11,9 @@ from datetime import timedelta
 import pytest
 
 from app.config import get_settings
-from app.models import QueryExecutionLog, utcnow
-from app.services import saved_query_service as svc
+from app.db.base import utcnow
+from app.features.queries import service as svc
+from app.features.queries.models import QueryExecutionLog
 
 
 @pytest.fixture

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from app.models.enums import AuditAction, UserRole
-from app.models.audit_log import AuditLog
-from app.models.user import User
+from app.enums import AuditAction, UserRole
+from app.features.audit import service as audit_service
+from app.features.audit.models import AuditLog
+from app.features.users.models import User
 from app.security.passwords import hash_password
-from app.services import audit_service
 
 
 def _user(session, email="admin@example.com", role=UserRole.ADMIN) -> User:

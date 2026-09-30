@@ -657,7 +657,7 @@ def test_qualified_column_named_after_a_non_postgres_function_still_works(sql):
 
 def test_every_postgres_function_is_blocked_in_field_notation():
     """The whole PostgreSQL group, not just the ones that were demonstrated."""
-    from app.security.sql_guard import _POSTGRES_FUNCTIONS
+    from app.policy.sql_allowlist import POSTGRES_FUNCTIONS as _POSTGRES_FUNCTIONS
 
     for name in sorted(_POSTGRES_FUNCTIONS):
         with pytest.raises(SqlValidationError) as ei:
@@ -667,12 +667,13 @@ def test_every_postgres_function_is_blocked_in_field_notation():
 
 def test_blocklist_groups_partition_the_whole_list():
     """The union must stay the full list, so regrouping cannot silently drop one."""
-    from app.security.sql_guard import (
-        _MYSQL_FUNCTIONS,
-        _POSTGRES_FUNCTIONS,
-        _SQLITE_FUNCTIONS,
+    from app.policy.sql_allowlist import (
+        FORBIDDEN_FUNCTIONS,
+        MYSQL_FUNCTIONS,
+        POSTGRES_FUNCTIONS,
+        SQLITE_FUNCTIONS,
     )
 
     assert (
-        _POSTGRES_FUNCTIONS | _MYSQL_FUNCTIONS | _SQLITE_FUNCTIONS
-    ) == sql_guard.FORBIDDEN_FUNCTIONS
+        POSTGRES_FUNCTIONS | MYSQL_FUNCTIONS | SQLITE_FUNCTIONS
+    ) == FORBIDDEN_FUNCTIONS == sql_guard.FORBIDDEN_FUNCTIONS

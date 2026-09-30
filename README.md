@@ -273,7 +273,8 @@ Run these from `fraud-analyzer-engine/deploy/`.
 
 | Path | What it holds |
 |---|---|
-| `services/analyzer/` | The service: API, SQL guard, migrations, tests, CLI |
+| `services/analyzer/` | The service: API, SQL guard, migrations, tests, CLI. Start at [`STRUCTURE.md`](services/analyzer/STRUCTURE.md) to find what to edit |
+| `services/analyzer/app/policy/` | The files you edit to change allowed SQL, chart types and flag operators |
 | `services/analyzer/certs/` | AWS RDS CA bundle, baked into the image for `verify-full` |
 | `deploy/` | Production stack: compose, Caddyfile, and the scripts above |
 | `contracts/` | Frozen response shapes and the generated `openapi.json` |

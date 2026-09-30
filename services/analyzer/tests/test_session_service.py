@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from app.models.base import utcnow
-from app.models.enums import UserRole
-from app.models.user import User, UserSession
+from app.db.base import utcnow
+from app.enums import UserRole
+from app.features.auth import sessions as session_service
+from app.features.users.models import User, UserSession
 from app.security.passwords import hash_password
-from app.services import session_service
 
 
 def _user(session, **over) -> User:

@@ -15,12 +15,12 @@ import typer
 from sqlalchemy import delete, func, inspect, select, update
 
 from app.db.app_state import get_engine, get_sessionmaker
+from app.db.base import utcnow
+from app.enums import UserRole
 from app.errors import AppError
-from app.models.base import utcnow
-from app.models.dashboard import Dashboard
-from app.models.enums import UserRole
-from app.models.saved_query import SavedQuery
-from app.models.user import User, UserSession
+from app.features.dashboards.models import Dashboard
+from app.features.queries.models import SavedQuery
+from app.features.users.models import User, UserSession
 from app.security import passwords
 
 app = typer.Typer(help="Switchboard operator commands.", no_args_is_help=True)

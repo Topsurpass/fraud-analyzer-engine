@@ -5,12 +5,12 @@ from __future__ import annotations
 from datetime import timedelta
 
 from app.db.app_state import get_sessionmaker
-from app.models.base import utcnow
-from app.models.enums import UserRole
-from app.models.user import User, UserSession
+from app.db.base import utcnow
+from app.enums import UserRole
+from app.features.auth import sessions as session_service
+from app.features.auth.service import MAX_FAILED_LOGINS
+from app.features.users.models import User, UserSession
 from app.security.passwords import hash_password
-from app.services import session_service
-from app.services.auth_service import MAX_FAILED_LOGINS
 
 PASSWORD = "a-perfectly-fine-password"
 

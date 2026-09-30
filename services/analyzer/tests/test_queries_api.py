@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.models import SavedQuery
+from app.features.queries.models import SavedQuery
 
 
 @pytest.fixture
@@ -237,7 +237,7 @@ def test_renaming_onto_an_existing_name_is_409(make_query, admin_client):
 
 def test_execution_log_failure_does_not_break_the_run(make_query, admin_client, monkeypatch):
     """A logging failure must never turn a successful run into an error."""
-    from app.services import saved_query_service
+    from app.features.queries import service as saved_query_service
 
     query_id = make_query().json()["id"]
 

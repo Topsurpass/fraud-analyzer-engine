@@ -6,7 +6,7 @@ from collections import Counter
 
 import pytest
 
-from app.models.enums import UserRole
+from app.enums import UserRole
 from tests.test_auth_api import login, make_user
 
 PASSWORD = "a-perfectly-fine-password"
@@ -190,7 +190,7 @@ def test_unowned_rows_are_invisible_to_analysts(client, alice, boss, connection,
     """Everything created before accounts existed has no owner. It must not
     become visible to whoever signs up first."""
     from app.db.app_state import get_sessionmaker
-    from app.models.saved_query import SavedQuery
+    from app.features.queries.models import SavedQuery
 
     db = get_sessionmaker()()
     try:
@@ -366,7 +366,7 @@ def _execution_rows() -> list[dict]:
     saved query - which is exactly the path that was going unrecorded.
     """
     from app.db.app_state import get_sessionmaker
-    from app.models import QueryExecutionLog
+    from app.features.queries.models import QueryExecutionLog
 
     db = get_sessionmaker()()
     try:

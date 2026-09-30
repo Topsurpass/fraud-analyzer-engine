@@ -15,9 +15,8 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db.app_state import get_engine
-from app.models import FlaggedRow
-from app.services import scheduler
-
+from app.features.flag_rules.models import FlaggedRow
+from app.features.queries import scheduler
 from tests.test_flag_rules_api import make_query, rule
 
 
@@ -82,7 +81,7 @@ def test_the_interval_has_a_floor(admin_client, sqlite_connection, monkeypatch):
         poll_interval_ms=1000,
     )
     with Session(get_engine()) as opened:
-        from app.models import SavedQuery
+        from app.features.queries.models import SavedQuery
 
         query = opened.get(SavedQuery, created["id"])
         assert scheduler.interval_for(query) == 60_000
@@ -102,7 +101,7 @@ def test_a_longer_interval_than_the_floor_is_respected(
         poll_interval_ms=900_000,
     )
     with Session(get_engine()) as opened:
-        from app.models import SavedQuery
+        from app.features.queries.models import SavedQuery
 
         assert scheduler.interval_for(opened.get(SavedQuery, created["id"])) == 900_000
 
@@ -113,7 +112,7 @@ def test_a_failing_target_backs_off_instead_of_retrying_at_full_rate(
     def explode(*_args, **_kwargs):
         raise RuntimeError("target is down")
 
-    monkeypatch.setattr("app.services.query_service.run_saved_query", explode)
+    monkeypatch.setattr("app.features.queries.execution.run_saved_query", explode)
 
     assert scheduler.run_due_once(session) == 0
     first = scheduler._next_due[watched["id"]]
@@ -152,7 +151,7 @@ def test_one_broken_target_does_not_stop_the_others(
             raise RuntimeError("this one is down")
         return real(query, conn)
 
-    monkeypatch.setattr("app.services.query_service.run_saved_query", selective)
+    monkeypatch.setattr("app.features.queries.execution.run_saved_query", selective)
 
     assert scheduler.run_due_once(session) == 1
     assert _stored(session) == 2
@@ -162,7 +161,7 @@ def test_backoff_clears_after_a_success(admin_client, watched, session, monkeypa
     def explode(*_args, **_kwargs):
         raise RuntimeError("down")
 
-    monkeypatch.setattr("app.services.query_service.run_saved_query", explode)
+    monkeypatch.setattr("app.features.queries.execution.run_saved_query", explode)
     scheduler.run_due_once(session)
     assert watched["id"] in scheduler._backoff
 
@@ -179,7 +178,7 @@ def test_backoff_is_capped(admin_client, watched, session, monkeypatch):
     def explode(*_args, **_kwargs):
         raise RuntimeError("down")
 
-    monkeypatch.setattr("app.services.query_service.run_saved_query", explode)
+    monkeypatch.setattr("app.features.queries.execution.run_saved_query", explode)
     for _ in range(8):
         scheduler._next_due[watched["id"]] = 0
         scheduler.run_due_once(session)

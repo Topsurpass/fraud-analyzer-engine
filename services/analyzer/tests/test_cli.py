@@ -6,11 +6,10 @@ from typer.testing import CliRunner
 
 from app.cli import app as cli
 from app.db.app_state import get_sessionmaker
-from app.models.enums import UserRole
-from app.models.connection import Connection
-from app.models.enums import DbType
-from app.models.saved_query import SavedQuery
-from app.models.user import User
+from app.enums import DbType, UserRole
+from app.features.connections.models import Connection
+from app.features.queries.models import SavedQuery
+from app.features.users.models import User
 
 runner = CliRunner()
 
@@ -242,7 +241,10 @@ def _unowned_rows(app_db):
     API always sets an owner - which is the point: these rows are the ones
     that existed before there was anybody to own them.
     """
-    from app.models import Connection, Dashboard, DbType, SavedQuery
+    from app.enums import DbType
+    from app.features.connections.models import Connection
+    from app.features.dashboards.models import Dashboard
+    from app.features.queries.models import SavedQuery
 
     db = get_sessionmaker()()
     try:
@@ -284,7 +286,8 @@ def test_create_admin_reports_what_is_unowned(app_db):
 
 
 def test_create_admin_claims_unowned_work_when_accepted(app_db):
-    from app.models import Dashboard, SavedQuery
+    from app.features.dashboards.models import Dashboard
+    from app.features.queries.models import SavedQuery
 
     _unowned_rows(app_db)
 
@@ -306,7 +309,8 @@ def test_create_admin_claims_unowned_work_when_accepted(app_db):
 
 
 def test_create_admin_leaves_unowned_work_alone_when_declined(app_db):
-    from app.models import Dashboard, SavedQuery
+    from app.features.dashboards.models import Dashboard
+    from app.features.queries.models import SavedQuery
 
     _unowned_rows(app_db)
 
@@ -325,7 +329,8 @@ def test_create_admin_asks_when_neither_flag_is_given(app_db):
     """Skippable, and defaulting to claiming: the operator running this is the
     first administrator, and leaving the rows unowned is the outcome nothing
     can undo later."""
-    from app.models import Dashboard, SavedQuery
+    from app.features.dashboards.models import Dashboard
+    from app.features.queries.models import SavedQuery
 
     _unowned_rows(app_db)
 

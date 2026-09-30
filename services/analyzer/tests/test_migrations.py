@@ -12,13 +12,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 
+from alembic import command
 from app.config import get_settings
-from app.models import Base
+from app.db.registry import Base
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -206,7 +206,7 @@ def test_ownership_foreign_keys_restrict(tmp_path, alembic_for):
     """The owner/creator FKs added by 0012_ownership refuse a deletion rather
     than cascading it or nulling it out.
 
-    Accounts are deactivated, never deleted (see app/models/user.py), so this
+    Accounts are deactivated, never deleted (see app/features/users/models.py), so this
     only ever bites an operator trying to hard-delete a row directly against
     the database -- but if they do, the fix must be "reassign or deactivate",
     not "silently orphan every query that analyst ever saved".
@@ -494,7 +494,7 @@ def test_audit_logs_actor_fk_restricts_deletion(tmp_path, alembic_for):
     """An audit row must survive its actor's account, unlike a preview log's
     ``user_id`` above which shares the same RESTRICT reasoning: an entry that
     has forgotten who performed it answers nothing, and accounts are never
-    deleted in the first place (see app/models/user.py)."""
+    deleted in the first place (see app/features/users/models.py)."""
     url = f"sqlite:///{tmp_path / 'app.db'}"
     cfg = alembic_for(url)
     command.upgrade(cfg, "head")

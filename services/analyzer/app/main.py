@@ -18,13 +18,24 @@ from sqlalchemy import text
 
 from app.config import get_settings
 from app.db import target_registry
-from app.services import refresher, scheduler
 from app.db.app_state import get_engine
 from app.db.migrate import bootstrap_schema
 from app.errors import HTTP_STATUS_BY_CODE, AppError, ErrorCode
+from app.features.auth import router as auth
+from app.features.charts import router as charts
+from app.features.connections import (
+    introspection_router as introspection,
+)
+from app.features.connections import (
+    router as connections,
+)
+from app.features.dashboards import router as dashboards
+from app.features.flag_rules import router as flag_rules
+from app.features.queries import refresher, scheduler
+from app.features.queries import router as queries
+from app.features.users import router as users
 from app.observability import RequestContextMiddleware, configure_logging
 from app.ratelimit import RateLimitMiddleware, RequestSizeLimitMiddleware
-from app.routers import auth, connections, dashboards, flag_rules, introspection, queries, users
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +87,7 @@ def _report_unreadable_credentials() -> None:
     from sqlalchemy.orm import Session
 
     from app.db.app_state import get_engine
-    from app.models import Connection
+    from app.features.connections.models import Connection
     from app.security.crypto import decrypt
 
     try:
@@ -122,7 +133,7 @@ def _prune_logs_on_startup() -> None:
     swallowed: an unprunable log table is a housekeeping problem, not a reason
     to refuse to serve.
     """
-    from app.services import saved_query_service
+    from app.features.queries import service as saved_query_service
 
     try:
         removed = saved_query_service.prune_execution_logs()
@@ -288,6 +299,7 @@ app.include_router(connections.router)
 app.include_router(dashboards.router)
 app.include_router(introspection.router)
 app.include_router(queries.connection_scoped)
+app.include_router(charts.query_scoped)
 app.include_router(queries.query_scoped)
 app.include_router(flag_rules.connection_scoped)
 app.include_router(flag_rules.query_scoped)

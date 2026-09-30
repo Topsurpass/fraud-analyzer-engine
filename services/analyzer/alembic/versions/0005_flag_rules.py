@@ -19,9 +19,10 @@ row written by plain SQL is still readable by the ORM.
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 
-from app.models.enums import FlagOperator, FlagSeverity, enum_column
+from alembic import op
+from app.enums import enum_column
+from app.policy.flag_rules import FlagOperator, FlagSeverity
 
 revision = "0005_flag_rules"
 down_revision = "0004_log_index"

@@ -7,7 +7,7 @@ whether that is safe to use in a fraud queue.
 
 from __future__ import annotations
 
-from app.services.flag_dismissal_service import row_fingerprint
+from app.features.flag_rules.dismissals import row_fingerprint
 
 
 def test_the_same_row_always_hashes_the_same():

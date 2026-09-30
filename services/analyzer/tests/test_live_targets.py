@@ -31,6 +31,7 @@ from sqlalchemy import text
 
 from app.config import get_settings
 from app.db import target_registry as reg
+from app.enums import DbType
 from app.errors import (
     DbAuthError,
     DbPermissionError,
@@ -39,9 +40,9 @@ from app.errors import (
     QueryTimeoutError,
     SqlValidationError,
 )
-from app.models import Connection, DbType
+from app.features.connections.models import Connection
+from app.features.queries.execution import execute_sql
 from app.security.crypto import encrypt
-from app.services.query_service import execute_sql
 
 PG = {"host": "127.0.0.1", "port": 55432, "database": "fraud", "username": "app_rw", "password": "apppw"}
 MY = {"host": "127.0.0.1", "port": 53306, "database": "fraud", "username": "app_rw", "password": "apppw"}
@@ -210,7 +211,7 @@ def test_pg_cte_write_blocked(pg):
 
 @postgres_only
 def test_pg_introspection(pg):
-    from app.services.introspection_service import list_columns, list_tables
+    from app.features.connections.introspection import list_columns, list_tables
 
     names = {t.name: t.kind for t in list_tables(pg)}
     assert names["payments"] == "table"
@@ -312,6 +313,6 @@ def test_mysql_row_cap_with_duplicate_column_names(my):
 
 @mysql_only
 def test_mysql_introspection(my):
-    from app.services.introspection_service import list_tables
+    from app.features.connections.introspection import list_tables
 
     assert "payments" in {t.name for t in list_tables(my)}

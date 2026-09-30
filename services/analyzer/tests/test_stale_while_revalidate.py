@@ -15,8 +15,7 @@ import time
 
 import pytest
 
-from app.services import refresher, result_cache
-
+from app.features.queries import refresher, result_cache
 from tests.test_flag_rules_api import make_query
 
 
@@ -137,7 +136,7 @@ def test_a_failing_refresh_does_not_take_the_request_with_it(admin_client, query
     def explode(*_args, **_kwargs):
         raise RuntimeError("target is down")
 
-    monkeypatch.setattr("app.services.query_service.run_saved_query", explode)
+    monkeypatch.setattr("app.features.queries.execution.run_saved_query", explode)
 
     admin_client.post(f"/queries/{query['id']}/run") if False else None
     refresher.request_refresh(query["id"], None)
@@ -180,7 +179,7 @@ def test_a_failing_refresh_still_names_the_person_who_polled(admin_client, query
 
         raise AppError(ErrorCode.QUERY_EXECUTION_ERROR, "target is down")
 
-    monkeypatch.setattr("app.services.query_service.run_saved_query", explode)
+    monkeypatch.setattr("app.features.queries.execution.run_saved_query", explode)
     refresher.request_refresh(query["id"], me)
     _wait_for_refresh()
 

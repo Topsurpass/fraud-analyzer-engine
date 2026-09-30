@@ -14,8 +14,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.models.enums import FlagOperator, FlagSeverity
-from app.services.flagging import (
+from app.features.flag_rules.engine import (
     ConditionSpec,
     RuleSpec,
     as_number,
@@ -24,6 +23,7 @@ from app.services.flagging import (
     specs_from_models,
     split_list,
 )
+from app.policy.flag_rules import FlagOperator, FlagSeverity
 
 
 def cond(column: str, operator: FlagOperator, value=None, value2=None) -> ConditionSpec:

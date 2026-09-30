@@ -25,9 +25,9 @@ was written under.
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 
-from app.models.enums import AuditAction, enum_column
+from alembic import op
+from app.enums import AuditAction, enum_column
 
 revision = "0014_audit_log"
 down_revision = "0013_owner_scoped_names"

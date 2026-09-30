@@ -18,6 +18,7 @@ destroy an investigation's queries or orphan them.
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0012_ownership"

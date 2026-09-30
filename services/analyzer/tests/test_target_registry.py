@@ -10,6 +10,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.config import get_settings
 from app.db import target_registry as reg
+from app.enums import DbType, SslMode
 from app.errors import (
     DbAuthError,
     DbPermissionError,
@@ -19,8 +20,7 @@ from app.errors import (
     QueryExecutionError,
     QueryTimeoutError,
 )
-from app.models import Connection, DbType
-from app.models.enums import SslMode
+from app.features.connections.models import Connection
 from app.security.crypto import encrypt
 
 
@@ -430,7 +430,8 @@ def test_pool_timeout_is_configured_on_target_engines(session, target_sqlite):
     """Without this the default is 30 s, past the frontend's poll deadline."""
     from app.config import get_settings
     from app.db import target_registry
-    from app.models import Connection, DbType
+    from app.enums import DbType
+    from app.features.connections.models import Connection
 
     conn = Connection(name="p", db_type=DbType.SQLITE, sqlite_path=target_sqlite)
     session.add(conn)

@@ -14,7 +14,7 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
-from app.models import Base
+from app.db.registry import Base
 
 
 @lru_cache

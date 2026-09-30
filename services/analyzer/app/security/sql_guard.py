@@ -1,5 +1,9 @@
 """SELECT-only SQL validator.
 
+The lists this validator checks against (forbidden keywords, functions, locking
+words, allowed statement types) live in ``app/policy/sql_allowlist.py``. Edit
+that file to change what is permitted; this one is the machinery.
+
 Every statement, saved or ad-hoc, passes through :func:`validate_select` before
 any target database sees it. Nothing else in the service is allowed to build a
 statement and execute it directly.
@@ -85,6 +89,14 @@ from sqlparse.sql import Statement
 
 from app.config import get_settings
 from app.errors import ErrorCode, SqlValidationError
+from app.policy.sql_allowlist import (
+    ALLOWED_STATEMENT_TYPES,
+    FORBIDDEN_FUNCTIONS,
+    FORBIDDEN_KEYWORDS,
+    FORBIDDEN_LOCKING_WORDS,
+    FORBIDDEN_NAMES,
+    POSTGRES_FUNCTIONS,
+)
 
 #: Token types that count as a keyword for the blocklist scan.
 _KEYWORD_TYPES = (T.Keyword, T.Keyword.DML, T.Keyword.DDL, T.Keyword.DCL, T.Keyword.CTE)
@@ -117,151 +129,6 @@ _UNICODE_ESCAPE_LITERAL = re.compile(r"(?<![A-Za-z0-9_])[uU]&\s*['\"]")
 #: Memoised acceptances, keyed on the exact input string. See validate_select.
 _validated: OrderedDict[str, str] = OrderedDict()
 _cache_lock = threading.RLock()
-
-#: Reserved words that may never appear anywhere in a read-only query.
-#:
-#: Each entry is ANSI-reserved, so it cannot be a bare column name. ``INTO``
-#: covers ``SELECT ... INTO table``, MySQL's ``INTO OUTFILE`` and ``INTO
-#: DUMPFILE``. ``UPDATE`` also blocks ``SELECT ... FOR UPDATE``, which is a
-#: locking read and has no place in an analytics query.
-FORBIDDEN_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "INSERT",
-        "UPDATE",
-        "DELETE",
-        "DROP",
-        "ALTER",
-        "CREATE",
-        "TRUNCATE",
-        "GRANT",
-        "REVOKE",
-        "INTO",
-        "ATTACH",
-        "DETACH",
-        "EXEC",
-        "EXECUTE",
-        "VACUUM",
-        "REINDEX",
-        "UPSERT",
-    }
-)
-
-#: Words ``sqlparse`` types as a plain name rather than a keyword, but which are
-#: never legitimate in a read query.
-FORBIDDEN_NAMES: frozenset[str] = frozenset({"outfile", "dumpfile", "pragma"})
-
-#: Functions that read the filesystem, open a network connection, mutate
-#: server state, or burn CPU. A statement can be a flawless SELECT and still
-#: exfiltrate or write through one of these, so statement type alone is not
-#: enough.
-#:
-#: ``set_config`` is the most important entry. The read-only guarantee has
-#: three layers, and the middle one is a libpq connect option
-#: (``default_transaction_read_only=on``, see
-#: ``target_registry.postgres_connect_args``). ``SELECT set_config(
-#: 'default_transaction_read_only', 'off', false)`` turns that layer off for
-#: the life of the pooled connection, so it survives into later requests that
-#: reuse the same handle. That is a privilege escalation, not a coverage gap.
-#:
-#: Deliberately absent: ``generate_series`` and ``repeat``. Both are ordinary
-#: in analytics and both are bounded by the statement timeout and the result
-#: byte budget rather than by a blocklist.
-_POSTGRES_FUNCTIONS: frozenset[str] = frozenset(
-    {
-        "set_config",
-        "pg_read_file",
-        "pg_read_binary_file",
-        "pg_ls_dir",
-        "pg_stat_file",
-        "pg_ls_logdir",
-        "pg_ls_waldir",
-        "pg_ls_tmpdir",
-        "pg_ls_archive_statusdir",
-        "pg_logdir_ls",
-        "pg_sleep",
-        "pg_sleep_for",
-        "pg_sleep_until",
-        "pg_advisory_lock",
-        "pg_advisory_xact_lock",
-        "lo_import",
-        "lo_export",
-        "lo_get",
-        "lo_put",
-        "lo_from_bytea",
-        "lo_unlink",
-        "lo_open",
-        "lo_read",
-        "lo_write",
-        "loread",
-        "lowrite",
-        "dblink",
-        "dblink_exec",
-        "dblink_connect",
-        "dblink_connect_u",
-        "dblink_send_query",
-        "dblink_fetch",
-        "dblink_open",
-        "dblink_close",
-        "query_to_xml",
-        "query_to_xmlschema",
-        "query_to_xml_and_xmlschema",
-        "nextval",
-        "setval",
-        "pg_terminate_backend",
-        "pg_cancel_backend",
-        "pg_reload_conf",
-        "pg_rotate_logfile",
-        "pg_promote",
-        "pg_switch_wal",
-        "pg_switch_xlog",
-        "pg_create_restore_point",
-        "pg_start_backup",
-        "pg_stop_backup",
-        "pg_backup_start",
-        "pg_backup_stop",
-        "pg_drop_replication_slot",
-        "pg_create_physical_replication_slot",
-        "pg_create_logical_replication_slot",
-        "pg_stat_reset",
-        "pg_stat_reset_shared",
-        "pg_notify",
-    }
-)
-
-#: MySQL-only. Not reachable through PostgreSQL's field-notation call syntax,
-#: because MySQL has no such syntax.
-_MYSQL_FUNCTIONS: frozenset[str] = frozenset(
-    {
-        "load_file",
-        "benchmark",
-        "sleep",
-        "get_lock",
-        "release_lock",
-        "release_all_locks",
-        "master_pos_wait",
-        "source_pos_wait",
-        "sys_exec",
-        "sys_eval",
-    }
-)
-
-#: SQLite-only, same reasoning as the MySQL group.
-_SQLITE_FUNCTIONS: frozenset[str] = frozenset(
-    {
-        "readfile",
-        "writefile",
-        "load_extension",
-        "edit",
-        "fts3_tokenizer",
-        "zipfile",
-        "sqlar_compress",
-        "sqlar_uncompress",
-    }
-)
-
-FORBIDDEN_FUNCTIONS: frozenset[str] = (
-    _POSTGRES_FUNCTIONS | _MYSQL_FUNCTIONS | _SQLITE_FUNCTIONS
-)
 
 
 def _reject(code: ErrorCode, message: str, **detail: object) -> None:
@@ -414,7 +281,7 @@ def _check_functions(statement: Statement) -> None:
         called_as_field = (
             preceding is not None
             and preceding.value == "."
-            and name in _POSTGRES_FUNCTIONS
+            and name in POSTGRES_FUNCTIONS
         )
 
         if not (called_with_parens or called_as_field):
@@ -453,7 +320,7 @@ def _check_locking_clause(statement: Statement) -> None:
             word = following.value.upper()
             if word in ("NO", "KEY"):
                 continue
-            if word == "SHARE":
+            if word in FORBIDDEN_LOCKING_WORDS:
                 _reject(
                     ErrorCode.FORBIDDEN_KEYWORD,
                     "Forbidden locking clause 'FOR SHARE': it takes row locks "
@@ -565,7 +432,7 @@ def _validate_uncached(sql: str) -> str:
     statement = statements[0]
     single = str(statement).strip().rstrip(";").strip()
     statement_type = statement.get_type()
-    if statement_type != "SELECT":
+    if statement_type not in ALLOWED_STATEMENT_TYPES:
         _reject(
             ErrorCode.NON_SELECT_STATEMENT,
             f"Only SELECT statements are permitted; this is "

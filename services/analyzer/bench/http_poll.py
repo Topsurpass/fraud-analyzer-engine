@@ -46,9 +46,9 @@ def build():
     client.__enter__()
 
     from app.db.app_state import get_sessionmaker
-    from app.models.enums import UserRole
+    from app.enums import UserRole
     from app.security.passwords import hash_password
-    from app.models.user import User
+    from app.features.users.models import User
 
     session = get_sessionmaker()()
     session.add(
@@ -171,7 +171,7 @@ def main():
     )
 
 
-    from app.services import rendered_cache
+    from app.features.queries import rendered_cache
 
     stats = rendered_cache.stats()
     total = stats["hits"] + stats["misses"]

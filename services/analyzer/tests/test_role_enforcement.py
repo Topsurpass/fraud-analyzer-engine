@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.models.enums import UserRole
+from app.enums import UserRole
 from tests.test_auth_api import login, make_user
 
 PASSWORD = "a-perfectly-fine-password"
@@ -133,6 +133,6 @@ def test_a_locked_out_password_change_account_is_refused_everywhere_but_the_esca
 
     # The gate is gone once the password is changed, even though it is the
     # same session token throughout - change-password revokes every *other*
-    # session but restores this one, per app/routers/auth.py.
+    # session but restores this one, per app/features/auth/router.py.
     unblocked = client.get("/connections", headers=auth)
     assert unblocked.status_code == 200

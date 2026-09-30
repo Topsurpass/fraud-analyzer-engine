@@ -36,8 +36,8 @@ from __future__ import annotations
 import pytest
 from fastapi.routing import APIRoute, iter_route_contexts
 
+from app.features.auth.router import current_user
 from app.main import app
-from app.routers.auth import current_user
 from app.security.deps import PUBLIC_PATHS, require_admin, require_user
 
 #: Paths guarded by bare ``current_user`` rather than ``require_user``, each

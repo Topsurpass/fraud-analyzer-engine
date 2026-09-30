@@ -12,9 +12,9 @@ app already depends on.
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 
-from app.models.enums import UserRole, enum_column
+from alembic import op
+from app.enums import UserRole, enum_column
 
 revision = "0011_users_and_sessions"
 down_revision = "0010_surge_threshold"

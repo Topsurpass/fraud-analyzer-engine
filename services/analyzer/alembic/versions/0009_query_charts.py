@@ -25,9 +25,10 @@ from __future__ import annotations
 import uuid
 
 import sqlalchemy as sa
-from alembic import op
 
-from app.models.enums import ChartType, enum_column
+from alembic import op
+from app.enums import enum_column
+from app.policy.chart_types import ChartType
 
 revision = "0009_query_charts"
 down_revision = "0008_flagged_rows"

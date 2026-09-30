@@ -40,8 +40,8 @@ def timed(label, fn, repeat=5):
 def main():
     import sqlite3
 
-    from app.services.query_service import canonical_hash, to_jsonable
-    from app.services.sizing import approx_json_size
+    from app.features.queries.execution import canonical_hash, to_jsonable
+    from app.features.queries.sizing import approx_json_size
 
     db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     raw = timed("1. sqlite fetch (raw driver)", lambda: db.execute(SQL).fetchall())

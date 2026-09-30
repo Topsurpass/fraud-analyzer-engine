@@ -76,7 +76,7 @@ def test_batch_poll_honours_since_hash_per_query(admin_client, three_queries):
 
 def test_one_broken_query_does_not_fail_the_whole_batch(admin_client, three_queries, session):
     """Eleven working cards must still render beside one broken one."""
-    from app.models import SavedQuery
+    from app.features.queries.models import SavedQuery
 
     broken = session.get(SavedQuery, three_queries[1])
     broken.sql_text = "SELECT * FROM table_that_does_not_exist"

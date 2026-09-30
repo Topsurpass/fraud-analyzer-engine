@@ -84,7 +84,7 @@
         "type": "string"
       },
       "AuditEntryRead": {
-        "description": "One row of the audit log, with the actor's email resolved for display.\n\nMirrors ``app.models.audit_log.AuditLog`` field for field, plus\n``actor_email`` - the log stores ``actor_id`` because accounts are never\ndeleted and an id is what survives an email changing, but a page rendering\nthe log for a human needs something readable without a second lookup per\nrow.",
+        "description": "One row of the audit log, with the actor's email resolved for display.\n\nMirrors ``app.features.audit.models.AuditLog`` field for field, plus\n``actor_email`` - the log stores ``actor_id`` because accounts are never\ndeleted and an id is what survives an email changing, but a page rendering\nthe log for a human needs something readable without a second lookup per\nrow.",
         "properties": {
           "action": {
             "$ref": "#/components/schemas/AuditAction"

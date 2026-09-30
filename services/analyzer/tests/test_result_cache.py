@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from app.config import get_settings
-from app.services import result_cache
+from app.features.queries import result_cache
 
 
 def setup_function() -> None:

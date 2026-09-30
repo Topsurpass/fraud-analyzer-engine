@@ -67,9 +67,9 @@ def isolated_environment(tmp_path, monkeypatch):
     """
     from app import ratelimit
     from app.db import app_state
+    from app.features.queries import result_cache
     from app.security import sql_guard
     from app.security.crypto import generate_key, get_fernet
-    from app.services import result_cache
 
     monkeypatch.setenv("FAE_FERNET_KEY", generate_key())
     monkeypatch.setenv("FAE_APP_DB_URL", f"sqlite:///{tmp_path / 'app_state.db'}")
@@ -205,8 +205,8 @@ def admin_client(client, app_db):
     and ``client`` is function-scoped, so mutating its headers here cannot
     leak a session into another test.
     """
+    from app.enums import UserRole
     from tests.test_auth_api import login, make_user
-    from app.models.enums import UserRole
 
     # ``.test`` is one of the four RFC 2606 reserved TLDs (alongside
     # ``.example``, ``.invalid``, ``.localhost``) and pydantic's ``EmailStr``
@@ -226,7 +226,7 @@ def sqlite_connection(admin_client, target_sqlite):
     """A created, tested-OK connection pointed at the temp SQLite target.
 
     Creating a connection is an admin-only write (see
-    app/routers/connections.py), so this rides on admin_client rather than the
+    app/features/connections/router.py), so this rides on admin_client rather than the
     bare client - every test that pulls in sqlite_connection gets an
     authenticated admin session as a side effect, which is what it needs to
     make the POST below succeed in the first place.

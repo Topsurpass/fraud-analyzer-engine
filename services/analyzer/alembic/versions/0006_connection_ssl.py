@@ -27,9 +27,9 @@ what a new connection now gets, so stored rows and new ones behave alike.
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 
-from app.models.enums import SslMode, enum_column
+from alembic import op
+from app.enums import SslMode, enum_column
 
 revision = "0006_connection_ssl"
 down_revision = "0005_flag_rules"

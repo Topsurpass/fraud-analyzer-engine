@@ -12,7 +12,7 @@ import gzip
 import orjson
 import pytest
 
-from app.services import rendered_cache
+from app.features.queries import rendered_cache
 
 
 @pytest.fixture(autouse=True)
@@ -115,7 +115,7 @@ def test_result_cache_invalidation_reaches_the_rendered_bytes():
     """The two are coupled inside result_cache.invalidate on purpose: a caller
     that dropped one and kept the other would serve a stale chart that no
     amount of refreshing could fix."""
-    from app.services import result_cache
+    from app.features.queries import result_cache
 
     rendered_cache.get_or_render(
         rendered_cache.key_for("q9", "sha256:x", 5000, True), lambda: _body(5)
