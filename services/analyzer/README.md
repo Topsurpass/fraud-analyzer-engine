@@ -18,7 +18,7 @@ The application blocks writes at three layers: the SQL guard rejects anything
 that is not a SELECT, the driver connects in read-only mode, and a statement
 timeout bounds every query. All three are defence in depth. None of them is the
 backstop. The backstop is a database role with no rights to write, because that
-is the only control that still holds if this application has a bug.
+is the only control that still holds if this application has a bug..
 
 ```sql
 -- PostgreSQL
