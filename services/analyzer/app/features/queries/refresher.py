@@ -19,16 +19,25 @@ anyone asking it to:
 * **A bounded pool.** Refreshes run on a small thread pool rather than a thread
   per request, so a page full of expired cards cannot open a connection per
   card.
+* **A cooldown after a failure.** A refresh that fails leaves the stale entry in
+  place, so the very next poll would find it stale again and start another
+  attempt, and a client polling every few seconds would then retry a database
+  that is already down at that rate. After a failure a query is left alone for
+  its own poll interval: the same "no more than once per interval" the success
+  path keeps. A person can still force a run (``?force=true``, "Run now"), which
+  does not come through here.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db.app_state import get_engine
 from app.errors import AppError
 from app.features.connections.models import Connection
@@ -51,6 +60,8 @@ _MAX_WORKERS = 4
 
 _pool: ThreadPoolExecutor | None = None
 _in_flight: set[str] = set()
+#: Per query: the ``time.monotonic()`` before which a failed one is not retried.
+_cooldown_until: dict[str, float] = {}
 _lock = threading.Lock()
 
 
@@ -82,6 +93,8 @@ def request_refresh(query_id: str, user_id: str | None) -> bool:
     with _lock:
         if query_id in _in_flight:
             return False
+        if time.monotonic() < _cooldown_until.get(query_id, 0.0):
+            return False
         _in_flight.add(query_id)
 
     try:
@@ -95,6 +108,8 @@ def request_refresh(query_id: str, user_id: str | None) -> bool:
 
 def _refresh(query_id: str, user_id: str | None) -> None:
     """Run one query and replace its cache entry. Never raises."""
+    # Read before anything can fail, so every failure path can size its cooldown.
+    interval_ms = get_settings().poll_interval_ms
     try:
         with Session(get_engine()) as session:
             query = session.get(SavedQuery, query_id)
@@ -106,6 +121,7 @@ def _refresh(query_id: str, user_id: str | None) -> None:
             if conn is None or conn.paused:
                 return
 
+            interval_ms = query_service.poll_interval_for(query)
             payload = query_service.run_saved_query(query, conn)
             # Logged like any other execution, and attributed like one. This
             # runs against the customer's database behind a response that has
@@ -127,7 +143,10 @@ def _refresh(query_id: str, user_id: str | None) -> None:
             flagged_row_service.sync(
                 session, query, payload.columns, payload.rows, payload.flags
             )
+        with _lock:
+            _cooldown_until.pop(query_id, None)
     except AppError as error:
+        _hold_off(query_id, interval_ms)
         # A failed background run is still a run against their database, and the
         # execution log is where someone looks to find out why a card is stale.
         try:
@@ -139,6 +158,7 @@ def _refresh(query_id: str, user_id: str | None) -> None:
             logger.debug("Could not record a failed refresh of %s", query_id)
         logger.info("Background refresh of query %s failed: %s", query_id, error.message)
     except Exception:  # noqa: BLE001 - a background refresh must not take a request with it
+        _hold_off(query_id, interval_ms)
         # Logged at info: a target that is down is already reported to the
         # reader by the foreground path, and this would otherwise fill the log
         # once per poll interval per card for as long as it stays down.
@@ -148,12 +168,25 @@ def _refresh(query_id: str, user_id: str | None) -> None:
             _in_flight.discard(query_id)
 
 
+def _hold_off(query_id: str, interval_ms: int) -> None:
+    """Leave a query whose refresh just failed alone for one interval."""
+    with _lock:
+        _cooldown_until[query_id] = time.monotonic() + max(interval_ms, 1) / 1000
+
+
+def reset() -> None:
+    """Forget every cooldown. For tests, and for a config reload."""
+    with _lock:
+        _cooldown_until.clear()
+
+
 def shutdown() -> None:
     """Stop the pool. Called from the app's lifespan."""
     global _pool
     with _lock:
         pool, _pool = _pool, None
         _in_flight.clear()
+        _cooldown_until.clear()
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
 

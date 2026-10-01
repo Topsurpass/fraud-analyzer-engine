@@ -239,3 +239,70 @@ def test_an_unset_threshold_arrives_resolved_rather_than_null(admin_client, quer
 
     payload = admin_client.get(f"/queries/{query['id']}/poll?force=true").json()
     assert payload["charts"][0]["surge_threshold_pct"] == 50.0
+
+
+def _executions(admin_client, query_id) -> int:
+    return len(admin_client.get(f"/queries/{query_id}/logs").json())
+
+
+def test_editing_a_chart_never_costs_an_execution(admin_client, query):
+    """The interval is a promise about the customer's database.
+
+    A chart edit changes how a result is drawn, not what it says. It used to
+    throw the cached result away, so the next poll ran the query again: with an
+    hour's interval, a real query spent on changing a chart's type.
+    """
+    _charts(admin_client, query["id"], [{"name": "Trend", "chart_type": "line", "x_field": "day", "y_field": "n"}])
+    admin_client.get(f"/queries/{query['id']}/poll")  # cold: the one real execution
+    before = _executions(admin_client, query["id"])
+
+    for chart_type in ("bar", "table", "line"):
+        _charts(admin_client, query["id"], [{"name": "Trend", "chart_type": chart_type, "x_field": "day", "y_field": "n"}])
+        admin_client.get(f"/queries/{query['id']}/poll")
+
+    assert _executions(admin_client, query["id"]) == before
+
+
+def test_the_redrawn_mapping_reaches_a_client_that_asks_for_the_whole_payload(admin_client, query):
+    _charts(admin_client, query["id"], [{"name": "Trend", "chart_type": "line", "x_field": "day", "y_field": "n"}])
+    first = admin_client.get(f"/queries/{query['id']}/poll").json()
+
+    _charts(admin_client, query["id"], [{"name": "Trend", "chart_type": "bar", "x_field": "day", "y_field": "n"}])
+    # No since_hash: what a client does right after editing a chart.
+    body = admin_client.get(f"/queries/{query['id']}/poll").json()
+
+    assert [chart["type"] for chart in body["charts"]] == ["bar"]
+    assert body["from_cache"] is True
+    # The rows did not change, so neither did the hash, and executed_at is the
+    # original run's: the schedule is not restarted by a chart edit.
+    assert body["data_hash"] == first["data_hash"]
+    assert body["executed_at"] == first["executed_at"]
+
+
+def test_a_poll_with_the_old_hash_still_reports_unchanged_after_a_chart_edit(admin_client, query):
+    """Documents the contract: the hash covers the data, not how it is drawn.
+
+    A second tab that polls with its since_hash keeps its old mapping until it
+    fetches the whole payload; that was also true when the edit forced a re-run,
+    because the re-run produced the same hash.
+    """
+    _charts(admin_client, query["id"], [{"name": "Trend", "chart_type": "line", "x_field": "day", "y_field": "n"}])
+    first = admin_client.get(f"/queries/{query['id']}/poll").json()
+    _charts(admin_client, query["id"], [{"name": "Trend", "chart_type": "bar", "x_field": "day", "y_field": "n"}])
+
+    body = admin_client.get(f"/queries/{query['id']}/poll?since_hash={first['data_hash']}").json()
+
+    assert body["changed"] is False
+
+
+def test_polling_and_remounting_inside_the_interval_never_executes_again(admin_client, query):
+    """The other half of the promise, pinned: only the cold poll runs the query."""
+    admin_client.put(f"/queries/{query['id']}", json={"poll_interval_ms": 3_600_000})
+    first = admin_client.get(f"/queries/{query['id']}/poll").json()
+    before = _executions(admin_client, query["id"])
+
+    for _ in range(5):
+        admin_client.get(f"/queries/{query['id']}/poll")  # a card remounting
+        admin_client.get(f"/queries/{query['id']}/poll?since_hash={first['data_hash']}")
+
+    assert _executions(admin_client, query["id"]) == before

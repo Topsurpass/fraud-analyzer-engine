@@ -68,7 +68,7 @@ def isolated_environment(tmp_path, monkeypatch):
     """
     from app import ratelimit
     from app.db import app_state
-    from app.features.queries import result_cache
+    from app.features.queries import refresher, result_cache
     from app.security import sql_guard
     from app.security.crypto import generate_key, get_fernet
 
@@ -98,6 +98,7 @@ def isolated_environment(tmp_path, monkeypatch):
     app_state.reset_caches()
     sql_guard.clear_validation_cache()
     result_cache.clear()
+    refresher.reset()
     ratelimit.reset()
 
     yield
@@ -110,6 +111,7 @@ def isolated_environment(tmp_path, monkeypatch):
     app_state.reset_caches()
     sql_guard.clear_validation_cache()
     result_cache.clear()
+    refresher.reset()
     ratelimit.reset()
 
 

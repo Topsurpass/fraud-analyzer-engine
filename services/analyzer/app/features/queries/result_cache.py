@@ -25,6 +25,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -172,6 +173,54 @@ def invalidate(query_id: str) -> None:
     with _lock:
         _drop_locked(query_id)
     rendered_cache.invalidate_query(query_id)
+
+
+def patch_charts(query_id: str, build: Callable[[list[str]], list[dict]]) -> bool:
+    """Swap the chart mapping inside a cached result, keeping everything else.
+
+    A chart edit changes how a result is *drawn*, not what it says, so it has
+    no business costing a run against the customer's database. Dropping the
+    entry (``invalidate``) did exactly that: the next poll found nothing cached
+    and executed the query again, for a change to a chart's type. With an hour's
+    interval that is a real query spent on a colour.
+
+    Only the ``charts`` list is replaced. ``data_hash``, ``executed_at``, the
+    rows and the flags are untouched, and so is the entry's age: it is not
+    re-stored, so the TTL keeps counting from the last real execution and the
+    query still runs on its own schedule, no sooner.
+
+    ``build`` receives the cached result's columns and returns the new chart
+    list; the caller owns how charts are built. If it raises, the entry is
+    dropped as before: a stale mapping is worse than one extra run.
+
+    Returns whether there was an entry to patch. Stale entries (past the TTL but
+    inside the grace window) are patched too, since they are still served.
+    """
+    global _total_bytes
+    patched = False
+    with _lock:
+        entry = _entries.get(query_id)
+        if entry is not None:
+            try:
+                charts = build(list(entry.payload["columns"]))
+                payload = {**entry.payload, "charts": charts}
+                size_bytes = len(orjson.dumps(payload))
+            except Exception:  # noqa: BLE001 - never leave a wrong mapping cached
+                logger.warning(
+                    "Could not rebuild the charts of query %s in place; dropping its "
+                    "cached result instead.",
+                    query_id,
+                    exc_info=True,
+                )
+                _drop_locked(query_id)
+            else:
+                _total_bytes += size_bytes - entry.size_bytes
+                entry.payload = payload
+                entry.size_bytes = size_bytes
+                patched = True
+    # The pre-encoded bytes were built from the old mapping either way.
+    rendered_cache.invalidate_query(query_id)
+    return patched
 
 
 def clear() -> None:

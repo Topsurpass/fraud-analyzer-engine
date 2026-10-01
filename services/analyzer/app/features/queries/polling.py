@@ -112,6 +112,7 @@ def poll_one(
                 data_hash=body["data_hash"],
                 poll_interval_ms=interval,
                 from_cache=True,
+                executed_at=body.get("executed_at"),
             ).model_dump()
         return {**body, "changed": True, "from_cache": True}
 
@@ -129,5 +130,6 @@ def poll_one(
             data_hash=body["data_hash"],
             poll_interval_ms=interval,
             from_cache=False,
+            executed_at=body.get("executed_at"),
         ).model_dump()
     return {**body, "changed": True, "from_cache": False}

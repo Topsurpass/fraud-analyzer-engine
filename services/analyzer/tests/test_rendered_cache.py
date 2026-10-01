@@ -140,3 +140,23 @@ def test_the_cache_stays_inside_its_byte_budget(monkeypatch):
 
     assert rendered_cache.total_bytes() <= 20_000
     assert rendered_cache.stats()["entries"] < 60
+
+
+def test_a_new_execution_time_is_a_new_rendered_entry():
+    """Same rows, same hash, later run: not the same bytes.
+
+    Served from the first run's entry, a client was told the result was produced
+    hours before it was.
+    """
+    first = rendered_cache.key_for("q1", "sha256:abc", 5000, True, "2026-10-01T10:00:00")
+    later = rendered_cache.key_for("q1", "sha256:abc", 5000, True, "2026-10-01T11:00:00")
+    assert first != later
+    assert first == rendered_cache.key_for("q1", "sha256:abc", 5000, True, "2026-10-01T10:00:00")
+
+
+def test_the_execution_time_is_optional_for_older_callers():
+    assert rendered_cache.key_for("q1", "h", 5000, True) == rendered_cache.key_for(
+        "q1", "h", 5000, True, None
+    )
+    # And a query's entries are still found by its id prefix when invalidated.
+    assert rendered_cache.key_for("q1", "h", 5000, True, "t").startswith("q1|")

@@ -314,7 +314,9 @@
           "compare",
           "movers",
           "compare_grid",
-          "heatmap"
+          "heatmap",
+          "stacked_bar",
+          "biaxial_bar"
         ],
         "title": "ChartType",
         "type": "string"
@@ -2117,6 +2119,18 @@
           "data_hash": {
             "title": "Data Hash",
             "type": "string"
+          },
+          "executed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executed At"
           },
           "from_cache": {
             "title": "From Cache",

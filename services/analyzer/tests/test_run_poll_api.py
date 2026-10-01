@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import time
+from datetime import datetime
 
 import pytest
 
@@ -252,21 +254,27 @@ def test_updating_a_query_invalidates_its_cache(admin_client, saved):
     assert result_cache.get(saved["id"]) is None
 
 
-def test_editing_a_chart_invalidates_the_cache(admin_client, saved):
-    """The cached payload echoes every chart's mapping.
+def test_editing_a_chart_redraws_the_cache_without_dropping_it(admin_client, saved):
+    """The cached payload echoes every chart's mapping, so it must follow edits.
 
     Without this an edited chart would keep drawing the old way until the entry
-    aged out - and polling would report nothing changed, because the rows did
-    not.
+    aged out. It is redrawn in place rather than dropped: dropping it made the
+    next poll run the query again for a change that only affects drawing, so the
+    entry survives, with the same rows, hash and age, and a new mapping.
     """
     admin_client.post(f"/queries/{saved['id']}/run")
-    assert result_cache.get(saved["id"]) is not None
+    before = result_cache.get(saved["id"])
+    assert before is not None
     admin_client.put(
         f"/queries/{saved['id']}/charts",
         json={"charts": [{"name": "Bars", "chart_type": "bar", "x_field": "day",
                           "y_field": "n"}]},
     )
-    assert result_cache.get(saved["id"]) is None
+    after = result_cache.get(saved["id"])
+    assert after is not None
+    assert after.data_hash == before.data_hash
+    assert after.stored_at == before.stored_at
+    assert [chart["type"] for chart in after.payload["charts"]] == ["bar"]
 
 
 def test_poll_on_missing_query_is_404(admin_client):
@@ -457,3 +465,57 @@ def test_editing_a_query_does_not_keep_serving_the_old_rendering(
 
     assert after["columns"] == ["day"], "served the pre-edit rendering"
     assert after["data_hash"] != before["data_hash"]
+
+
+def _executions(admin_client, query_id) -> int:
+    return len(admin_client.get(f"/queries/{query_id}/logs").json())
+
+
+def test_an_unchanged_answer_says_when_the_result_was_produced(admin_client, saved):
+    """A client lines its next poll up with the moment the cache goes stale.
+
+    That needs the execution time on every answer, and "unchanged" is the answer
+    nearly every poll gets.
+    """
+    first = admin_client.get(f"/queries/{saved['id']}/poll").json()
+
+    body = admin_client.get(
+        f"/queries/{saved['id']}/poll?since_hash={first['data_hash']}"
+    ).json()
+
+    assert body["changed"] is False
+    assert body["executed_at"] == first["executed_at"]
+
+
+def test_a_rerun_with_the_same_rows_moves_executed_at_and_not_the_hash(admin_client, saved):
+    first = admin_client.get(f"/queries/{saved['id']}/poll").json()
+    time.sleep(0.01)
+    admin_client.get(f"/queries/{saved['id']}/poll?force=true")  # runs it again
+
+    unchanged = admin_client.get(
+        f"/queries/{saved['id']}/poll?since_hash={first['data_hash']}"
+    ).json()
+    whole = admin_client.get(f"/queries/{saved['id']}/poll").json()
+
+    assert unchanged["changed"] is False
+    assert unchanged["executed_at"] > first["executed_at"]
+    # The full payload must report the new run too, not the pre-encoded bytes of
+    # the first: those were served for every later run with identical rows.
+    assert whole["executed_at"] == unchanged["executed_at"]
+    assert whole["data_hash"] == first["data_hash"]
+
+
+def test_the_batch_poll_carries_executed_at_too(admin_client, saved):
+    first = admin_client.get(f"/queries/{saved['id']}/poll").json()
+
+    body = admin_client.post(
+        "/queries/poll",
+        json={"queries": [{"query_id": saved["id"], "since_hash": first["data_hash"]}]},
+    ).json()
+
+    assert body["results"][0]["changed"] is False
+    # The same instant; the batch path writes it as "...Z", the single path as
+    # "...+00:00", so compare instants rather than strings.
+    assert datetime.fromisoformat(body["results"][0]["executed_at"]) == datetime.fromisoformat(
+        first["executed_at"]
+    )

@@ -186,3 +186,92 @@ def test_a_failing_refresh_still_names_the_person_who_polled(admin_client, query
     logs = admin_client.get(f"/queries/{query['id']}/logs").json()
     assert logs[0]["success"] is False
     assert logs[0]["user_id"] == me
+
+
+class _FailingTarget:
+    """Stands in for a database that is down, and counts how often it was asked."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, *_args, **_kwargs):
+        self.calls += 1
+        raise RuntimeError("target is down")
+
+
+def test_a_failed_refresh_is_not_retried_until_the_interval_has_passed(admin_client, query, monkeypatch):
+    """A client polling a stale result must not turn into a storm against a dead database.
+
+    A failed refresh leaves the stale entry in place, so every following poll
+    found it stale again and started another attempt.
+    """
+    admin_client.post(f"/queries/{query['id']}/run")
+    _expire(query["id"])
+    down = _FailingTarget()
+    monkeypatch.setattr("app.features.queries.execution.run_saved_query", down)
+
+    assert refresher.request_refresh(query["id"], None) is True
+    _wait_for_refresh()
+    assert down.calls == 1
+
+    for _ in range(10):
+        admin_client.get(f"/queries/{query['id']}/poll")
+    _wait_for_refresh()
+    assert down.calls == 1, "a failed refresh must not be retried inside its interval"
+
+
+def test_the_cooldown_lasts_one_poll_interval_and_then_lifts(admin_client, query, monkeypatch):
+    admin_client.post(f"/queries/{query['id']}/run")
+    _expire(query["id"])
+    monkeypatch.setattr("app.features.queries.execution.run_saved_query", _FailingTarget())
+    refresher.request_refresh(query["id"], None)
+    _wait_for_refresh()
+
+    interval_s = 5000 / 1000  # the default poll interval, which this query uses
+    remaining = refresher._cooldown_until[query["id"]] - time.monotonic()
+    assert 0 < remaining <= interval_s
+
+    refresher._cooldown_until[query["id"]] = time.monotonic() - 1  # the interval has passed
+    assert refresher.request_refresh(query["id"], None) is True
+    _wait_for_refresh()
+
+
+def test_a_successful_refresh_clears_the_cooldown(admin_client, query, monkeypatch):
+    admin_client.post(f"/queries/{query['id']}/run")
+    _expire(query["id"])
+    refresher._cooldown_until[query["id"]] = time.monotonic() - 1
+    before = len(admin_client.get(f"/queries/{query['id']}/logs").json())
+
+    assert refresher.request_refresh(query["id"], None) is True
+    _wait_for_refresh()
+
+    assert len(admin_client.get(f"/queries/{query['id']}/logs").json()) == before + 1
+    assert query["id"] not in refresher._cooldown_until
+
+
+def test_the_cooldown_follows_the_query_own_interval(admin_client, sqlite_connection, monkeypatch):
+    """An hourly query is left alone for an hour after a failure, not for five seconds."""
+    hourly = make_query(
+        admin_client, sqlite_connection["id"], "SELECT day FROM txns", name="hourly"
+    )
+    admin_client.put(f"/queries/{hourly['id']}", json={"poll_interval_ms": 3_600_000})
+    admin_client.post(f"/queries/{hourly['id']}/run")
+    _expire(hourly["id"])
+    monkeypatch.setattr("app.features.queries.execution.run_saved_query", _FailingTarget())
+
+    refresher.request_refresh(hourly["id"], None)
+    _wait_for_refresh()
+
+    remaining = refresher._cooldown_until[hourly["id"]] - time.monotonic()
+    assert 3590 < remaining <= 3600
+
+
+def test_a_forced_poll_ignores_the_cooldown(admin_client, query):
+    """"Run now" is a person asking, and it does not come through the refresher."""
+    admin_client.post(f"/queries/{query['id']}/run")
+    refresher._cooldown_until[query["id"]] = time.monotonic() + 3600
+    before = len(admin_client.get(f"/queries/{query['id']}/logs").json())
+
+    admin_client.get(f"/queries/{query['id']}/poll?force=true")
+
+    assert len(admin_client.get(f"/queries/{query['id']}/logs").json()) == before + 1

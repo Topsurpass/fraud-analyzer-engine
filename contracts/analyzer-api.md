@@ -108,14 +108,31 @@ Unchanged (the cheap path, no target-database traffic):
   "changed": false,
   "data_hash": "sha256:...",
   "poll_interval_ms": 5000,
-  "from_cache": true
+  "from_cache": true,
+  "executed_at": "2026-08-22T12:00:00"
 }
 ```
 
 Changed: the full `/run` payload plus `"changed": true` and `"from_cache"`.
 
+Every answer says when the result it describes was produced (`executed_at`), so
+a client can time its next poll for the moment the cached result goes stale
+(`executed_at + poll_interval_ms`) instead of an interval after it happened to
+mount. A run that returns the same rows leaves `data_hash` alone but moves
+`executed_at`, so an "unchanged" answer carries it too.
+
+A query runs against the target database **at most once per `poll_interval_ms`**
+however often it is polled: inside the interval the answer is served from the
+cache, and a stale answer is returned immediately while one refresh runs behind
+it. A refresh that fails is not retried until a further interval has passed.
+Editing a chart (its type, fields, or publishing it) does not run the query: the
+cached result's chart mapping is redrawn in place. Pass `force=true` to bypass
+the cache and run the query now; that is the only way a poll costs an extra
+execution. After an edit, fetch the whole payload (poll without `since_hash`) to
+receive the new mapping: the hash covers the data, not how it is drawn.
+
 Poll the endpoint every `poll_interval_ms`, passing the last `data_hash` you
-received as `since_hash`. Pass `force=true` to bypass the cache.
+received as `since_hash`.
 
 ## `POST /connections/{id}/query/preview`
 

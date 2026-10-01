@@ -13,6 +13,11 @@ database unprompted, so every bound on it is deliberate:
 * **Only when it is actually due.** Each query's own ``poll_interval_ms``, with
   a floor from ``FAE_SCHEDULER_MIN_INTERVAL_MS`` so a query saved with a
   one-second interval cannot be turned into a denial of service by a typo.
+* **Not when somebody just ran it.** A poll that finds a result stale starts a
+  refresh of its own, and the scheduler's clock knows nothing about that. Left
+  alone, both ran within seconds of each other at every boundary: two executions
+  for one interval. A result that is still fresh in the cache has been run
+  within its interval, so the scheduler waits out what is left of it instead.
 * **One at a time.** Sequential rather than a fan-out: twenty saved queries
   firing together is a load spike on someone's production server, and there is
   no deadline here that justifies it.
@@ -115,6 +120,12 @@ def run_due_once(session: Session) -> int:
     for query in _due_queries(session):
         conn = session.get(Connection, query.connection_id)
         if conn is None:  # pragma: no cover - FK makes this unreachable
+            continue
+        fresh = result_cache.get(query.id)
+        if fresh is not None:
+            # Run by somebody else within its interval (a poll's refresh, or
+            # "Run now"): not due until that result would go stale.
+            _next_due[query.id] = _now_ms() + max(fresh.ttl_ms - fresh.age_ms(), 0)
             continue
         if conn.paused:
             # Disconnected on purpose. Skipped rather than failed: this is not

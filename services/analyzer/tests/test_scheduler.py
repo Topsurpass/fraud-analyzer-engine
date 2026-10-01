@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db.app_state import get_engine
 from app.features.flag_rules.models import FlaggedRow
-from app.features.queries import scheduler
+from app.features.queries import result_cache, scheduler
 from tests.test_flag_rules_api import make_query, rule
 
 
@@ -207,5 +207,46 @@ def test_a_dismissed_row_is_not_re_flagged_by_a_scheduled_run(
 def test_reset_forgets_every_schedule(admin_client, watched, session):
     scheduler.run_due_once(session)
     assert scheduler.run_due_once(session) == 0
+    # A restart loses the in-memory cache along with the schedule; clearing only
+    # the schedule would (rightly) still find a fresh result and wait it out.
     scheduler.reset()
+    result_cache.clear()
+    assert scheduler.run_due_once(session) == 1
+
+
+def _executions(admin_client, query) -> int:
+    return len(admin_client.get(f"/queries/{query['id']}/logs").json())
+
+
+def test_a_result_somebody_just_ran_is_not_run_again(admin_client, watched, session):
+    """One interval, one execution: a poll's run and the scheduler's must not both happen.
+
+    The scheduler's clock knows nothing about a run started by a poll, so at
+    every boundary both used to fire within seconds of each other.
+    """
+    admin_client.get(f"/queries/{watched['id']}/poll")  # cold: executes and caches
+    before = _executions(admin_client, watched)
+    assert result_cache.get(watched["id"]) is not None
+
+    assert scheduler.run_due_once(session) == 0
+
+    assert _executions(admin_client, watched) == before
+
+
+def test_it_waits_out_what_is_left_of_a_fresh_result(admin_client, watched, session, monkeypatch):
+    admin_client.get(f"/queries/{watched['id']}/poll")
+    entry = result_cache.get(watched["id"])
+    scheduler.run_due_once(session)
+
+    remaining_ms = entry.ttl_ms - entry.age_ms()
+    due_in_ms = scheduler._next_due[watched["id"]] - scheduler._now_ms()
+    # Due when the cached result goes stale, not a whole interval from now.
+    assert 0 < due_in_ms <= remaining_ms + 50
+
+
+def test_it_runs_once_the_cached_result_has_gone_stale(admin_client, watched, session):
+    admin_client.get(f"/queries/{watched['id']}/poll")
+    entry = result_cache.get_stale(watched["id"])
+    entry.stored_at -= (entry.ttl_ms / 1000) + 1
+
     assert scheduler.run_due_once(session) == 1

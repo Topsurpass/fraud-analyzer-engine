@@ -264,7 +264,11 @@ def _rendered_response(request: Request, body: dict, query_id: str) -> Response:
     """
     interval = body.get("poll_interval_ms", 0)
     key = rendered_cache.key_for(
-        query_id, body["data_hash"], interval, bool(body.get("from_cache"))
+        query_id,
+        body["data_hash"],
+        interval,
+        bool(body.get("from_cache")),
+        body.get("executed_at"),
     )
     rendered = rendered_cache.get_or_render(key, lambda: body)
 

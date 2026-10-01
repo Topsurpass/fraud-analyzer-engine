@@ -93,7 +93,13 @@ _hits = 0
 _misses = 0
 
 
-def key_for(query_id: str, data_hash: str, poll_interval_ms: int, from_cache: bool) -> str:
+def key_for(
+    query_id: str,
+    data_hash: str,
+    poll_interval_ms: int,
+    from_cache: bool,
+    executed_at: object = None,
+) -> str:
     """The identity of a rendered response.
 
     ``data_hash`` alone would be wrong: the same rows served with a different
@@ -101,8 +107,13 @@ def key_for(query_id: str, data_hash: str, poll_interval_ms: int, from_cache: bo
     bytes. Including ``query_id`` keeps two queries that happen to return
     identical data from sharing an entry, which would make eviction of one
     silently affect the other.
+
+    ``executed_at`` is part of it because a run that returns the same rows has
+    the same hash and a new execution time. Without it the bytes of the first
+    run were served for every later one, so a client was told the result was
+    produced hours before it was, and aligned its next poll to the wrong moment.
     """
-    return f"{query_id}|{data_hash}|{poll_interval_ms}|{int(from_cache)}"
+    return f"{query_id}|{data_hash}|{poll_interval_ms}|{int(from_cache)}|{executed_at or ''}"
 
 
 def get(key: str) -> Rendered | None:

@@ -47,6 +47,19 @@ class ChartType(StrEnum):
     #: as one grid the odd row or the odd hour is immediate.
     HEATMAP = "heatmap"
 
+    #: A bar chart whose ``series_field`` splits each bar into stacked
+    #: segments instead of placing them side by side. The total and its
+    #: composition in one mark: "how much, and made of what". With no
+    #: ``series_field`` it is an ordinary bar chart.
+    STACKED_BAR = "stacked_bar"
+
+    #: Two different measures over one category axis, each against its own
+    #: y axis: a count beside a rate, which on one shared axis would flatten
+    #: the rate into the floor. ``y_field`` is the left-axis column and
+    #: ``series_field`` names the right-axis column (wide form, one row per
+    #: x), because a chart spec has a single ``y_field``.
+    BIAXIAL_BAR = "biaxial_bar"
+
 
 #: Fields each chart type actually consumes, used to warn on a bad mapping.
 REQUIRED_FIELDS: dict[ChartType, tuple[str, ...]] = {
@@ -62,6 +75,11 @@ REQUIRED_FIELDS: dict[ChartType, tuple[str, ...]] = {
     ChartType.COMPARE_GRID: ("x_field", "y_field", "series_field"),
     # A row per category, a column per bucket, coloured by the value.
     ChartType.HEATMAP: ("x_field", "y_field", "series_field"),
+    # The series split is optional (none is a plain bar), so only the axes
+    # are required.
+    ChartType.STACKED_BAR: ("x_field", "y_field"),
+    # Left measure in y_field, right measure in series_field.
+    ChartType.BIAXIAL_BAR: ("x_field", "y_field", "series_field"),
     ChartType.NUMBER: ("y_field",),
     ChartType.TABLE: (),
 }

@@ -82,6 +82,11 @@ class PollUnchanged(BaseModel):
     data_hash: str
     poll_interval_ms: int
     from_cache: bool
+    #: When the result being confirmed was produced. A run that returns the same
+    #: rows leaves the hash alone, so without this a client that only ever hears
+    #: "unchanged" cannot tell when the query last actually ran, and so cannot
+    #: line its next poll up with the moment the cached result goes stale.
+    executed_at: datetime | None = None
 
 
 class PollChanged(RunResponse):

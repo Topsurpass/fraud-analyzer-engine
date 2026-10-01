@@ -94,3 +94,69 @@ def test_clear_empties_everything():
     result_cache.set("q1", "h", {}, ttl_ms=5000)
     result_cache.clear()
     assert result_cache.size() == 0
+
+
+def _payload(charts):
+    return {"columns": ["day", "n"], "rows": [["a", 1]], "charts": charts, "data_hash": "sha256:abc"}
+
+
+def test_patch_charts_swaps_only_the_mapping():
+    result_cache.set("q1", "sha256:abc", _payload([{"type": "line"}]), ttl_ms=5000)
+    before = result_cache.get("q1")
+    stored_at, hash_ = before.stored_at, before.data_hash
+
+    assert result_cache.patch_charts("q1", lambda columns: [{"type": "bar", "cols": columns}]) is True
+
+    entry = result_cache.get("q1")
+    assert entry.payload["charts"] == [{"type": "bar", "cols": ["day", "n"]}]
+    # Rows, hash and age are untouched: the schedule keeps counting from the last run.
+    assert entry.payload["rows"] == [["a", 1]]
+    assert entry.data_hash == hash_
+    assert entry.stored_at == stored_at
+    assert entry.ttl_ms == 5000
+
+
+def test_patch_charts_keeps_the_byte_budget_honest():
+    result_cache.set("q1", "h", _payload([]), ttl_ms=5000)
+    small = result_cache.get("q1").size_bytes
+    result_cache.patch_charts("q1", lambda columns: [{"type": "bar", "pad": "x" * 500}])
+    grown = result_cache.get("q1").size_bytes
+    assert grown > small
+    assert result_cache.total_bytes() == grown
+    result_cache.patch_charts("q1", lambda columns: [])
+    assert result_cache.total_bytes() == small
+
+
+def test_patch_charts_without_an_entry_is_a_no_op():
+    assert result_cache.patch_charts("nope", lambda columns: [{"type": "bar"}]) is False
+    assert result_cache.get("nope") is None
+
+
+def test_patch_charts_also_patches_a_stale_entry_that_is_still_served():
+    result_cache.set("q1", "h", _payload([{"type": "line"}]), ttl_ms=10)
+    time.sleep(0.05)
+    assert result_cache.get("q1") is None  # stale, past its TTL
+    assert result_cache.patch_charts("q1", lambda columns: [{"type": "bar"}]) is True
+    assert result_cache.get_stale("q1").payload["charts"] == [{"type": "bar"}]
+
+
+def test_patch_charts_drops_the_entry_rather_than_keep_a_wrong_mapping():
+    result_cache.set("q1", "h", _payload([{"type": "line"}]), ttl_ms=5000)
+
+    def boom(columns):
+        raise ValueError("cannot build")
+
+    assert result_cache.patch_charts("q1", boom) is False
+    assert result_cache.get("q1") is None
+    assert result_cache.total_bytes() == 0
+
+
+def test_patch_charts_drops_the_rendered_bytes_built_from_the_old_mapping(monkeypatch):
+    from app.features.queries import rendered_cache
+
+    dropped = []
+    monkeypatch.setattr(rendered_cache, "invalidate_query", lambda query_id: dropped.append(query_id))
+    result_cache.set("q1", "h", _payload([{"type": "line"}]), ttl_ms=5000)
+    result_cache.patch_charts("q1", lambda columns: [{"type": "bar"}])
+    result_cache.patch_charts("missing", lambda columns: [])
+    assert dropped == ["q1", "missing"]

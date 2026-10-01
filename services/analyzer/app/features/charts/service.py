@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.db.base import utcnow
 from app.errors import AppError, ErrorCode
 from app.features.charts.models import QueryChart
+from app.features.queries import execution as query_service
 from app.features.queries import result_cache
 from app.features.queries import service as saved_query_service
 from app.features.queries.models import SavedQuery
@@ -71,15 +72,32 @@ def replace_charts(session: Session, query: SavedQuery, charts: list) -> list[Qu
             query.charts.remove(chart)
 
     session.flush()
-
-    # The cached run payload echoes every chart's mapping, so an edited chart
-    # would keep drawing the old way until the entry aged out - and polling
-    # would report nothing changed, because the rows did not.
-    result_cache.invalidate(query.id)
-
     session.commit()
     session.refresh(query, ["charts"])
+
+    # The cached run payload echoes every chart's mapping, so an edited chart
+    # would keep drawing the old way until the entry aged out. Re-drawn in
+    # place rather than dropped: dropping it made the next poll run the query
+    # again, which a change to how a result is drawn never needs.
+    redraw_cached(session, query.id)
     return list_charts(session, query.id)
+
+
+def redraw_cached(session: Session, query_id: str) -> None:
+    """Bring a query's cached result in line with its charts, without a run.
+
+    Polling compares row hashes, and a chart edit leaves the rows alone, so a
+    client that polls with its old ``since_hash`` is told "unchanged" and keeps
+    the old mapping. A client that has just edited a chart asks for the whole
+    payload instead (no ``since_hash``), and gets this one, already redrawn.
+    """
+    query = session.get(SavedQuery, query_id)
+    if query is None:
+        result_cache.invalidate(query_id)
+        return
+    result_cache.patch_charts(
+        query_id, lambda columns: query_service.build_charts(query, columns)
+    )
 
 
 def frozen_by(session: Session, query_id: str) -> list[QueryChart]:
@@ -148,7 +166,7 @@ def publish(session: Session, chart_id: str, user: User) -> QueryChart:
         chart.published_by = user.id
         chart.published_at = utcnow()
         session.commit()
-        result_cache.invalidate(chart.query_id)
+        redraw_cached(session, chart.query_id)
     return chart
 
 
@@ -180,7 +198,7 @@ def unpublish(session: Session, chart_id: str, user: User) -> QueryChart:
         chart.published_by = None
         chart.published_at = None
         session.commit()
-        result_cache.invalidate(chart.query_id)
+        redraw_cached(session, chart.query_id)
     return chart
 
 

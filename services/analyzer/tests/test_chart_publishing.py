@@ -300,3 +300,18 @@ def test_the_viewer_poll_never_carries_the_sql(client, app_db, sqlite_connection
     body = client.get(f"/queries/charts/{chart['id']}/poll?force=true", headers=bob).text
 
     assert SQL not in body
+
+
+def test_publishing_and_unpublishing_never_cost_an_execution(client, app_db, sqlite_connection):
+    """Sharing a chart changes who can see it, not what the query returns."""
+    alice = _auth(client, "alice@example.com", UserRole.ANALYST)
+    query, chart = _query_with_chart(client, alice, sqlite_connection)
+    client.get(f"/queries/{query['id']}/poll", headers=alice)  # cold: the one real run
+    before = len(client.get(f"/queries/{query['id']}/logs", headers=alice).json())
+
+    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    client.get(f"/queries/{query['id']}/poll", headers=alice)
+    client.post(f"/queries/charts/{chart['id']}/unpublish", headers=alice)
+    client.get(f"/queries/{query['id']}/poll", headers=alice)
+
+    assert len(client.get(f"/queries/{query['id']}/logs", headers=alice).json()) == before
