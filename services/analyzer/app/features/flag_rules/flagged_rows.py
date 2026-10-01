@@ -25,13 +25,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import sqlalchemy as sa
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.db.base import utcnow
 from app.features.connections.models import Connection
-from app.features.flag_rules.dismissals import dismissed_fingerprints, row_fingerprint
-from app.features.flag_rules.models import FlaggedRow
+from app.features.flag_rules.dismissals import row_fingerprint
+from app.features.flag_rules.models import FlaggedRow, FlagDismissal
 from app.features.queries import service as saved_query_service
 from app.features.queries.models import SavedQuery
 from app.features.users.models import User
@@ -70,7 +71,6 @@ def sync(
         rule["id"]: rule["severity"] for rule in outcome.get("rules") or []
     }
 
-    dismissed = dismissed_fingerprints(session, query.id)
     now = utcnow()
 
     matched: dict[str, dict] = {}
@@ -80,10 +80,10 @@ def sync(
             continue
         values = rows[index]
         fingerprint = flagged.get("fingerprint") or row_fingerprint(values)
-        if fingerprint in dismissed:
-            # Reviewed already. Storing it again is exactly the refill this
-            # exists to prevent.
-            continue
+        # Every current match is stored, dismissed by somebody or not. A
+        # dismissal is one person's reading state (see ``dismissals``), applied
+        # when findings are read; skipping a row here because one person
+        # dismissed it would hide it from everybody else's queue.
         ids = list(flagged.get("rule_ids") or ())
         matched[fingerprint] = {
             "values": values,
@@ -170,17 +170,18 @@ def delete_rows(
 
 def summary(session: Session, user: User) -> dict:
     """Flagged totals per connection and per query the caller may see, plus
-    when the newest arrived.
+    when the newest arrived. What the caller has dismissed is not counted.
 
     Everything the sidebar, the connection list and the notification bell need
     in one request. The
     alternative is a count endpoint per card, which is the same data fetched
     once per thing on screen.
 
-    Filtered by ``visible_to``: this is the badge every page reads on load,
-    so an unfiltered count or severity here would leak the existence and
-    urgency of another analyst's findings on every navigation, even though
-    the finding itself stays out of reach everywhere else.
+    Filtered by ``alert_visible_to``: this is the badge every page reads on
+    load, so an unfiltered count or severity here would leak the existence and
+    urgency of another analyst's findings on every navigation. The caller's own
+    queries, everything for an administrator, and any query that has been
+    published: sharing a chart shares its alerts.
     """
     # The connection's name comes along rather than being looked up by the
     # client. A notification listing "c9a86758" is not a notification, and
@@ -194,15 +195,26 @@ def summary(session: Session, user: User) -> dict:
             FlaggedRow.severity,
             func.count(),
             func.max(FlaggedRow.first_seen_at),
+            SavedQuery.owner_id,
         )
         .join(SavedQuery, SavedQuery.id == FlaggedRow.query_id)
         .join(Connection, Connection.id == SavedQuery.connection_id)
-        .where(saved_query_service.visible_to(user))
+        .where(
+            saved_query_service.alert_visible_to(user),
+            # The caller's own dismissals only: a finding somebody else cleared
+            # is still this person's to review.
+            ~sa.exists().where(
+                FlagDismissal.query_id == FlaggedRow.query_id,
+                FlagDismissal.row_fingerprint == FlaggedRow.row_fingerprint,
+                FlagDismissal.user_id == user.id,
+            ),
+        )
         .group_by(
             SavedQuery.connection_id,
             Connection.name,
             FlaggedRow.query_id,
             FlaggedRow.severity,
+            SavedQuery.owner_id,
         )
     )
 
@@ -214,7 +226,7 @@ def summary(session: Session, user: User) -> dict:
     per_query: dict[str, dict] = {}
     per_connection: dict[str, dict] = {}
     newest = None
-    for connection_id, name, query_id, severity, total, seen in session.execute(
+    for connection_id, name, query_id, severity, total, seen, owner_id in session.execute(
         statement
     ):
         newest = _newer(newest, seen)
@@ -222,7 +234,10 @@ def summary(session: Session, user: User) -> dict:
         query_entry = per_query.setdefault(
             query_id,
             {"query_id": query_id, "connection_id": connection_id, "flagged_count": 0,
-             "severity": FlagSeverity.LOW, "newest_first_seen_at": None},
+             "severity": FlagSeverity.LOW, "newest_first_seen_at": None,
+             # Not the caller's own work: it reached them by being published (or,
+             # for an administrator, by being an administrator).
+             "shared": owner_id != user.id},
         )
         query_entry["flagged_count"] += total
         query_entry["newest_first_seen_at"] = _newer(

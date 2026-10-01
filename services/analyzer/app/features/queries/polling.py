@@ -87,8 +87,9 @@ def poll_one(
     # Read once and applied to whichever payload is served. A row the analyst
     # has reviewed should stop being marked on the chart too, not only in the
     # flagged view - a card still showing it red is telling them there is work
-    # left that they have already done.
-    dismissed = flag_dismissal_service.dismissed_fingerprints(session, query_id)
+    # left that they have already done. The *caller's* dismissals, not the
+    # query's: on a published chart each viewer clears their own.
+    dismissed = flag_dismissal_service.dismissed_fingerprints(session, query_id, user.id)
 
     # A fresh entry answers outright. A stale one answers *and* starts a
     # refresh behind the response: the reader gets the last known chart

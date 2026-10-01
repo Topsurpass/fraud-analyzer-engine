@@ -122,7 +122,11 @@ def test_a_finding_carries_its_own_column_headers(
     assert section["columns"] == ["day", "amount", "comment"]
 
 
-def test_dismissing_deletes_the_stored_row(admin_client, sqlite_connection, flagging_query):
+def test_dismissing_keeps_the_stored_row_for_everyone_else(
+    admin_client, sqlite_connection, flagging_query
+):
+    """A dismissal is personal, so the finding itself must survive it: other
+    people's queues are made of the same stored rows."""
     admin_client.post(f"/queries/{flagging_query['id']}/run")
     section = _section(admin_client, sqlite_connection["id"])
     victim = section["rows"][0]["fingerprint"]
@@ -139,10 +143,14 @@ def test_dismissing_deletes_the_stored_row(admin_client, sqlite_connection, flag
 
     with Session(get_engine()) as session:
         stored = [r.row_fingerprint for r in session.query(FlaggedRow).all()]
-    assert victim not in stored
+    assert victim in stored
+    # ... and it is gone from the dismisser's own view.
+    assert victim not in [
+        row["fingerprint"] for row in _section(admin_client, sqlite_connection["id"])["rows"]
+    ]
 
 
-def test_a_dismissed_row_is_not_stored_again_by_the_next_run(
+def test_a_dismissed_row_stays_hidden_from_the_dismisser_after_the_next_run(
     admin_client, sqlite_connection, flagging_query
 ):
     """Without this the queue refills itself and dismissing means nothing."""

@@ -7,10 +7,17 @@ at the target database. The list of chart types is in ``app/policy/chart_types.p
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.policy.chart_types import ChartType
+from app.policy.flag_rules import FlagOperator, FlagSeverity
 from app.types import UtcDatetime
+
+#: ``private`` until somebody asks, ``pending`` while an administrator has not
+#: decided, ``published`` once one has (or an administrator published it).
+PublishStatus = Literal["private", "pending", "published"]
 
 
 class ChartSpec(BaseModel):
@@ -47,6 +54,14 @@ class QueryChartBase(BaseModel):
     surge_threshold_pct: float | None = Field(default=None, gt=0, le=100_000)
 
 
+class PublishRejectionRead(BaseModel):
+    """Why the last request was turned down, kept until the author asks again."""
+
+    reason: str | None
+    rejected_at: UtcDatetime
+    rejected_by_name: str
+
+
 class QueryChartRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -65,6 +80,14 @@ class QueryChartRead(BaseModel):
     #: Who published it, which is who may retract it. An admin may always.
     published_by: str | None
     published_at: UtcDatetime | None
+    #: Derived from the columns above and the request fields below, never stored.
+    publish_status: PublishStatus
+    #: When the author asked, while ``publish_status`` is ``pending``.
+    publish_requested_at: UtcDatetime | None = None
+    #: Set after a rejection, until the author asks again or withdraws.
+    publish_rejection: PublishRejectionRead | None = None
+    #: The publisher's display name, so a viewer can say whose chart this is.
+    published_by_name: str | None = None
     created_at: UtcDatetime
     updated_at: UtcDatetime
 
@@ -94,3 +117,83 @@ class QueryChartSetUpdate(BaseModel):
 class QueryChartSetRead(BaseModel):
     query_id: str
     charts: list[QueryChartRead]
+
+
+class PublishRejectRequest(BaseModel):
+    """What an administrator says when declining a request."""
+
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class RequesterRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    full_name: str
+    email: str
+
+
+class PublishRequestRead(BaseModel):
+    """One waiting request, with enough to know what is being approved."""
+
+    chart: QueryChartRead
+    query_id: str
+    query_name: str
+    connection_id: str
+    connection_name: str
+    requested_by: RequesterRead
+    requested_at: UtcDatetime
+
+
+class DefinitionQueryRead(BaseModel):
+    """The query behind a chart, as a reader who may copy it sees it.
+
+    Effective values rather than stored ones: a viewer wants to know the row
+    limit and interval the query really runs with, not that the author left a
+    field empty.
+    """
+
+    id: str
+    name: str
+    description: str | None
+    sql_text: str
+    row_limit: int
+    poll_interval_ms: int
+
+
+class DefinitionConditionRead(BaseModel):
+    """One condition of a rule. Names the list, never carries its items."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    column_name: str
+    operator: FlagOperator
+    value: str | None
+    value2: str | None
+    list_name: str | None
+
+
+class DefinitionRuleRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    severity: FlagSeverity
+    enabled: bool
+    conditions: list[DefinitionConditionRead]
+
+
+class ChartDefinitionRead(BaseModel):
+    """Everything needed to replicate a published chart, and nothing to change it.
+
+    Deliberately without the connection: no host, database, username or id. The
+    reader gets the connection's *name* so they know where to point their own copy.
+    """
+
+    chart: QueryChartRead
+    query: DefinitionQueryRead
+    rules: list[DefinitionRuleRead]
+    connection_name: str
+    owner_name: str | None
+    #: True unless the caller is the author or an administrator.
+    read_only: bool

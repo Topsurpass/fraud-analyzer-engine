@@ -50,6 +50,7 @@
               "DUPLICATE_EMAIL",
               "LAST_ADMIN",
               "QUERY_FROZEN",
+              "PUBLISH_NOT_PENDING",
               "LIST_NAME_TAKEN",
               "LIST_IN_USE",
               "REQUEST_VALIDATION_ERROR",
@@ -81,7 +82,13 @@
           "user_deactivated",
           "user_reactivated",
           "user_role_changed",
-          "user_password_reset"
+          "user_password_reset",
+          "chart_published",
+          "chart_unpublished",
+          "chart_publish_requested",
+          "chart_publish_approved",
+          "chart_publish_rejected",
+          "chart_publish_cancelled"
         ],
         "title": "AuditAction",
         "type": "string"
@@ -228,6 +235,53 @@
           "new_password"
         ],
         "title": "ChangePasswordRequest",
+        "type": "object"
+      },
+      "ChartDefinitionRead": {
+        "description": "Everything needed to replicate a published chart, and nothing to change it.\n\nDeliberately without the connection: no host, database, username or id. The\nreader gets the connection's *name* so they know where to point their own copy.",
+        "properties": {
+          "chart": {
+            "$ref": "#/components/schemas/QueryChartRead"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "owner_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Name"
+          },
+          "query": {
+            "$ref": "#/components/schemas/DefinitionQueryRead"
+          },
+          "read_only": {
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/DefinitionRuleRead"
+            },
+            "title": "Rules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "chart",
+          "query",
+          "rules",
+          "connection_name",
+          "owner_name",
+          "read_only"
+        ],
+        "title": "ChartDefinitionRead",
         "type": "object"
       },
       "ChartSpec": {
@@ -1023,6 +1077,141 @@
         "title": "DbType",
         "type": "string"
       },
+      "DefinitionConditionRead": {
+        "description": "One condition of a rule. Names the list, never carries its items.",
+        "properties": {
+          "column_name": {
+            "title": "Column Name",
+            "type": "string"
+          },
+          "list_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "List Name"
+          },
+          "operator": {
+            "$ref": "#/components/schemas/FlagOperator"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "value2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value2"
+          }
+        },
+        "required": [
+          "column_name",
+          "operator",
+          "value",
+          "value2",
+          "list_name"
+        ],
+        "title": "DefinitionConditionRead",
+        "type": "object"
+      },
+      "DefinitionQueryRead": {
+        "description": "The query behind a chart, as a reader who may copy it sees it.\n\nEffective values rather than stored ones: a viewer wants to know the row\nlimit and interval the query really runs with, not that the author left a\nfield empty.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "poll_interval_ms": {
+            "title": "Poll Interval Ms",
+            "type": "integer"
+          },
+          "row_limit": {
+            "title": "Row Limit",
+            "type": "integer"
+          },
+          "sql_text": {
+            "title": "Sql Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "sql_text",
+          "row_limit",
+          "poll_interval_ms"
+        ],
+        "title": "DefinitionQueryRead",
+        "type": "object"
+      },
+      "DefinitionRuleRead": {
+        "properties": {
+          "conditions": {
+            "items": {
+              "$ref": "#/components/schemas/DefinitionConditionRead"
+            },
+            "title": "Conditions",
+            "type": "array"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/FlagSeverity"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "severity",
+          "enabled",
+          "conditions"
+        ],
+        "title": "DefinitionRuleRead",
+        "type": "object"
+      },
       "ExecutionLogRead": {
         "properties": {
           "duration_ms": {
@@ -1521,6 +1710,17 @@
             "title": "Flagged Count",
             "type": "integer"
           },
+          "owner_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Name"
+          },
           "query_id": {
             "title": "Query Id",
             "type": "string"
@@ -1542,6 +1742,11 @@
             },
             "title": "Rules",
             "type": "array"
+          },
+          "shared": {
+            "default": false,
+            "title": "Shared",
+            "type": "boolean"
           },
           "stale": {
             "default": false,
@@ -1706,6 +1911,11 @@
           },
           "severity": {
             "$ref": "#/components/schemas/FlagSeverity"
+          },
+          "shared": {
+            "default": false,
+            "title": "Shared",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2242,6 +2452,100 @@
         "title": "PreviewResponse",
         "type": "object"
       },
+      "PublishRejectRequest": {
+        "description": "What an administrator says when declining a request.",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "PublishRejectRequest",
+        "type": "object"
+      },
+      "PublishRejectionRead": {
+        "description": "Why the last request was turned down, kept until the author asks again.",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "rejected_at": {
+            "format": "date-time",
+            "title": "Rejected At",
+            "type": "string"
+          },
+          "rejected_by_name": {
+            "title": "Rejected By Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "rejected_at",
+          "rejected_by_name"
+        ],
+        "title": "PublishRejectionRead",
+        "type": "object"
+      },
+      "PublishRequestRead": {
+        "description": "One waiting request, with enough to know what is being approved.",
+        "properties": {
+          "chart": {
+            "$ref": "#/components/schemas/QueryChartRead"
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "query_id": {
+            "title": "Query Id",
+            "type": "string"
+          },
+          "query_name": {
+            "title": "Query Name",
+            "type": "string"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "requested_by": {
+            "$ref": "#/components/schemas/RequesterRead"
+          }
+        },
+        "required": [
+          "chart",
+          "query_id",
+          "query_name",
+          "connection_id",
+          "connection_name",
+          "requested_by",
+          "requested_at"
+        ],
+        "title": "PublishRequestRead",
+        "type": "object"
+      },
       "QueryChartBase": {
         "properties": {
           "chart_type": {
@@ -2336,6 +2640,37 @@
             "title": "Position",
             "type": "integer"
           },
+          "publish_rejection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublishRejectionRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publish_requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publish Requested At"
+          },
+          "publish_status": {
+            "enum": [
+              "private",
+              "pending",
+              "published"
+            ],
+            "title": "Publish Status",
+            "type": "string"
+          },
           "published_at": {
             "anyOf": [
               {
@@ -2358,6 +2693,17 @@
               }
             ],
             "title": "Published By"
+          },
+          "published_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published By Name"
           },
           "query_id": {
             "title": "Query Id",
@@ -2426,6 +2772,7 @@
           "is_public",
           "published_by",
           "published_at",
+          "publish_status",
           "created_at",
           "updated_at"
         ],
@@ -2466,6 +2813,29 @@
           }
         },
         "title": "QueryChartSetUpdate",
+        "type": "object"
+      },
+      "RequesterRead": {
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "full_name": {
+            "title": "Full Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "full_name",
+          "email"
+        ],
+        "title": "RequesterRead",
         "type": "object"
       },
       "RowFlagRead": {
@@ -7759,6 +8129,142 @@
         ]
       }
     },
+    "/queries/charts/publish-requests": {
+      "get": {
+        "description": "Every chart waiting for an administrator's decision, oldest first.\n\nAdministrators only. Registered before ``/charts/{chart_id}/...`` so the\nliteral is matched first.",
+        "operationId": "list_publish_requests_queries_charts_publish_requests_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PublishRequestRead"
+                  },
+                  "title": "Response List Publish Requests Queries Charts Publish Requests Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "List Publish Requests",
+        "tags": [
+          "queries"
+        ]
+      }
+    },
     "/queries/charts/published": {
       "get": {
         "description": "Every published chart, whoever built it.\n\nDeliberately unfiltered by owner: published means published, and escaping\nthe owner-only rule is the entire point of the feature.",
@@ -7890,6 +8396,149 @@
           }
         },
         "summary": "List Published Charts",
+        "tags": [
+          "queries"
+        ]
+      }
+    },
+    "/queries/charts/{chart_id}/definition": {
+      "get": {
+        "description": "The SQL and configuration behind a chart, read-only.\n\nFor anyone when the chart is published, so they can replicate it; for the\nauthor and administrators in every state, so an approver reads what they are\napproving. Carries the connection's name and nothing else about it, and a\nlist's name without its items. There is no write endpoint behind this one.",
+        "operationId": "get_chart_definition_queries_charts__chart_id__definition_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chart_id",
+            "required": true,
+            "schema": {
+              "title": "Chart Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChartDefinitionRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Get Chart Definition",
         "tags": [
           "queries"
         ]
@@ -8070,7 +8719,7 @@
     },
     "/queries/charts/{chart_id}/publish": {
       "post": {
-        "description": "Share one chart with every signed-in user.\n\nAn analyst may publish a chart on a query they own; an admin may publish\nanyone's. Publishing freezes the query behind it, so a colleague reading\nthe chart cannot have the definition changed under them.",
+        "description": "Publish a chart (administrators) or ask for it to be published (everyone\nelse).\n\nAn administrator publishes at once, anyone's chart. An analyst's request\nmakes the chart ``pending`` until an administrator approves or rejects it.\nEither way the query behind it is frozen, so nobody reading the chart - or\ndeciding on it - can have the definition changed under them.",
         "operationId": "publish_chart_queries_charts__chart_id__publish_post",
         "parameters": [
           {
@@ -8206,6 +8855,452 @@
           }
         },
         "summary": "Publish Chart",
+        "tags": [
+          "queries"
+        ]
+      }
+    },
+    "/queries/charts/{chart_id}/publish/approve": {
+      "post": {
+        "description": "Accept a request: the chart becomes visible to everyone signed in.\n\nAdministrators only. 409 ``PUBLISH_NOT_PENDING`` when nobody is waiting on it.",
+        "operationId": "approve_publish_request_queries_charts__chart_id__publish_approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chart_id",
+            "required": true,
+            "schema": {
+              "title": "Chart Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryChartRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Approve Publish Request",
+        "tags": [
+          "queries"
+        ]
+      }
+    },
+    "/queries/charts/{chart_id}/publish/cancel": {
+      "post": {
+        "description": "Withdraw a pending request, or clear a rejection notice. Unfreezes the query.",
+        "operationId": "cancel_publish_request_queries_charts__chart_id__publish_cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chart_id",
+            "required": true,
+            "schema": {
+              "title": "Chart Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryChartRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Cancel Publish Request",
+        "tags": [
+          "queries"
+        ]
+      }
+    },
+    "/queries/charts/{chart_id}/publish/reject": {
+      "post": {
+        "description": "Decline a request, with an optional reason the author will see.\n\nAdministrators only. 409 ``PUBLISH_NOT_PENDING`` when nobody is waiting on it.",
+        "operationId": "reject_publish_request_queries_charts__chart_id__publish_reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chart_id",
+            "required": true,
+            "schema": {
+              "title": "Chart Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PublishRejectRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryChartRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Structured error. Branch on `error_code`."
+          }
+        },
+        "summary": "Reject Publish Request",
         "tags": [
           "queries"
         ]
@@ -9218,7 +10313,7 @@
     },
     "/queries/{query_id}/flag-dismissals": {
       "delete": {
-        "description": "Undo dismissals: the named rows, or all of them when none are named.\n\nWithout this a mis-click is permanent. Dismissed rows are listed nowhere --\nthe engine stores their hashes, not the rows -- so there is no other way\nback to one.",
+        "description": "Undo the caller's dismissals: the named rows, or all of them when none are\nnamed. Nobody else's are touched, as nobody else's were affected.\n\nWithout this a mis-click is permanent. Dismissed rows are listed nowhere --\nthe engine stores their hashes, not the rows -- so there is no other way\nback to one.",
         "operationId": "restore_flagged_rows_queries__query_id__flag_dismissals_delete",
         "parameters": [
           {
@@ -9378,7 +10473,7 @@
         ]
       },
       "post": {
-        "description": "Mark flagged rows as reviewed so they stop appearing.\n\nAddressed by fingerprint, not by row index: an index is a position in one\nrun's result and points somewhere else after the next run. The fingerprints\ncome from the flagged view's own rows.\n\nDismissing a row that is already dismissed is a no-op rather than a\nconflict -- two tabs open on the same queue is normal use.",
+        "description": "Mark flagged rows as reviewed, for the caller, so they stop appearing.\n\nPersonal: the finding stays in the engine's store and stays in everybody\nelse's queue. That is what lets the people a published chart was shared with\nclear what they have looked at without hiding anything from the author.\nAllowed on any query whose alerts the caller can see, which is their own, any\nfor an administrator, and any published one.\n\nAddressed by fingerprint, not by row index: an index is a position in one\nrun's result and points somewhere else after the next run. The fingerprints\ncome from the flagged view's own rows.\n\nDismissing a row that is already dismissed is a no-op rather than a\nconflict -- two tabs open on the same queue is normal use.",
         "operationId": "dismiss_flagged_rows_queries__query_id__flag_dismissals_post",
         "parameters": [
           {

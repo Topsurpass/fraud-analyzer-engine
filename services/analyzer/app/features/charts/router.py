@@ -16,6 +16,9 @@ from sqlalchemy.orm import Session
 from app.db.app_state import get_session
 from app.features.charts import service as query_chart_service
 from app.features.charts.schemas import (
+    ChartDefinitionRead,
+    PublishRejectRequest,
+    PublishRequestRead,
     QueryChartRead,
     QueryChartSetRead,
     QueryChartSetUpdate,
@@ -30,20 +33,100 @@ query_scoped = APIRouter(
 )
 
 
+@query_scoped.get("/charts/publish-requests", response_model=list[PublishRequestRead])
+def list_publish_requests(
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> list[PublishRequestRead]:
+    """Every chart waiting for an administrator's decision, oldest first.
+
+    Administrators only. Registered before ``/charts/{chart_id}/...`` so the
+    literal is matched first.
+    """
+    return [
+        PublishRequestRead.model_validate(request)
+        for request in query_chart_service.list_pending(session, user)
+    ]
+
+
 @query_scoped.post("/charts/{chart_id}/publish", response_model=QueryChartRead)
 def publish_chart(
     chart_id: str,
     user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> QueryChartRead:
-    """Share one chart with every signed-in user.
+    """Publish a chart (administrators) or ask for it to be published (everyone
+    else).
 
-    An analyst may publish a chart on a query they own; an admin may publish
-    anyone's. Publishing freezes the query behind it, so a colleague reading
-    the chart cannot have the definition changed under them.
+    An administrator publishes at once, anyone's chart. An analyst's request
+    makes the chart ``pending`` until an administrator approves or rejects it.
+    Either way the query behind it is frozen, so nobody reading the chart - or
+    deciding on it - can have the definition changed under them.
     """
     return QueryChartRead.model_validate(
         query_chart_service.publish(session, chart_id, user)
+    )
+
+
+@query_scoped.post("/charts/{chart_id}/publish/cancel", response_model=QueryChartRead)
+def cancel_publish_request(
+    chart_id: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> QueryChartRead:
+    """Withdraw a pending request, or clear a rejection notice. Unfreezes the query."""
+    return QueryChartRead.model_validate(
+        query_chart_service.cancel_request(session, chart_id, user)
+    )
+
+
+@query_scoped.post("/charts/{chart_id}/publish/approve", response_model=QueryChartRead)
+def approve_publish_request(
+    chart_id: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> QueryChartRead:
+    """Accept a request: the chart becomes visible to everyone signed in.
+
+    Administrators only. 409 ``PUBLISH_NOT_PENDING`` when nobody is waiting on it.
+    """
+    return QueryChartRead.model_validate(
+        query_chart_service.approve(session, chart_id, user)
+    )
+
+
+@query_scoped.post("/charts/{chart_id}/publish/reject", response_model=QueryChartRead)
+def reject_publish_request(
+    chart_id: str,
+    payload: PublishRejectRequest | None = None,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> QueryChartRead:
+    """Decline a request, with an optional reason the author will see.
+
+    Administrators only. 409 ``PUBLISH_NOT_PENDING`` when nobody is waiting on it.
+    """
+    reason = payload.reason if payload is not None else None
+    return QueryChartRead.model_validate(
+        query_chart_service.reject(session, chart_id, user, reason)
+    )
+
+
+@query_scoped.get("/charts/{chart_id}/definition", response_model=ChartDefinitionRead)
+def get_chart_definition(
+    chart_id: str,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> ChartDefinitionRead:
+    """The SQL and configuration behind a chart, read-only.
+
+    For anyone when the chart is published, so they can replicate it; for the
+    author and administrators in every state, so an approver reads what they are
+    approving. Carries the connection's name and nothing else about it, and a
+    list's name without its items. There is no write endpoint behind this one.
+    """
+    return ChartDefinitionRead.model_validate(
+        query_chart_service.definition(session, chart_id, user)
     )
 
 

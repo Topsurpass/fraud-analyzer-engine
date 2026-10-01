@@ -211,6 +211,10 @@ class FlaggedTallyRead(BaseModel):
     severity: FlagSeverity
     #: When the newest of these first appeared.
     newest_first_seen_at: UtcDatetime | None = None
+    #: On a per-query line: true when the caller does not own the query, so the
+    #: alert reached them because it was published (or because they are an
+    #: administrator). Always false on a per-connection line.
+    shared: bool = False
 
 
 class FlaggedSummaryRead(BaseModel):
@@ -251,6 +255,12 @@ class FlaggedQueryRead(BaseModel):
 
     query_id: str
     query_name: str
+    #: True when the caller does not own this query: it is here because it was
+    #: published, or because the caller is an administrator. The reader can
+    #: dismiss and restore its findings for themselves and change nothing else.
+    shared: bool = False
+    #: Display name of the owner. A name only, never an email.
+    owner_name: str | None = None
     columns: list[str]
     rows: list[FlaggedRowRead] = Field(default_factory=list)
     rules: list[RuleHitRead] = Field(default_factory=list)

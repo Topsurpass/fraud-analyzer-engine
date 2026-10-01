@@ -217,7 +217,7 @@ def run_query(
     # Cached before filtering, served after: see apply_dismissals.
     result_cache.set(query.id, payload.data_hash, body, ttl_ms=interval)
     return flag_dismissal_service.apply_dismissals(
-        body, flag_dismissal_service.dismissed_fingerprints(session, query.id)
+        body, flag_dismissal_service.dismissed_fingerprints(session, query.id, user.id)
     )
 
 

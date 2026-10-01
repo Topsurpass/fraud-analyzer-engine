@@ -52,6 +52,53 @@ def visible_to(user: User):
     return SavedQuery.owner_id == user.id
 
 
+def is_published_clause():
+    """True for a query with at least one published chart.
+
+    A correlated EXISTS, so it composes into any select over ``SavedQuery``
+    without a join that would multiply rows when a query has several charts.
+    """
+    return sa.exists().where(
+        QueryChart.query_id == SavedQuery.id, QueryChart.is_public.is_(True)
+    )
+
+
+def alert_visible_to(user: User):
+    """The filter clause for queries whose *alerts* a caller may see.
+
+    Wider than :func:`visible_to`, deliberately and only for findings: a query
+    that has a published chart has been shared with everyone signed in, and the
+    people it was shared with should hear when it flags something. Its rows,
+    rules and SQL stay behind the owner-only rule everywhere else, except where
+    publishing itself says otherwise (``GET /queries/charts/{id}/definition``).
+    """
+    if user.is_admin:
+        return sa.true()
+    return sa.or_(SavedQuery.owner_id == user.id, is_published_clause())
+
+
+def get_viewable(session: Session, query_id: str, user: User) -> SavedQuery:
+    """One query whose alerts the caller may read and dismiss, or QUERY_NOT_FOUND.
+
+    The owner, an administrator, or anyone at all when the query is published.
+    Used by the dismissal routes only: it grants no right to edit, run or read
+    the query, so everything else keeps using :func:`get_owned`.
+    """
+    query = session.get(SavedQuery, query_id)
+    if query is None:
+        raise AppError(ErrorCode.QUERY_NOT_FOUND, "No such query.")
+    if user.is_admin or query.owner_id == user.id:
+        return query
+    published = session.scalar(
+        select(sa.literal(True)).where(
+            QueryChart.query_id == query_id, QueryChart.is_public.is_(True)
+        ).limit(1)
+    )
+    if not published:
+        raise AppError(ErrorCode.QUERY_NOT_FOUND, "No such query.")
+    return query
+
+
 def get_owned(session: Session, query_id: str, user: User) -> SavedQuery:
     """One query the caller is entitled to, or raise QUERY_NOT_FOUND.
 

@@ -187,10 +187,14 @@ def test_backoff_is_capped(admin_client, watched, session, monkeypatch):
     assert scheduler._next_due[watched["id"]] <= scheduler._now_ms() + 5000
 
 
-def test_a_dismissed_row_is_not_re_flagged_by_a_scheduled_run(
+def test_a_dismissed_row_stays_dismissed_through_a_scheduled_run(
     admin_client, watched, session
 ):
-    """The scheduler is exactly what would refill a queue somebody cleared."""
+    """The scheduler is exactly what would refill a queue somebody cleared.
+
+    The finding is stored again (it is shared, and others' queues are made of
+    it), but the person who dismissed it still does not see it.
+    """
     scheduler.run_due_once(session)
     stored = session.query(FlaggedRow).all()
     victim = stored[0].row_fingerprint
@@ -201,7 +205,10 @@ def test_a_dismissed_row_is_not_re_flagged_by_a_scheduled_run(
     scheduler.reset()
     scheduler.run_due_once(session)
     session.expire_all()
-    assert victim not in [row.row_fingerprint for row in session.query(FlaggedRow).all()]
+    body = admin_client.get(f"/connections/{watched['connection_id']}/flagged").json()
+    section = next(s for s in body["queries"] if s["query_id"] == watched["id"])
+    assert victim not in [row["fingerprint"] for row in section["rows"]]
+    assert section["dismissed_count"] == 1
 
 
 def test_reset_forgets_every_schedule(admin_client, watched, session):

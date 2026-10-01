@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.db.app_state import get_session
+from app.features.charts import service as query_chart_service
 from app.features.connections import service as connection_service
 from app.features.flag_rules import dismissals, flagged_rows
 from app.features.flag_rules import service as svc
@@ -60,6 +61,9 @@ def put_flag_rules(
     needs no endpoint of its own. Sending an empty list removes every rule.
     """
     query = saved_query_service.get_owned(session, query_id, user)
+    # Rules decide what viewers are alerted to and what an approver reviewed, so
+    # they are as fixed as the SQL while a chart is published or awaiting approval.
+    query_chart_service.guard_frozen(session, query, user)
     rules = svc.replace_rules(session, query, payload.rules)
     return FlagRuleSetRead(query_id=query_id, rules=rules)
 
@@ -116,7 +120,13 @@ def dismiss_flagged_rows(
     user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> FlagDismissalResult:
-    """Mark flagged rows as reviewed so they stop appearing.
+    """Mark flagged rows as reviewed, for the caller, so they stop appearing.
+
+    Personal: the finding stays in the engine's store and stays in everybody
+    else's queue. That is what lets the people a published chart was shared with
+    clear what they have looked at without hiding anything from the author.
+    Allowed on any query whose alerts the caller can see, which is their own, any
+    for an administrator, and any published one.
 
     Addressed by fingerprint, not by row index: an index is a position in one
     run's result and points somewhere else after the next run. The fingerprints
@@ -125,13 +135,8 @@ def dismiss_flagged_rows(
     Dismissing a row that is already dismissed is a no-op rather than a
     conflict -- two tabs open on the same queue is normal use.
     """
-    query = saved_query_service.get_owned(session, query_id, user)
-    stored = dismissals.dismiss(session, query, payload.fingerprints)
-    # Delete the engine's stored copy as well, so the queue actually shrinks
-    # rather than being filtered on the way out. The row in the customer's
-    # database is untouched: target connections are opened read-only and this
-    # is the engine's own bookkeeping table.
-    flagged_rows.delete_rows(session, query_id, payload.fingerprints)
+    query = saved_query_service.get_viewable(session, query_id, user)
+    stored = dismissals.dismiss(session, query, user, payload.fingerprints)
     return FlagDismissalResult(query_id=query_id, changed=stored)
 
 
@@ -142,14 +147,15 @@ def restore_flagged_rows(
     user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> FlagDismissalResult:
-    """Undo dismissals: the named rows, or all of them when none are named.
+    """Undo the caller's dismissals: the named rows, or all of them when none are
+    named. Nobody else's are touched, as nobody else's were affected.
 
     Without this a mis-click is permanent. Dismissed rows are listed nowhere --
     the engine stores their hashes, not the rows -- so there is no other way
     back to one.
     """
-    query = saved_query_service.get_owned(session, query_id, user)
-    removed = dismissals.restore(session, query, fingerprint)
+    query = saved_query_service.get_viewable(session, query_id, user)
+    removed = dismissals.restore(session, query, user, fingerprint)
     return FlagDismissalResult(query_id=query_id, changed=removed)
 
 

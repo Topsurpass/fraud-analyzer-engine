@@ -1,5 +1,11 @@
 """Dismissing flagged rows, and remembering it.
 
+A dismissal belongs to the person who made it. Findings are stored once per
+query and are visible to everyone who can see a published chart on it, so a
+shared dismissal would let a viewer hide the author's findings and the author
+hide the viewer's. Each person's queue is the stored findings minus their own
+dismissals, nothing else.
+
 The flagged view is a review queue: an analyst works down it and needs the rows
 they have cleared to stop coming back. Nothing about a flagged row is stored,
 though -- rows are recomputed from the query's cached result on every load -- so
@@ -23,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.features.flag_rules.models import FlagDismissal
 from app.features.queries.models import SavedQuery
+from app.features.users.models import User
 
 
 def row_fingerprint(values: list[Any]) -> str:
@@ -48,45 +55,56 @@ def row_fingerprint(values: list[Any]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-def dismissed_fingerprints(session: Session, query_id: str) -> set[str]:
-    """Every fingerprint dismissed on one query.
+def dismissed_fingerprints(session: Session, query_id: str, user_id: str) -> set[str]:
+    """Every fingerprint this user has dismissed on one query.
 
     A set, and read once per query per request: the flagged view tests every
     flagged row against it, so a list would make that quadratic on exactly the
     queries that matter most -- the ones matching a lot of rows.
     """
     statement = select(FlagDismissal.row_fingerprint).where(
-        FlagDismissal.query_id == query_id
+        FlagDismissal.query_id == query_id, FlagDismissal.user_id == user_id
     )
     return set(session.scalars(statement))
 
 
-def dismiss(session: Session, query: SavedQuery, fingerprints: list[str]) -> int:
-    """Record dismissals, ignoring any already recorded.
+def dismiss(
+    session: Session, query: SavedQuery, user: User, fingerprints: list[str]
+) -> int:
+    """Record the caller's dismissals, ignoring any already recorded.
 
     Returns how many were newly stored. Re-dismissing a row is a no-op rather
     than a conflict: two browser tabs on the same queue is normal, and the
     second one is not an error to report to anybody.
+
+    Stores the dismissal and nothing else. The finding itself stays, because
+    other people's queues are made of it.
     """
     if not fingerprints:
         return 0
 
-    existing = dismissed_fingerprints(session, query.id)
+    existing = dismissed_fingerprints(session, query.id, user.id)
     fresh = [f for f in dict.fromkeys(fingerprints) if f not in existing]
     for fingerprint in fresh:
-        session.add(FlagDismissal(query_id=query.id, row_fingerprint=fingerprint))
+        session.add(
+            FlagDismissal(query_id=query.id, user_id=user.id, row_fingerprint=fingerprint)
+        )
     session.commit()
     return len(fresh)
 
 
-def restore(session: Session, query: SavedQuery, fingerprints: list[str] | None) -> int:
-    """Undo dismissals. ``None`` restores every row on the query.
+def restore(
+    session: Session, query: SavedQuery, user: User, fingerprints: list[str] | None
+) -> int:
+    """Undo the caller's dismissals. ``None`` restores every row on the query.
 
-    Returns how many were removed. Without this a mis-click is permanent and
-    the row it hid is unreachable -- there is no other view that lists dismissed
-    rows, because the engine does not keep the rows.
+    Returns how many were removed. Only ever the caller's own: restoring does
+    not bring a finding back for anybody else, because it never left for them.
+    Without this a mis-click is permanent and the row it hid is unreachable.
     """
-    statement = delete(FlagDismissal).where(FlagDismissal.query_id == query.id)
+    statement = delete(FlagDismissal).where(
+        FlagDismissal.query_id == query.id, FlagDismissal.user_id == user.id
+    )
     if fingerprints is not None:
         if not fingerprints:
             return 0

@@ -43,6 +43,9 @@ _INTEGRATION_MODULES = {
     "test_password_change_gate",
     "test_users_api",
     "test_chart_publishing",
+    "test_publish_approval",
+    "test_shared_alerts",
+    "test_chart_definition",
     "test_lists_api",
 }
 

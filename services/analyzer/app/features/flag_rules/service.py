@@ -155,17 +155,18 @@ def queries_with_rules(
     and then one per rule, which on a connection with twenty cards is the
     difference between three statements and sixty.
 
-    Filtered by ``visible_to`` even though this feeds a connection-scoped
+    Filtered by ``alert_visible_to`` even though this feeds a connection-scoped
     view: a connection is shared across every analyst who queries it, but the
     findings behind each query are not - the row values and rule names in
     ``_section`` below are exactly what "an analyst sees only their own work"
-    is protecting.
+    is protecting. The one widening is a published query: sharing a chart shares
+    its alerts, so its findings reach everybody it was shared with.
     """
     statement = (
         select(SavedQuery)
         .where(
             SavedQuery.connection_id == connection_id,
-            saved_query_service.visible_to(user),
+            saved_query_service.alert_visible_to(user),
         )
         .order_by(SavedQuery.created_at)
         .options(selectinload(SavedQuery.flag_rules).selectinload(FlagRule.conditions))
@@ -180,8 +181,11 @@ def _warnings_from_last_run(query_id: str) -> list[str]:
     return list((entry.payload.get("flags") or {}).get("warnings") or [])
 
 
-def _section(session: Session, query: SavedQuery) -> dict:
-    """One query's contribution to a connection's flagged view.
+def _section(session: Session, query: SavedQuery, user: User) -> dict:
+    """One query's contribution to a connection's flagged view, for one reader.
+
+    The stored findings minus what *this* reader has dismissed: findings are
+    stored once per query and shared, dismissals are personal.
 
     Read from the stored findings, not from the result cache. The cache expires
     on the poll interval and is empty after a restart, so the view used to say
@@ -191,8 +195,14 @@ def _section(session: Session, query: SavedQuery) -> dict:
     ``columns`` comes off the rows themselves, so a finding still renders under
     the headers it was flagged with even if the SELECT list has changed since.
     """
-    stored = flagged_row_service.rows_for_query(session, query.id)
-    dismissed = len(flag_dismissal_service.dismissed_fingerprints(session, query.id))
+    mine = flag_dismissal_service.dismissed_fingerprints(session, query.id, user.id)
+    stored = [
+        row
+        for row in flagged_row_service.rows_for_query(session, query.id)
+        if row.row_fingerprint not in mine
+    ]
+    dismissed = len(mine)
+    owner = session.get(User, query.owner_id) if query.owner_id else None
 
     rules_by_id: dict[str, dict] = {}
     for row in stored:
@@ -219,6 +229,10 @@ def _section(session: Session, query: SavedQuery) -> dict:
     return {
         "query_id": query.id,
         "query_name": query.name,
+        # Not the reader's own work: it reached them by being published (or, for
+        # an administrator, by being one). The dashboard labels these.
+        "shared": query.owner_id != user.id,
+        "owner_name": owner.full_name if owner is not None else None,
         "columns": stored[0].columns if stored else [],
         "rows": [
             {
@@ -320,18 +334,28 @@ def flagged_for_connection(
     settings = get_settings()
     queries = queries_with_rules(session, conn.id, user)
 
+    # A refresh runs queries against the target, so it stays with the people who
+    # may run them: the caller's own, or anything for an administrator. A shared
+    # section still comes back, read from what is stored, but a viewer's click
+    # never makes the engine execute somebody else's query.
+    runnable = {q.id for q in queries if user.is_admin or q.owner_id == user.id}
+
     truncated = False
-    if refresh and len(queries) > settings.flagged_refresh_max_queries:
-        # One click must not fan out unbounded against a production database.
-        queries = queries[: settings.flagged_refresh_max_queries]
-        truncated = True
+    if refresh:
+        mine = [q for q in queries if q.id in runnable]
+        if len(mine) > settings.flagged_refresh_max_queries:
+            # One click must not fan out unbounded against a production database.
+            keep = {q.id for q in mine[: settings.flagged_refresh_max_queries]}
+            queries = [q for q in queries if q.id in keep or q.id not in runnable]
+            runnable = keep
+            truncated = True
 
     payloads = []
     for query in queries:
         error_code = error_message = None
-        if refresh:
+        if refresh and query.id in runnable:
             error_code, error_message = _run_one(session, query, conn, user)
-        section = _section(session, query)
+        section = _section(session, query, user)
         section["error_code"] = error_code
         section["error_message"] = error_message
         payloads.append(section)

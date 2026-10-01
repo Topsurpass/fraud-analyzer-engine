@@ -1,4 +1,10 @@
-"""Publishing a chart, and the freeze it puts on the query behind it."""
+"""Publishing a chart, and the freeze it puts on the query behind it.
+
+An analyst's publish is a request an administrator approves (see
+``test_publish_approval.py`` for that rule); the tests here need a chart that IS
+published, so they go through ``_approved``: ask as the author, approve as the
+administrator.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +17,16 @@ SQL = "SELECT day, count(*) AS n FROM txns GROUP BY day ORDER BY day"
 def _auth(client, email, role):
     make_user(email=email, role=role)
     return {"Authorization": f"Bearer {login(client, email=email).json()['token']}"}
+
+
+def _approved(client, chart, author, admin_email="boss@example.com"):
+    """The author asks and an administrator approves: a published chart."""
+    asked = client.post(f"/queries/charts/{chart['id']}/publish", headers=author)
+    assert asked.status_code == 200, asked.text
+    boss = {"Authorization": f"Bearer {login(client, email=admin_email).json()['token']}"}
+    approved = client.post(f"/queries/charts/{chart['id']}/publish/approve", headers=boss)
+    assert approved.status_code == 200, approved.text
+    return approved.json()
 
 
 def _query_with_chart(client, auth, connection, name="Mine"):
@@ -27,17 +43,22 @@ def _query_with_chart(client, auth, connection, name="Mine"):
     return query, charts[0]
 
 
-def test_an_analyst_publishes_a_chart_they_own(client, app_db, sqlite_connection):
-    boss = _auth(client, "boss@example.com", UserRole.ADMIN)
+def test_an_analyst_publishes_a_chart_they_own_once_an_admin_approves(
+    client, app_db, sqlite_connection
+):
+    _auth(client, "boss@example.com", UserRole.ADMIN)
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     _, chart = _query_with_chart(client, alice, sqlite_connection)
 
-    response = client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    asked = client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    assert asked.status_code == 200, asked.text
+    # Asking is not publishing.
+    assert asked.json()["is_public"] is False
+    assert asked.json()["publish_status"] == "pending"
 
-    assert response.status_code == 200, response.text
-    assert response.json()["is_public"] is True
-    assert response.json()["published_at"] is not None
-    assert boss  # the admin exists so alice is not the last account
+    approved = _approved(client, chart, alice)
+    assert approved["is_public"] is True
+    assert approved["published_at"] is not None
 
 
 def test_publishing_is_visible_to_another_analyst(client, app_db, sqlite_connection):
@@ -45,7 +66,7 @@ def test_publishing_is_visible_to_another_analyst(client, app_db, sqlite_connect
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     bob = _auth(client, "bob@example.com", UserRole.ANALYST)
     _, chart = _query_with_chart(client, alice, sqlite_connection)
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
 
     published = client.get("/queries/charts/published", headers=bob).json()
 
@@ -90,7 +111,7 @@ def test_publishing_freezes_the_query_for_its_owner(client, app_db, sqlite_conne
     _auth(client, "boss@example.com", UserRole.ADMIN)
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     query, chart = _query_with_chart(client, alice, sqlite_connection)
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
 
     response = client.put(
         f"/queries/{query['id']}", headers=alice, json={"sql_text": "SELECT 1 AS n"}
@@ -106,7 +127,7 @@ def test_the_refusal_names_the_way_out(client, app_db, sqlite_connection):
     _auth(client, "boss@example.com", UserRole.ADMIN)
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     query, chart = _query_with_chart(client, alice, sqlite_connection)
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
 
     body = client.put(
         f"/queries/{query['id']}", headers=alice, json={"sql_text": "SELECT 1 AS n"}
@@ -120,7 +141,7 @@ def test_a_frozen_query_cannot_be_deleted_or_rewired(client, app_db, sqlite_conn
     _auth(client, "boss@example.com", UserRole.ADMIN)
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     query, chart = _query_with_chart(client, alice, sqlite_connection)
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
 
     assert client.delete(f"/queries/{query['id']}", headers=alice).status_code == 409
     assert (
@@ -139,7 +160,7 @@ def test_an_admin_can_edit_a_frozen_query(client, app_db, sqlite_connection):
     boss = _auth(client, "boss@example.com", UserRole.ADMIN)
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     query, chart = _query_with_chart(client, alice, sqlite_connection)
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
 
     response = client.put(
         f"/queries/{query['id']}", headers=boss, json={"sql_text": "SELECT 1 AS n"}
@@ -152,7 +173,7 @@ def test_unpublishing_unfreezes_the_query(client, app_db, sqlite_connection):
     _auth(client, "boss@example.com", UserRole.ADMIN)
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     query, chart = _query_with_chart(client, alice, sqlite_connection)
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
 
     client.post(f"/queries/charts/{chart['id']}/unpublish", headers=alice)
 
@@ -183,7 +204,7 @@ def test_an_admin_can_unpublish_anything(client, app_db, sqlite_connection):
     boss = _auth(client, "boss@example.com", UserRole.ADMIN)
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     _, chart = _query_with_chart(client, alice, sqlite_connection)
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
 
     response = client.post(f"/queries/charts/{chart['id']}/unpublish", headers=boss)
 
@@ -196,7 +217,8 @@ def test_publishing_twice_is_harmless(client, app_db, sqlite_connection):
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     _, chart = _query_with_chart(client, alice, sqlite_connection)
 
-    first = client.post(f"/queries/charts/{chart['id']}/publish", headers=alice).json()
+    boss = {"Authorization": f"Bearer {login(client, email='boss@example.com').json()['token']}"}
+    first = client.post(f"/queries/charts/{chart['id']}/publish", headers=boss).json()
     second = client.post(f"/queries/charts/{chart['id']}/publish", headers=alice).json()
 
     # Re-publishing must not reassign the publisher, or an admin's freeze
@@ -212,7 +234,7 @@ def test_publishing_does_not_expose_the_sql(client, app_db, sqlite_connection):
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     _, chart = _query_with_chart(client, alice, sqlite_connection)
     bob = _auth(client, "bob@example.com", UserRole.ANALYST)
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
 
     body = client.get("/queries/charts/published", headers=bob).text
 
@@ -229,7 +251,7 @@ def test_a_viewer_can_actually_render_a_published_chart(client, app_db, sqlite_c
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     bob = _auth(client, "bob@example.com", UserRole.ANALYST)
     _, chart = _query_with_chart(client, alice, sqlite_connection)
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
 
     response = client.get(f"/queries/charts/{chart['id']}/poll?force=true", headers=bob)
 
@@ -253,7 +275,7 @@ def test_unpublishing_stops_the_viewer_poll(client, app_db, sqlite_connection):
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     bob = _auth(client, "bob@example.com", UserRole.ANALYST)
     _, chart = _query_with_chart(client, alice, sqlite_connection)
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
     assert client.get(f"/queries/charts/{chart['id']}/poll", headers=bob).status_code == 200
 
     client.post(f"/queries/charts/{chart['id']}/unpublish", headers=alice)
@@ -282,7 +304,7 @@ def test_the_viewer_poll_hides_the_querys_other_charts(client, app_db, sqlite_co
             ]
         },
     ).json()["charts"]
-    client.post(f"/queries/charts/{charts[0]['id']}/publish", headers=alice)
+    _approved(client, charts[0], alice)
 
     body = client.get(f"/queries/charts/{charts[0]['id']}/poll?force=true", headers=bob).json()
 
@@ -295,7 +317,7 @@ def test_the_viewer_poll_never_carries_the_sql(client, app_db, sqlite_connection
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     bob = _auth(client, "bob@example.com", UserRole.ANALYST)
     _, chart = _query_with_chart(client, alice, sqlite_connection)
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
 
     body = client.get(f"/queries/charts/{chart['id']}/poll?force=true", headers=bob).text
 
@@ -304,12 +326,13 @@ def test_the_viewer_poll_never_carries_the_sql(client, app_db, sqlite_connection
 
 def test_publishing_and_unpublishing_never_cost_an_execution(client, app_db, sqlite_connection):
     """Sharing a chart changes who can see it, not what the query returns."""
+    _auth(client, "boss@example.com", UserRole.ADMIN)
     alice = _auth(client, "alice@example.com", UserRole.ANALYST)
     query, chart = _query_with_chart(client, alice, sqlite_connection)
     client.get(f"/queries/{query['id']}/poll", headers=alice)  # cold: the one real run
     before = len(client.get(f"/queries/{query['id']}/logs", headers=alice).json())
 
-    client.post(f"/queries/charts/{chart['id']}/publish", headers=alice)
+    _approved(client, chart, alice)
     client.get(f"/queries/{query['id']}/poll", headers=alice)
     client.post(f"/queries/charts/{chart['id']}/unpublish", headers=alice)
     client.get(f"/queries/{query['id']}/poll", headers=alice)
