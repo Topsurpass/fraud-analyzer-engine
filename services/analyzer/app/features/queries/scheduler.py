@@ -60,12 +60,33 @@ logger = logging.getLogger(__name__)
 
 #: Per query: the epoch-ms after which it may run again.
 _next_due: dict[str, float] = {}
+#: The same moments on the wall clock. A query is due when EITHER clock has
+#: passed its moment: the monotonic clock stops while the machine sleeps (see
+#: ``app/clock.py``), so it alone would hold an hourly query back by however long
+#: the laptop was shut.
+_next_due_wall: dict[str, float] = {}
 #: Per query: how much its interval is currently multiplied by, after failures.
 _backoff: dict[str, int] = {}
 
 
 def _now_ms() -> float:
     return time.monotonic() * 1000
+
+
+def _wall_ms() -> float:
+    return time.time() * 1000
+
+
+def _is_due(query_id: str) -> bool:
+    if _next_due.get(query_id, 0) <= _now_ms():
+        return True
+    wall = _next_due_wall.get(query_id)
+    return wall is not None and wall <= _wall_ms()
+
+
+def _set_due_in(query_id: str, delay_ms: float) -> None:
+    _next_due[query_id] = _now_ms() + delay_ms
+    _next_due_wall[query_id] = _wall_ms() + delay_ms
 
 
 def _due_queries(session: Session) -> list[SavedQuery]:
@@ -77,12 +98,11 @@ def _due_queries(session: Session) -> list[SavedQuery]:
     statement = select(SavedQuery).options(
         selectinload(SavedQuery.flag_rules).selectinload(FlagRule.conditions)
     )
-    now = _now_ms()
     due = []
     for query in session.scalars(statement):
         if not query.flag_rules:
             continue
-        if _next_due.get(query.id, 0) <= now:
+        if _is_due(query.id):
             due.append(query)
     return due
 
@@ -106,7 +126,7 @@ def _reschedule(query: SavedQuery, *, failed: bool) -> None:
     else:
         _backoff.pop(query.id, None)
         delay = base
-    _next_due[query.id] = _now_ms() + delay
+    _set_due_in(query.id, delay)
 
 
 def run_due_once(session: Session) -> int:
@@ -125,7 +145,7 @@ def run_due_once(session: Session) -> int:
         if fresh is not None:
             # Run by somebody else within its interval (a poll's refresh, or
             # "Run now"): not due until that result would go stale.
-            _next_due[query.id] = _now_ms() + max(fresh.ttl_ms - fresh.age_ms(), 0)
+            _set_due_in(query.id, max(fresh.ttl_ms - fresh.age_ms(), 0))
             continue
         if conn.paused:
             # Disconnected on purpose. Skipped rather than failed: this is not
@@ -201,4 +221,5 @@ def _tick() -> int:
 def reset() -> None:
     """Forget every schedule. For tests, and for a config reload."""
     _next_due.clear()
+    _next_due_wall.clear()
     _backoff.clear()

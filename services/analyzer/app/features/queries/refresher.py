@@ -62,6 +62,10 @@ _pool: ThreadPoolExecutor | None = None
 _in_flight: set[str] = set()
 #: Per query: the ``time.monotonic()`` before which a failed one is not retried.
 _cooldown_until: dict[str, float] = {}
+#: The same moment on the wall clock. Both must say "not yet" for a query to be
+#: held off, because the monotonic clock stops while the machine sleeps (see
+#: ``app/clock.py``) and would otherwise stretch an hour's cooldown over a night.
+_cooldown_wall: dict[str, float] = {}
 _lock = threading.Lock()
 
 
@@ -93,7 +97,7 @@ def request_refresh(query_id: str, user_id: str | None) -> bool:
     with _lock:
         if query_id in _in_flight:
             return False
-        if time.monotonic() < _cooldown_until.get(query_id, 0.0):
+        if _cooling_down(query_id):
             return False
         _in_flight.add(query_id)
 
@@ -104,6 +108,15 @@ def request_refresh(query_id: str, user_id: str | None) -> bool:
         with _lock:
             _in_flight.discard(query_id)
         return False
+
+
+def _cooling_down(query_id: str) -> bool:
+    """Whether a failed query is still being left alone. Caller holds the lock."""
+    until = _cooldown_until.get(query_id)
+    if until is None or time.monotonic() >= until:
+        return False
+    wall_until = _cooldown_wall.get(query_id)
+    return wall_until is None or time.time() < wall_until
 
 
 def _refresh(query_id: str, user_id: str | None) -> None:
@@ -145,6 +158,7 @@ def _refresh(query_id: str, user_id: str | None) -> None:
             )
         with _lock:
             _cooldown_until.pop(query_id, None)
+            _cooldown_wall.pop(query_id, None)
     except AppError as error:
         _hold_off(query_id, interval_ms)
         # A failed background run is still a run against their database, and the
@@ -171,13 +185,16 @@ def _refresh(query_id: str, user_id: str | None) -> None:
 def _hold_off(query_id: str, interval_ms: int) -> None:
     """Leave a query whose refresh just failed alone for one interval."""
     with _lock:
-        _cooldown_until[query_id] = time.monotonic() + max(interval_ms, 1) / 1000
+        hold_s = max(interval_ms, 1) / 1000
+        _cooldown_until[query_id] = time.monotonic() + hold_s
+        _cooldown_wall[query_id] = time.time() + hold_s
 
 
 def reset() -> None:
     """Forget every cooldown. For tests, and for a config reload."""
     with _lock:
         _cooldown_until.clear()
+        _cooldown_wall.clear()
 
 
 def shutdown() -> None:
@@ -187,6 +204,7 @@ def shutdown() -> None:
         pool, _pool = _pool, None
         _in_flight.clear()
         _cooldown_until.clear()
+        _cooldown_wall.clear()
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
 

@@ -26,11 +26,12 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import orjson
 
+from app.clock import elapsed_ms
 from app.config import get_settings
 from app.features.queries import rendered_cache
 
@@ -46,14 +47,23 @@ class CacheEntry:
     stored_at: float
     ttl_ms: int
     size_bytes: int = 0
+    #: The wall-clock moment of storing. ``stored_at`` alone is monotonic, and a
+    #: monotonic clock stops while the machine sleeps (see ``app/clock.py``), so
+    #: an entry would look hours younger than it is.
+    stored_wall: float = field(default_factory=time.time)
 
     def is_fresh(self, now: float | None = None) -> bool:
-        now = time.monotonic() if now is None else now
-        return (now - self.stored_at) * 1000 < self.ttl_ms
+        return self.age_ms(now) < self.ttl_ms
 
     def age_ms(self, now: float | None = None) -> int:
-        now = time.monotonic() if now is None else now
-        return int((now - self.stored_at) * 1000)
+        """How old this entry is, by whichever clock says it is older.
+
+        An explicit ``now`` is a monotonic reading supplied by a caller that
+        wants to control time (a test), and is measured on that clock alone.
+        """
+        if now is not None:
+            return int((now - self.stored_at) * 1000)
+        return int(elapsed_ms(self.stored_at, self.stored_wall))
 
 
 _entries: OrderedDict[str, CacheEntry] = OrderedDict()
