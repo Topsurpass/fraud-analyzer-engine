@@ -44,7 +44,7 @@ services/analyzer/
     features/          one folder per product feature
       connections/     the databases you analyse
       queries/         saved SELECTs: run, poll, cache, schedule
-      charts/          how a query's result is drawn; publishing charts
+      charts/          how a query's result is drawn; publishing (by request, with admin approval) and the read-only definition
       flag_rules/      rules that mark rows, and the reviewed queue
       dashboards/      boards that place charts
       lists/           named, described lists of values that flag rules test against
@@ -79,7 +79,7 @@ Extra files appear only where a feature has a distinct second job:
 | `queries/` | `result_cache.py`, `rendered_cache.py`, `sizing.py` | Result caches and payload sizing |
 | `queries/` | `refresher.py`, `scheduler.py` | Background refresh and the timer that runs queries |
 | `flag_rules/` | `engine.py` | Pure evaluation: rows and rules in, flags out |
-| `flag_rules/` | `flagged_rows.py`, `dismissals.py` | The stored queue of matches and dismissals |
+| `flag_rules/` | `flagged_rows.py`, `dismissals.py` | The stored queue of matches, and each person's own dismissals of it |
 | `lists/` | `matching.py` | Pure: how an item or a cell becomes a match key, and the member-set cache (keyed by list id and `ItemList.version`). `flag_rules/engine.py` imports it, never the reverse |
 | `auth/` | `sessions.py` | Session create, validate, expire |
 

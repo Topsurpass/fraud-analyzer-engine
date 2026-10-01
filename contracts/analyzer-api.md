@@ -36,6 +36,8 @@ Every non-2xx response, without exception, has this shape:
 | `DASHBOARD_NOT_FOUND` | 404 | No dashboard with that id |
 | `LIST_NOT_FOUND` | 404 | No list with that id, or a rule names a `list_id` that does not exist (`detail.list_ids`) |
 | `DUPLICATE_NAME` | 409 | A connection, query, or dashboard already has that name |
+| `QUERY_FROZEN` | 409 | The query has a published chart, or one waiting for approval; unpublish or withdraw to edit (administrators may always edit) |
+| `PUBLISH_NOT_PENDING` | 409 | Approve or reject on a chart nobody is waiting on (never requested, withdrawn, or already decided) |
 | `LIST_NAME_TAKEN` | 409 | Another list has that name, ignoring case |
 | `LIST_IN_USE` | 409 | A rule still reads the list; `detail.rules` is `[{rule_name, query_id, query_name}]` for queries the caller can see, `detail.hidden_rule_count` counts the rest |
 | `REQUEST_VALIDATION_ERROR` | 422 | The request body or query params failed validation |
@@ -221,6 +223,8 @@ Flagged rows across every rule-bearing query on one connection.
     {
       "query_id": "...",
       "query_name": "Large transfers",
+      "shared": false,
+      "owner_name": "Ada Lovelace",
       "columns": ["day", "amount"],
       "rows": [{"index": 1, "rule_ids": ["..."], "values": ["2026-08-19", 900.0]}],
       "rules": [{"id": "...", "name": "Large", "severity": "high", "matched": 1}],
@@ -246,6 +250,13 @@ rules matched nothing. Queries with no rules are omitted entirely.
 Only flagged rows are carried, not the whole result: returning every row so the
 client could filter would multiply the payload by the inverse of the flag rate.
 
+The sections are the caller's own queries, every query for an administrator, and
+any query that has a **published** chart: sharing a chart shares its alerts.
+`shared` is true when the caller does not own the query, and `owner_name` is the
+owner's display name (never an email). Rows exclude what *the caller* has
+dismissed, and `dismissed_count` counts the caller's own dismissals; see
+"Publishing, approval and shared alerts".
+
 ## `POST /connections/{id}/flagged/refresh`
 
 Same response shape, but re-runs each query first. The only path here that
@@ -253,7 +264,9 @@ touches the target database, so it counts against the **execution** rate-limit
 bucket and is bounded by `FAE_FLAGGED_REFRESH_MAX_QUERIES` (default 20);
 `refresh_truncated` is `true` when that bound applied. A query that fails comes
 back with `error_code` set and `stale: true` while every other query on the
-connection still reports its flagged rows.
+connection still reports its flagged rows. It only re-runs queries the caller may
+run (their own, or any for an administrator); a shared section is returned from
+what is stored, so a viewer's click never executes somebody else's query.
 
 ## `POST /queries/poll`
 
@@ -321,6 +334,79 @@ Every response carries `X-Request-ID`. An inbound `X-Request-ID` is honoured so
 a trace started at a proxy or in the frontend carries through; otherwise one is
 generated. The same id is attached to every log line emitted while serving that
 request.
+
+## Publishing, approval and shared alerts
+
+A chart is `private`, `pending` or `published` (`publish_status` on every chart;
+`is_public` is true only when `published`). An analyst cannot publish: **asking is
+all they can do**, and an administrator decides.
+
+| Call | Who | Effect |
+| --- | --- | --- |
+| `POST /queries/charts/{id}/publish` | author; any admin | Admin: `published` at once. Author: `pending`. Already pending or published: no change. |
+| `POST /queries/charts/{id}/publish/cancel` | author; any admin | `pending` becomes `private`; also clears a rejection notice. Does not unpublish. |
+| `POST /queries/charts/{id}/unpublish` | publisher; any admin | Unchanged. An approval keeps the **author** as `published_by`, so the author may retract; an admin's own publish is the admin's to retract. |
+| `GET /queries/charts/publish-requests` | admin | Every `pending` chart, oldest first: `[{chart, query_id, query_name, connection_id, connection_name, requested_by: {id, full_name, email}, requested_at}]`. Others get `403 FORBIDDEN`. |
+| `POST /queries/charts/{id}/publish/approve` | admin | `pending` becomes `published`. |
+| `POST /queries/charts/{id}/publish/reject` | admin | Body `{"reason": string \| null}` (at most 500 characters, body optional). `pending` becomes `private` with `publish_rejection`. |
+
+Approve and reject on anything not `pending` are `409 PUBLISH_NOT_PENDING`; for a
+non-admin they are `403 FORBIDDEN`. A chart read carries
+`publish_requested_at` (while pending), `publish_rejection`
+(`{reason, rejected_at, rejected_by_name}`, until the author asks again or
+withdraws) and `published_by_name`.
+
+While a chart is `pending` its query is frozen for non-admins exactly as when it is
+published (`409 QUERY_FROZEN`; the message says the request is waiting and that
+withdrawing unfreezes it). That covers the query, its charts **and its flag
+rules**: rules decide what viewers are alerted to and what an approver reviewed, so
+they are as fixed as the SQL. An administrator may still edit, and doing so does
+not change a pending chart's status. Every transition is audited
+(`chart_published`, `chart_unpublished`, `chart_publish_requested`,
+`chart_publish_approved`, `chart_publish_rejected`, `chart_publish_cancelled`).
+
+### `GET /queries/charts/{id}/definition`
+
+The SQL and configuration behind a chart, read-only.
+
+```json
+{
+  "chart": {"id": "...", "name": "Volume", "chart_type": "bar", "x_field": "day", "...": "..."},
+  "query": {"id": "...", "name": "Daily volume", "description": null,
+            "sql_text": "SELECT ...", "row_limit": 250, "poll_interval_ms": 3600000},
+  "rules": [{"id": "...", "name": "Watched", "severity": "high", "enabled": true,
+             "conditions": [{"column_name": "day", "operator": "in_list",
+                             "value": null, "value2": null, "list_name": "Watchlist"}]}],
+  "connection_name": "Payments",
+  "owner_name": "Ada Lovelace",
+  "read_only": true
+}
+```
+
+Allowed for any signed-in user when the chart is `published`, and for the author
+and administrators in every state (an approver reads a pending request's SQL here).
+Anything else is `404`. `row_limit` and `poll_interval_ms` are the effective values.
+It never carries the connection's id, host, port, database, username or
+credentials, only its **name**; a list condition carries the list's **name**, never
+its items. `read_only` is false for the author and administrators. There is no
+write method on it.
+
+### Shared alerts and personal dismissals
+
+A query is **alert-visible** to its owner, to every administrator, and to everyone
+once it has a published chart. `GET /flagged/summary` and
+`GET /connections/{id}/flagged` cover alert-visible queries; per-query summary lines
+and sections carry `shared` (true when the caller is not the owner).
+
+Findings are stored once per query. A **dismissal belongs to the person who made
+it**: `POST` and `DELETE /queries/{id}/flag-dismissals` act on the caller's own
+dismissals, are allowed on any alert-visible query, and do not delete the stored
+finding. Every read (the summary, the flagged view, every poll) excludes the
+caller's own dismissals and nobody else's, so a viewer clearing what they have read
+hides nothing from the author, an administrator or another viewer. Restoring brings
+a finding back at once, for the caller only. Clearing stored findings
+(`DELETE /queries/{id}/flagged-rows`) and editing rules remain author and
+administrator only. Unpublishing removes the query from the viewers' alerts.
 
 ## Dashboards
 
