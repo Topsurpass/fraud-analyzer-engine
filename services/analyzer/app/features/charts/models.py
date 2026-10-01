@@ -40,6 +40,7 @@ from app.policy.chart_types import ChartType
 if TYPE_CHECKING:
     from app.features.dashboards.models import DashboardItem
     from app.features.queries.models import SavedQuery
+    from app.features.users.models import User
 
 
 class QueryChart(TimestampMixin, Base):
@@ -101,10 +102,66 @@ class QueryChart(TimestampMixin, Base):
     )
     published_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
+    #: An analyst's publish is a request, not a publication: it waits here for
+    #: an administrator. Set while the chart is pending, cleared by approval,
+    #: rejection or withdrawal. Whether a chart is pending is derived from this
+    #: (see ``publish_status``) rather than stored a second time.
+    publish_requested_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    publish_requested_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime, nullable=True, index=True
+    )
+
+    #: The last rejection, kept until the author asks again or withdraws, so the
+    #: card can say why instead of the request silently vanishing.
+    publish_rejected_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    publish_rejected_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    publish_rejected_reason: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+
     query: Mapped["SavedQuery"] = relationship(back_populates="charts")
+    publisher: Mapped["User | None"] = relationship(foreign_keys=[published_by], viewonly=True)
+    rejector: Mapped["User | None"] = relationship(
+        foreign_keys=[publish_rejected_by], viewonly=True
+    )
+    requester: Mapped["User | None"] = relationship(
+        foreign_keys=[publish_requested_by], viewonly=True
+    )
     #: Deleting a chart takes it off every dashboard that showed it.
     dashboard_items: Mapped[list["DashboardItem"]] = relationship(
         back_populates="chart",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+
+    @property
+    def publish_status(self) -> str:
+        """``private``, ``pending`` or ``published``, derived from the columns.
+
+        Derived rather than stored: a stored status would be a second source of
+        truth, and the day it disagreed with ``is_public`` the symptom would be
+        a chart some people can see and the API says is private.
+        """
+        if self.is_public:
+            return "published"
+        if self.publish_requested_at is not None:
+            return "pending"
+        return "private"
+
+    @property
+    def published_by_name(self) -> str | None:
+        """Who published it, as a name a viewer can read."""
+        return self.publisher.full_name if self.publisher is not None else None
+
+    @property
+    def publish_rejection(self) -> dict | None:
+        """The standing rejection notice, or None."""
+        if self.publish_rejected_at is None:
+            return None
+        return {
+            "reason": self.publish_rejected_reason,
+            "rejected_at": self.publish_rejected_at,
+            "rejected_by_name": self.rejector.full_name if self.rejector is not None else "",
+        }

@@ -74,6 +74,15 @@ class AuditAction(StrEnum):
     USER_REACTIVATED = "user_reactivated"
     USER_ROLE_CHANGED = "user_role_changed"
     USER_PASSWORD_RESET = "user_password_reset"
+    # Publishing is an administrative act now: an analyst asks, an administrator
+    # decides, and the record has to say who did which. Underscored like the
+    # rest of the set (a stored value is a column value, not a dotted event name).
+    CHART_PUBLISHED = "chart_published"
+    CHART_UNPUBLISHED = "chart_unpublished"
+    CHART_PUBLISH_REQUESTED = "chart_publish_requested"
+    CHART_PUBLISH_APPROVED = "chart_publish_approved"
+    CHART_PUBLISH_REJECTED = "chart_publish_rejected"
+    CHART_PUBLISH_CANCELLED = "chart_publish_cancelled"
 
 
 def enum_column(enum_cls: type[StrEnum], length: int = 20) -> Enum:

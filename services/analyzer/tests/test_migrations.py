@@ -298,9 +298,14 @@ def test_flag_dismissals_cascade_from_their_query(tmp_path, alembic_for):
         key["referred_table"] == "saved_queries" and key["options"].get("ondelete") == "CASCADE"
         for key in keys
     )
-    # One row cannot be dismissed twice on the same query.
+    # One person cannot dismiss a row twice on the same query (0017: the key
+    # includes the user, because dismissals are personal).
     uniques = {tuple(u["column_names"]) for u in inspector.get_unique_constraints("flag_dismissals")}
-    assert ("query_id", "row_fingerprint") in uniques
+    assert ("query_id", "user_id", "row_fingerprint") in uniques
+    assert any(
+        key["referred_table"] == "users" and key["options"].get("ondelete") == "CASCADE"
+        for key in keys
+    )
 
 
 def test_surge_threshold_leaves_existing_charts_unset(tmp_path, alembic_for):
@@ -571,3 +576,148 @@ def test_lists_survive_a_downgrade_and_reapply(tmp_path, alembic_for):
     inspector = inspect(create_engine(url))
     assert {"item_lists", "list_items"} <= set(inspector.get_table_names())
     assert "list_id" in {c["name"] for c in inspector.get_columns("flag_conditions")}
+
+
+def _seed_users_and_a_query(conn):
+    """An admin, an analyst who owns a query, and an ownerless query."""
+    conn.execute(text(
+        "INSERT INTO connections (id, name, db_type, ssl_mode, paused, created_at, updated_at) "
+        "VALUES ('c1', 'c', 'sqlite', 'prefer', 0, '2026-01-01', '2026-01-01')"
+    ))
+    for uid, email, role, at in (
+        ("u-admin", "a@example.com", "admin", "2026-01-01"),
+        ("u-late-admin", "z@example.com", "admin", "2026-02-01"),
+        ("u-analyst", "b@example.com", "analyst", "2026-01-02"),
+    ):
+        conn.execute(text(
+            "INSERT INTO users (id, email, full_name, password_hash, role, is_active, "
+            "must_change_password, failed_login_count, created_at, updated_at) "
+            f"VALUES ('{uid}', '{email}', '{uid}', 'x', '{role}', 1, 0, 0, '{at}', '{at}')"
+        ))
+    for qid, owner in (("q-owned", "'u-analyst'"), ("q-orphan", "NULL")):
+        conn.execute(text(
+            "INSERT INTO saved_queries (id, connection_id, owner_id, name, sql_text, created_at, updated_at) "
+            f"VALUES ('{qid}', 'c1', {owner}, '{qid}', 'SELECT 1', '2026-01-01', '2026-01-01')"
+        ))
+
+
+def test_publishing_by_request_adds_nullable_columns_and_changes_nothing_else(tmp_path, alembic_for):
+    """0017: every existing chart keeps its state; nothing is pending or rejected."""
+    url = f"sqlite:///{tmp_path / 'approval.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "0016_lists")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        _seed_users_and_a_query(conn)
+        conn.execute(text(
+            "INSERT INTO query_charts (id, query_id, name, position, chart_type, is_public, "
+            "created_at, updated_at) VALUES ('ch-pub', 'q-owned', 'Pub', 0, 'table', 1, '2026-01-01', '2026-01-01'), "
+            "('ch-priv', 'q-owned', 'Priv', 1, 'table', 0, '2026-01-01', '2026-01-01')"
+        ))
+
+    command.upgrade(cfg, "head")
+
+    columns = {c["name"]: c for c in inspect(create_engine(url)).get_columns("query_charts")}
+    for name in ("publish_requested_by", "publish_requested_at", "publish_rejected_by",
+                 "publish_rejected_at", "publish_rejected_reason"):
+        assert columns[name]["nullable"] is True, name
+    with engine.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT id, is_public, publish_requested_at, publish_rejected_at FROM query_charts ORDER BY id"
+        )).all()
+    assert [(r[0], bool(r[1]), r[2], r[3]) for r in rows] == [
+        ("ch-priv", False, None, None), ("ch-pub", True, None, None)
+    ]
+
+
+def test_existing_dismissals_go_to_the_owner_of_their_query(tmp_path, alembic_for):
+    """0017 backfill: who could dismiss before is who owns the dismissal now; an
+    ownerless query's go to the earliest administrator; a row with nobody is dropped."""
+    url = f"sqlite:///{tmp_path / 'backfill.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "0016_lists")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        _seed_users_and_a_query(conn)
+        for did, qid, fp in (("d1", "q-owned", "aa"), ("d2", "q-owned", "bb"), ("d3", "q-orphan", "cc")):
+            conn.execute(text(
+                "INSERT INTO flag_dismissals (id, query_id, row_fingerprint, created_at, updated_at) "
+                f"VALUES ('{did}', '{qid}', '{fp}', '2026-01-01', '2026-01-01')"
+            ))
+
+    command.upgrade(cfg, "head")
+
+    with engine.begin() as conn:
+        rows = dict(conn.execute(text("SELECT row_fingerprint, user_id FROM flag_dismissals")).all())
+    assert rows == {"aa": "u-analyst", "bb": "u-analyst", "cc": "u-admin"}
+
+
+def test_a_dismissal_with_nobody_to_own_it_is_dropped(tmp_path, alembic_for):
+    url = f"sqlite:///{tmp_path / 'nobody.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "0016_lists")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO connections (id, name, db_type, ssl_mode, paused, created_at, updated_at) "
+            "VALUES ('c1', 'c', 'sqlite', 'prefer', 0, '2026-01-01', '2026-01-01')"
+        ))
+        conn.execute(text(
+            "INSERT INTO saved_queries (id, connection_id, owner_id, name, sql_text, created_at, updated_at) "
+            "VALUES ('q', 'c1', NULL, 'q', 'SELECT 1', '2026-01-01', '2026-01-01')"
+        ))
+        conn.execute(text(
+            "INSERT INTO flag_dismissals (id, query_id, row_fingerprint, created_at, updated_at) "
+            "VALUES ('d', 'q', 'aa', '2026-01-01', '2026-01-01')"
+        ))
+
+    command.upgrade(cfg, "head")
+
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT count(*) FROM flag_dismissals")).scalar() == 0
+
+
+def test_two_people_can_hold_the_same_dismissal_but_not_one_person_twice(tmp_path, alembic_for):
+    url = f"sqlite:///{tmp_path / 'personal.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        _seed_users_and_a_query(conn)
+    insert = (
+        "INSERT INTO flag_dismissals (id, query_id, user_id, row_fingerprint, created_at, updated_at) "
+        "VALUES ('{}', 'q-owned', '{}', 'aa', '2026-01-01', '2026-01-01')"
+    )
+    with engine.begin() as conn:
+        conn.execute(text(insert.format("d1", "u-analyst")))
+        conn.execute(text(insert.format("d2", "u-admin")))
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(text(insert.format("d3", "u-analyst")))
+
+
+def test_publish_approval_survives_a_downgrade_and_reapply(tmp_path, alembic_for):
+    url = f"sqlite:///{tmp_path / 'approval_cycle.db'}"
+    cfg = alembic_for(url)
+    command.upgrade(cfg, "head")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        _seed_users_and_a_query(conn)
+        for did, uid in (("d1", "u-analyst"), ("d2", "u-admin")):
+            conn.execute(text(
+                "INSERT INTO flag_dismissals (id, query_id, user_id, row_fingerprint, created_at, updated_at) "
+                f"VALUES ('{did}', 'q-owned', '{uid}', 'aa', '2026-01-01', '2026-01-01')"
+            ))
+
+    command.downgrade(cfg, "0016_lists")
+    inspector = inspect(create_engine(url))
+    assert "user_id" not in {c["name"] for c in inspector.get_columns("flag_dismissals")}
+    assert "publish_requested_at" not in {c["name"] for c in inspector.get_columns("query_charts")}
+    # Two people had dismissed the same row; the old key allows one.
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT count(*) FROM flag_dismissals")).scalar() == 1
+
+    command.upgrade(cfg, "head")
+    inspector = inspect(create_engine(url))
+    assert "user_id" in {c["name"] for c in inspector.get_columns("flag_dismissals")}
+    assert "publish_requested_at" in {c["name"] for c in inspector.get_columns("query_charts")}

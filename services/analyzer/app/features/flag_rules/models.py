@@ -229,15 +229,29 @@ class FlagDismissal(TimestampMixin, Base):
     __tablename__ = "flag_dismissals"
     __table_args__ = (
         # Dismissing the same row twice is a no-op, not an error, and the index
-        # is also what makes the per-query lookup on every flagged-view load a
-        # single seek rather than a scan.
-        UniqueConstraint("query_id", "row_fingerprint", name="uq_flag_dismissals_row"),
+        # is also what makes the per-user, per-query lookup on every flagged-view
+        # load a single seek rather than a scan. ``user_id`` is part of the key:
+        # a dismissal is personal (see the column).
+        UniqueConstraint(
+            "query_id", "user_id", "row_fingerprint", name="uq_flag_dismissals_row"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     query_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("saved_queries.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    #: Whose dismissal this is. Personal: a viewer of a published chart who
+    #: dismisses a finding clears it for themselves, and the author, an admin and
+    #: every other viewer still see it. CASCADE because a dismissal is that
+    #: person's own reading state and means nothing without them.
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

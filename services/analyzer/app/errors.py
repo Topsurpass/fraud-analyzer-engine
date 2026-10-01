@@ -58,8 +58,12 @@ class ErrorCode(StrEnum):
     #: hunting a permissions problem that does not exist. See
     #: ``user_service.guard_last_admin``.
     LAST_ADMIN = "LAST_ADMIN"
-    #: The query has a published chart, so its definition is fixed.
+    #: The query has a published chart, or one waiting for approval, so its
+    #: definition is fixed.
     QUERY_FROZEN = "QUERY_FROZEN"
+    #: Approve or reject on a chart nobody has asked to publish (or whose request
+    #: was just decided by another administrator).
+    PUBLISH_NOT_PENDING = "PUBLISH_NOT_PENDING"
     LIST_NAME_TAKEN = "LIST_NAME_TAKEN"
     #: A flag rule still uses the list. ``detail.rules`` names each one.
     LIST_IN_USE = "LIST_IN_USE"
@@ -110,6 +114,7 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.DUPLICATE_EMAIL: 409,
     ErrorCode.LAST_ADMIN: 409,
     ErrorCode.QUERY_FROZEN: 409,
+    ErrorCode.PUBLISH_NOT_PENDING: 409,
     ErrorCode.LIST_NAME_TAKEN: 409,
     ErrorCode.LIST_IN_USE: 409,
     ErrorCode.LIST_NOT_FOUND: 404,
