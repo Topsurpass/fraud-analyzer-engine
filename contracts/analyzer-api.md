@@ -37,6 +37,7 @@ Every non-2xx response, without exception, has this shape:
 | `LIST_NOT_FOUND` | 404 | No list with that id, or a rule names a `list_id` that does not exist (`detail.list_ids`) |
 | `DUPLICATE_NAME` | 409 | A connection, query, or dashboard already has that name |
 | `QUERY_FROZEN` | 409 | The query has a published chart, or one waiting for approval; unpublish or withdraw to edit (administrators may always edit) |
+| `DEFINITION_CHANGED` | 409 | Approve with a `definition_fingerprint` that is not the stored definition's: it changed since it was reviewed and must be read again |
 | `PUBLISH_NOT_PENDING` | 409 | Approve or reject on a chart nobody is waiting on (never requested, withdrawn, or already decided) |
 | `LIST_NAME_TAKEN` | 409 | Another list has that name, ignoring case |
 | `LIST_IN_USE` | 409 | A rule still reads the list; `detail.rules` is `[{rule_name, query_id, query_name}]` for queries the caller can see, `detail.hidden_rule_count` counts the rest |
@@ -346,12 +347,15 @@ all they can do**, and an administrator decides.
 | `POST /queries/charts/{id}/publish` | author; any admin | Admin: `published` at once. Author: `pending`. Already pending or published: no change. |
 | `POST /queries/charts/{id}/publish/cancel` | author; any admin | `pending` becomes `private`; also clears a rejection notice. Does not unpublish. |
 | `POST /queries/charts/{id}/unpublish` | publisher; any admin | Unchanged. An approval keeps the **author** as `published_by`, so the author may retract; an admin's own publish is the admin's to retract. |
-| `GET /queries/charts/publish-requests` | admin | Every `pending` chart, oldest first: `[{chart, query_id, query_name, connection_id, connection_name, requested_by: {id, full_name, email}, requested_at}]`. Others get `403 FORBIDDEN`. |
-| `POST /queries/charts/{id}/publish/approve` | admin | `pending` becomes `published`. |
+| `GET /queries/charts/publish-requests` | admin | Every `pending` chart, oldest first: `[{chart, query_id, query_name, connection_id, connection_name, requested_by: {id, full_name, email}, requested_at, definition_fingerprint}]`. Others get `403 FORBIDDEN`. |
+| `POST /queries/charts/{id}/publish/approve` | admin | Body `{"definition_fingerprint": string}` (required; `422` without it). `pending` becomes `published`, provided the fingerprint is the stored definition's (see below). |
 | `POST /queries/charts/{id}/publish/reject` | admin | Body `{"reason": string \| null}` (at most 500 characters, body optional). `pending` becomes `private` with `publish_rejection`. |
 
 Approve and reject on anything not `pending` are `409 PUBLISH_NOT_PENDING`; for a
-non-admin they are `403 FORBIDDEN`. A chart read carries
+non-admin they are `403 FORBIDDEN`. Every transition is atomic: it is a conditional
+update on the state it was decided from, so an approval cannot publish a request that
+was withdrawn or replaced while the administrator was deciding, and a withdrawal
+cannot clear a publication that landed first (the loser changes nothing). A chart read carries
 `publish_requested_at` (while pending), `publish_rejection`
 (`{reason, rejected_at, rejected_by_name}`, until the author asks again or
 withdraws) and `published_by_name`.
@@ -364,6 +368,29 @@ they are as fixed as the SQL. An administrator may still edit, and doing so does
 not change a pending chart's status. Every transition is audited
 (`chart_published`, `chart_unpublished`, `chart_publish_requested`,
 `chart_publish_approved`, `chart_publish_rejected`, `chart_publish_cancelled`).
+
+### Approval is bound to the definition that was reviewed
+
+`definition_fingerprint` is a sha256 hex over a canonical JSON of what an
+administrator reviews: the query's `sql_text`, `row_limit` and `poll_interval_ms` (as
+stored), the chart's `chart_type`, `x_field`, `y_field`, `series_field` and
+`surge_threshold_pct`, and every rule in position order (name, severity, enabled, and
+each condition's column, operator, `value`, `value2` and `list_id`). It is on each
+`publish-requests` row and on the definition, always the **current** value. `approve`
+takes the value the administrator was shown and answers `409 DEFINITION_CHANGED` when
+the stored definition no longer hashes to it; `PUBLISH_NOT_PENDING` is checked first.
+The refusal deliberately does not return the new value: reading the new definition is
+the only way to learn it. Reject needs no fingerprint.
+
+It closes this: the author requests, the administrator opens the definition, the author
+withdraws (which unfreezes the query), edits the SQL and requests again, and an approval
+from the stale page would publish SQL nobody read.
+
+It does not cover the chart's name or position, the query's name or description, or any
+other chart on the query (each chart has its own fingerprint). **Known limit: a list's
+items are not part of it.** Lists are shared and their creator, or an administrator, can
+edit them, which changes what a published rule flags without changing the definition.
+Closing that means versioning lists into the hash.
 
 ### `GET /queries/charts/{id}/definition`
 
@@ -379,7 +406,8 @@ The SQL and configuration behind a chart, read-only.
                              "value": null, "value2": null, "list_name": "Watchlist"}]}],
   "connection_name": "Payments",
   "owner_name": "Ada Lovelace",
-  "read_only": true
+  "read_only": true,
+  "definition_fingerprint": "9b2f..."
 }
 ```
 
@@ -401,7 +429,9 @@ and sections carry `shared` (true when the caller is not the owner).
 Findings are stored once per query. A **dismissal belongs to the person who made
 it**: `POST` and `DELETE /queries/{id}/flag-dismissals` act on the caller's own
 dismissals, are allowed on any alert-visible query, and do not delete the stored
-finding. Every read (the summary, the flagged view, every poll) excludes the
+finding. Only fingerprints that are stored findings of that query are recorded; unknown
+ones are ignored and not counted in `changed`, so a request cannot grow the table with
+arbitrary hashes (restoring has no such limit, because it only removes). Every read (the summary, the flagged view, every poll) excludes the
 caller's own dismissals and nobody else's, so a viewer clearing what they have read
 hides nothing from the author, an administrator or another viewer. Restoring brings
 a finding back at once, for the caller only. Clearing stored findings

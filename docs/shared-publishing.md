@@ -52,7 +52,7 @@ already reads it keeps working. `publish_status` is derived, never stored twice.
 | `POST /{chart_id}/publish/cancel` | author, or admin | `pending` becomes `private`; also dismisses a rejection notice. On `published`: no change (use unpublish). |
 | `POST /{chart_id}/unpublish` | unchanged | Unchanged rule: the author who published may retract, an admin always. |
 | `GET /publish-requests` | admin only (`FORBIDDEN` otherwise) | Every `pending` chart, oldest first: `PublishRequestRead`. |
-| `POST /{chart_id}/publish/approve` | admin only | `pending` becomes `published`. `published_by` stays the requesting author. Anything not `pending`: `409`, code `PUBLISH_NOT_PENDING`. |
+| `POST /{chart_id}/publish/approve` | admin only | Body `{ "definition_fingerprint": string }` (required). `pending` becomes `published` only if the fingerprint equals the chart's current one (see below). `published_by` stays the requesting author. Not `pending`: `409 PUBLISH_NOT_PENDING`. Fingerprint differs: `409 DEFINITION_CHANGED`. |
 | `POST /{chart_id}/publish/reject` | admin only | Body `{ "reason": string \| null }`, at most 500 characters. `pending` becomes `private` with `publish_rejection` set. Anything not `pending`: `409`, `PUBLISH_NOT_PENDING`. |
 
 `PublishRequestRead`:
@@ -70,6 +70,28 @@ already reads it keeps working. `publish_status` is derived, never stored twice.
 Every transition writes an audit-log entry: `chart.publish_requested`,
 `chart.publish_approved`, `chart.publish_rejected`, `chart.publish_cancelled`,
 and the existing publish and unpublish events.
+
+### Approval is bound to the definition that was reviewed (amendment 1)
+
+An independent review found a bait and switch: the author requests, the admin opens
+the definition, the author withdraws, edits the SQL (the withdrawal unfroze it) and
+requests again, and the admin approves from the stale view. Approval would then
+publish SQL nobody reviewed.
+
+`definition_fingerprint` closes it. It is a sha256 over a canonical JSON of the
+chart's full definition: `sql_text`, `row_limit`, `poll_interval_ms`, the chart's
+`chart_type`, `x_field`, `y_field`, `series_field`, `surge_threshold_pct`, and every
+rule (name, severity, enabled, and each condition's column, operator, values and
+list id). It appears on `PublishRequestRead` and on `ChartDefinitionRead`, always as
+the current value. `approve` takes the fingerprint the admin was shown and refuses
+(`409 DEFINITION_CHANGED`, saying the definition changed since it was reviewed) when
+it no longer matches, so the admin must open the new definition and decide again.
+Reject needs no fingerprint. The dashboard sends the fingerprint from the request row
+it is displaying.
+
+Known limit, not fixed here: a list's items are not part of the fingerprint. Lists
+are shared, and their creator (or an admin) can edit them, which changes what a
+published rule flags without changing the definition.
 
 ### Freeze
 

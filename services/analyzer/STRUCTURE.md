@@ -78,6 +78,7 @@ Extra files appear only where a feature has a distinct second job:
 | `queries/` | `polling.py` | The shared run/poll core used by every read path |
 | `queries/` | `result_cache.py`, `rendered_cache.py`, `sizing.py` | Result caches and payload sizing |
 | `queries/` | `refresher.py`, `scheduler.py` | Background refresh and the timer that runs queries |
+| `charts/` | `fingerprint.py` | The hash an approval is bound to (SQL, limits, mapping, rules). A list's items are deliberately not in it: a known limit, see `contracts/analyzer-api.md` |
 | `flag_rules/` | `engine.py` | Pure evaluation: rows and rules in, flags out |
 | `flag_rules/` | `flagged_rows.py`, `dismissals.py` | The stored queue of matches, and each person's own dismissals of it |
 | `lists/` | `matching.py` | Pure: how an item or a cell becomes a match key, and the member-set cache (keyed by list id and `ItemList.version`). `flag_rules/engine.py` imports it, never the reverse |

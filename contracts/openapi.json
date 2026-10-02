@@ -51,6 +51,7 @@
               "LAST_ADMIN",
               "QUERY_FROZEN",
               "PUBLISH_NOT_PENDING",
+              "DEFINITION_CHANGED",
               "LIST_NAME_TAKEN",
               "LIST_IN_USE",
               "REQUEST_VALIDATION_ERROR",
@@ -247,6 +248,10 @@
             "title": "Connection Name",
             "type": "string"
           },
+          "definition_fingerprint": {
+            "title": "Definition Fingerprint",
+            "type": "string"
+          },
           "owner_name": {
             "anyOf": [
               {
@@ -279,7 +284,8 @@
           "rules",
           "connection_name",
           "owner_name",
-          "read_only"
+          "read_only",
+          "definition_fingerprint"
         ],
         "title": "ChartDefinitionRead",
         "type": "object"
@@ -2452,6 +2458,22 @@
         "title": "PreviewResponse",
         "type": "object"
       },
+      "PublishApproveRequest": {
+        "description": "What approval is bound to: the definition the administrator was shown.",
+        "properties": {
+          "definition_fingerprint": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Definition Fingerprint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "definition_fingerprint"
+        ],
+        "title": "PublishApproveRequest",
+        "type": "object"
+      },
       "PublishRejectRequest": {
         "description": "What an administrator says when declining a request.",
         "properties": {
@@ -2517,6 +2539,10 @@
             "title": "Connection Name",
             "type": "string"
           },
+          "definition_fingerprint": {
+            "title": "Definition Fingerprint",
+            "type": "string"
+          },
           "query_id": {
             "title": "Query Id",
             "type": "string"
@@ -2541,7 +2567,8 @@
           "connection_id",
           "connection_name",
           "requested_by",
-          "requested_at"
+          "requested_at",
+          "definition_fingerprint"
         ],
         "title": "PublishRequestRead",
         "type": "object"
@@ -8862,7 +8889,7 @@
     },
     "/queries/charts/{chart_id}/publish/approve": {
       "post": {
-        "description": "Accept a request: the chart becomes visible to everyone signed in.\n\nAdministrators only. 409 ``PUBLISH_NOT_PENDING`` when nobody is waiting on it.",
+        "description": "Accept a request: the chart becomes visible to everyone signed in.\n\nAdministrators only. The body carries the ``definition_fingerprint`` the\nadministrator was shown (on ``GET /publish-requests`` and the definition):\napproval is bound to the definition that was reviewed, so a definition that has\nchanged since is ``409 DEFINITION_CHANGED``. 409 ``PUBLISH_NOT_PENDING`` when\nnobody is waiting on it, and that is checked first.",
         "operationId": "approve_publish_request_queries_charts__chart_id__publish_approve_post",
         "parameters": [
           {
@@ -8875,6 +8902,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishApproveRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
