@@ -24,7 +24,13 @@ def _approved(client, chart, author, admin_email="boss@example.com"):
     asked = client.post(f"/queries/charts/{chart['id']}/publish", headers=author)
     assert asked.status_code == 200, asked.text
     boss = {"Authorization": f"Bearer {login(client, email=admin_email).json()['token']}"}
-    approved = client.post(f"/queries/charts/{chart['id']}/publish/approve", headers=boss)
+    # The way the dashboard does it: read the definition, approve what was read.
+    shown = client.get(f"/queries/charts/{chart['id']}/definition", headers=boss).json()
+    approved = client.post(
+        f"/queries/charts/{chart['id']}/publish/approve",
+        headers=boss,
+        json={"definition_fingerprint": shown["definition_fingerprint"]},
+    )
     assert approved.status_code == 200, approved.text
     return approved.json()
 

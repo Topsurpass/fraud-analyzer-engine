@@ -17,6 +17,7 @@ from app.db.app_state import get_session
 from app.features.charts import service as query_chart_service
 from app.features.charts.schemas import (
     ChartDefinitionRead,
+    PublishApproveRequest,
     PublishRejectRequest,
     PublishRequestRead,
     QueryChartRead,
@@ -83,15 +84,20 @@ def cancel_publish_request(
 @query_scoped.post("/charts/{chart_id}/publish/approve", response_model=QueryChartRead)
 def approve_publish_request(
     chart_id: str,
+    payload: PublishApproveRequest,
     user: User = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> QueryChartRead:
     """Accept a request: the chart becomes visible to everyone signed in.
 
-    Administrators only. 409 ``PUBLISH_NOT_PENDING`` when nobody is waiting on it.
+    Administrators only. The body carries the ``definition_fingerprint`` the
+    administrator was shown (on ``GET /publish-requests`` and the definition):
+    approval is bound to the definition that was reviewed, so a definition that has
+    changed since is ``409 DEFINITION_CHANGED``. 409 ``PUBLISH_NOT_PENDING`` when
+    nobody is waiting on it, and that is checked first.
     """
     return QueryChartRead.model_validate(
-        query_chart_service.approve(session, chart_id, user)
+        query_chart_service.approve(session, chart_id, user, payload.definition_fingerprint)
     )
 
 

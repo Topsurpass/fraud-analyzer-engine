@@ -27,7 +27,7 @@ KNOWN_ROLES = {
     # feature-specific modules, each described in STRUCTURE.md
     "introspection", "introspection_router", "sessions",
     "execution", "polling", "refresher", "scheduler", "result_cache", "rendered_cache", "sizing",
-    "engine", "dismissals", "flagged_rows",
+    "engine", "dismissals", "flagged_rows", "fingerprint",
     "matching",
 }
 

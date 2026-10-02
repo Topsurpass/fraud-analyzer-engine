@@ -355,3 +355,92 @@ def test_a_dismissal_goes_with_its_user(client, people, alices, sqlite_connectio
     session.commit()
     assert session.query(FlagDismissal).count() == 0
     assert make_user and login  # imports kept honest
+
+
+# --- only real findings can be dismissed ------------------------------------
+
+
+def _dismissals(session):
+    session.expire_all()
+    return session.query(FlagDismissal).count()
+
+
+def test_an_invented_fingerprint_is_ignored_and_not_stored(client, people, alices, session):
+    query, chart = alices
+    _approved(client, chart, people["alice"])
+
+    response = client.post(
+        f"/queries/{query['id']}/flag-dismissals", headers=people["bob"],
+        json={"fingerprints": ["0" * 64, "f" * 64]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["changed"] == 0
+    assert _dismissals(session) == 0
+
+
+def test_a_mixed_request_records_only_the_real_findings(client, people, alices, sqlite_connection, session):
+    query, chart = alices
+    _approved(client, chart, people["alice"])
+    real = _rows(client, people["bob"], sqlite_connection["id"], query["id"])[0]
+
+    response = client.post(
+        f"/queries/{query['id']}/flag-dismissals", headers=people["bob"],
+        json={"fingerprints": [real, "a" * 64, "b" * 64]},
+    )
+
+    assert response.json()["changed"] == 1
+    assert _dismissals(session) == 1
+    assert _count(client, people["bob"], query["id"]) == 1
+
+
+def test_a_finding_of_another_query_cannot_be_dismissed_here(client, people, alices, sqlite_connection, session):
+    """The table is keyed on (query, user, row); a real fingerprint from some other
+    query is still not a finding of this one."""
+    query, chart = alices
+    _approved(client, chart, people["alice"])
+    other = client.post(
+        f"/connections/{sqlite_connection['id']}/queries", headers=people["alice"],
+        json={"name": "Other", "sql_text": SQL},
+    ).json()
+    client.put(f"/queries/{other['id']}/flag-rules", headers=people["alice"],
+               json={"rules": [rule("Small", "amount", "lt", "15")]})
+    client.post(f"/queries/{other['id']}/run", headers=people["alice"])
+    foreign = _rows(client, people["alice"], sqlite_connection["id"], other["id"])[0]
+
+    response = client.post(
+        f"/queries/{query['id']}/flag-dismissals", headers=people["bob"], json={"fingerprints": [foreign]}
+    )
+
+    assert response.json()["changed"] == 0
+    assert _dismissals(session) == 0
+
+
+def test_a_request_cannot_grow_the_table_without_limit(client, people, alices, session):
+    query, chart = alices
+    _approved(client, chart, people["alice"])
+    flood = [f"{n:064x}" for n in range(500)]
+    client.post(f"/queries/{query['id']}/flag-dismissals", headers=people["bob"], json={"fingerprints": flood})
+    assert _dismissals(session) == 0
+
+
+def test_restore_still_works_for_a_row_whose_finding_is_gone(client, people, alices, sqlite_connection, session):
+    """Only recording is limited. Undoing a dismissal never needs the finding."""
+    query, chart = alices
+    _approved(client, chart, people["alice"])
+    victim = _rows(client, people["bob"], sqlite_connection["id"], query["id"])[0]
+    client.post(
+        f"/queries/{query['id']}/flag-dismissals", headers=people["bob"], json={"fingerprints": [victim]}
+    )
+    assert _dismissals(session) == 1
+
+    # The finding stops existing (the author clears the stored findings).
+    cleared = client.delete(f"/queries/{query['id']}/flagged-rows", headers=people["alice"])
+    assert cleared.json()["changed"] == 2
+
+    restored = client.delete(
+        f"/queries/{query['id']}/flag-dismissals", headers=people["bob"], params={"fingerprint": victim}
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["changed"] == 1
+    assert _dismissals(session) == 0

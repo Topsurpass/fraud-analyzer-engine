@@ -64,6 +64,10 @@ class ErrorCode(StrEnum):
     #: Approve or reject on a chart nobody has asked to publish (or whose request
     #: was just decided by another administrator).
     PUBLISH_NOT_PENDING = "PUBLISH_NOT_PENDING"
+    #: Approve with a ``definition_fingerprint`` that is not the stored definition's:
+    #: the SQL, mapping or rules changed since the administrator opened them, so
+    #: they must be read again before anything is published.
+    DEFINITION_CHANGED = "DEFINITION_CHANGED"
     LIST_NAME_TAKEN = "LIST_NAME_TAKEN"
     #: A flag rule still uses the list. ``detail.rules`` names each one.
     LIST_IN_USE = "LIST_IN_USE"
@@ -115,6 +119,7 @@ HTTP_STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.LAST_ADMIN: 409,
     ErrorCode.QUERY_FROZEN: 409,
     ErrorCode.PUBLISH_NOT_PENDING: 409,
+    ErrorCode.DEFINITION_CHANGED: 409,
     ErrorCode.LIST_NAME_TAKEN: 409,
     ErrorCode.LIST_IN_USE: 409,
     ErrorCode.LIST_NOT_FOUND: 404,

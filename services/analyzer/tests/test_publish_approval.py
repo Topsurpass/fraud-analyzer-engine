@@ -37,6 +37,23 @@ def _post(client, headers, path, **kw):
     return client.post(path, headers=headers, **kw)
 
 
+def _approve(client, headers, chart_id, fingerprint=None):
+    """Approve as the dashboard does: send back the fingerprint of what was read.
+
+    ``fingerprint`` overrides it, for the callers who are meant to be refused (they
+    cannot read the definition of somebody else's pending chart anyway).
+    """
+    if fingerprint is None:
+        fingerprint = client.get(
+            f"/queries/charts/{chart_id}/definition", headers=headers
+        ).json()["definition_fingerprint"]
+    return client.post(
+        f"/queries/charts/{chart_id}/publish/approve",
+        headers=headers,
+        json={"definition_fingerprint": fingerprint},
+    )
+
+
 def _status(client, headers, chart_id):
     published = client.get("/queries/charts/published", headers=headers).json()
     return chart_id in [c["id"] for c in published]
@@ -92,7 +109,7 @@ def test_someone_elses_chart_cannot_be_requested(client, people, sqlite_connecti
 
 def test_an_admin_approves_and_everyone_can_then_see_it(client, people, pending):
     _, chart = pending
-    approved = _post(client, people["boss"], f"/queries/charts/{chart['id']}/publish/approve")
+    approved = _approve(client, people["boss"], chart['id'])
     assert approved.status_code == 200, approved.text
     body = approved.json()
     assert body["publish_status"] == "published"
@@ -107,7 +124,7 @@ def test_an_admin_approves_and_everyone_can_then_see_it(client, people, pending)
 def test_an_approval_keeps_the_author_as_publisher(client, people, pending):
     """So the author can retract their own publication, as before."""
     _, chart = pending
-    body = _post(client, people["boss"], f"/queries/charts/{chart['id']}/publish/approve").json()
+    body = _approve(client, people["boss"], chart['id']).json()
     alice_id = client.get("/auth/me", headers=people["alice"]).json()["id"]
     assert body["published_by"] == alice_id
     assert body["published_by_name"] == "An Analyst"
@@ -119,7 +136,7 @@ def test_an_approval_keeps_the_author_as_publisher(client, people, pending):
 def test_only_an_administrator_can_approve_or_reject(client, people, pending):
     _, chart = pending
     for who in ("alice", "bob"):
-        approve = _post(client, people[who], f"/queries/charts/{chart['id']}/publish/approve")
+        approve = _approve(client, people[who], chart["id"], fingerprint="x")
         reject = _post(client, people[who], f"/queries/charts/{chart['id']}/publish/reject", json={})
         assert approve.status_code == 403, who
         assert reject.status_code == 403, who
@@ -131,7 +148,8 @@ def test_only_an_administrator_can_approve_or_reject(client, people, pending):
 @pytest.mark.parametrize("action", ["approve", "reject"])
 def test_deciding_on_a_chart_nobody_asked_about_is_a_conflict(client, people, sqlite_connection, action):
     _, chart = _query_with_chart(client, people["alice"], sqlite_connection)
-    response = _post(client, people["boss"], f"/queries/charts/{chart['id']}/publish/{action}", json={})
+    body = {"definition_fingerprint": "x"} if action == "approve" else {}
+    response = _post(client, people["boss"], f"/queries/charts/{chart['id']}/publish/{action}", json=body)
     assert response.status_code == 409
     assert response.json()["error_code"] == "PUBLISH_NOT_PENDING"
 
@@ -139,8 +157,9 @@ def test_deciding_on_a_chart_nobody_asked_about_is_a_conflict(client, people, sq
 @pytest.mark.parametrize("action", ["approve", "reject"])
 def test_a_request_can_only_be_decided_once(client, people, pending, action):
     _, chart = pending
-    assert _post(client, people["boss"], f"/queries/charts/{chart['id']}/publish/approve").status_code == 200
-    again = _post(client, people["boss"], f"/queries/charts/{chart['id']}/publish/{action}", json={})
+    assert _approve(client, people["boss"], chart['id']).status_code == 200
+    body = {"definition_fingerprint": "x"} if action == "approve" else {}
+    again = _post(client, people["boss"], f"/queries/charts/{chart['id']}/publish/{action}", json=body)
     assert again.status_code == 409
     assert again.json()["error_code"] == "PUBLISH_NOT_PENDING"
 
@@ -203,7 +222,7 @@ def test_the_author_can_withdraw_a_request(client, people, pending):
     assert body["publish_status"] == "private"
     assert body["publish_requested_at"] is None
     # With nothing left to decide on, the admin cannot approve it any more.
-    assert _post(client, people["boss"], f"/queries/charts/{chart['id']}/publish/approve").status_code == 409
+    assert _approve(client, people["boss"], chart['id']).status_code == 409
 
 
 def test_withdrawing_also_clears_a_rejection_notice(client, people, pending):
@@ -216,7 +235,7 @@ def test_withdrawing_also_clears_a_rejection_notice(client, people, pending):
 
 def test_withdrawing_does_not_unpublish(client, people, pending):
     _, chart = pending
-    _post(client, people["boss"], f"/queries/charts/{chart['id']}/publish/approve")
+    _approve(client, people["boss"], chart['id'])
     body = _post(client, people["alice"], f"/queries/charts/{chart['id']}/publish/cancel").json()
     assert body["publish_status"] == "published"
 
@@ -261,7 +280,7 @@ def test_the_queue_holds_only_what_is_waiting_oldest_first(client, people, sqlit
         ids.append(chart["id"])
     for chart_id in ids[:3]:
         _post(client, people["alice"], f"/queries/charts/{chart_id}/publish")
-    _post(client, people["boss"], f"/queries/charts/{ids[1]}/publish/approve")  # decided
+    _approve(client, people["boss"], ids[1])  # decided
     # ids[3] was never requested.
 
     queue = client.get("/queries/charts/publish-requests", headers=people["boss"]).json()
@@ -355,7 +374,7 @@ def test_every_transition_is_audited_with_its_actor(client, people, sqlite_conne
     _, c = _query_with_chart(client, people["alice"], sqlite_connection, name="C")
     for chart in (a, b, c):
         _post(client, people["alice"], f"/queries/charts/{chart['id']}/publish")
-    _post(client, people["boss"], f"/queries/charts/{a['id']}/publish/approve")
+    _approve(client, people["boss"], a['id'])
     _post(client, people["boss"], f"/queries/charts/{b['id']}/publish/reject", json={"reason": "No."})
     _post(client, people["alice"], f"/queries/charts/{c['id']}/publish/cancel")
     _post(client, people["alice"], f"/queries/charts/{a['id']}/unpublish")
@@ -386,13 +405,13 @@ def test_every_transition_is_audited_with_its_actor(client, people, sqlite_conne
 
 def test_a_refused_decision_leaves_no_audit_entry(client, people, pending, session):
     _, chart = pending
-    _post(client, people["bob"], f"/queries/charts/{chart['id']}/publish/approve")
+    _approve(client, people["bob"], chart['id'], fingerprint="x")
     assert _audit(session, AuditAction.CHART_PUBLISH_APPROVED) == []
 
 
 def test_the_audit_log_endpoint_lists_them(client, people, pending):
     _, chart = pending
-    _post(client, people["boss"], f"/queries/charts/{chart['id']}/publish/approve")
+    _approve(client, people["boss"], chart['id'])
     log = client.get("/audit-log", headers=people["boss"])
     assert log.status_code == 200, log.text
     text = log.text
@@ -406,7 +425,7 @@ def test_requesting_does_not_cost_an_execution(client, people, sqlite_connection
     before = len(client.get(f"/queries/{query['id']}/logs", headers=people["alice"]).json())
 
     _post(client, people["alice"], f"/queries/charts/{chart['id']}/publish")
-    _post(client, people["boss"], f"/queries/charts/{chart['id']}/publish/approve")
+    _approve(client, people["boss"], chart['id'])
     client.get(f"/queries/{query['id']}/poll", headers=people["alice"])
     _post(client, people["alice"], f"/queries/charts/{chart['id']}/unpublish")
 

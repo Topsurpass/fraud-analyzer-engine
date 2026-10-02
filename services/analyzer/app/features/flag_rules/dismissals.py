@@ -27,7 +27,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.features.flag_rules.models import FlagDismissal
+from app.features.flag_rules.models import FlaggedRow, FlagDismissal
 from app.features.queries.models import SavedQuery
 from app.features.users.models import User
 
@@ -77,14 +77,29 @@ def dismiss(
     than a conflict: two browser tabs on the same queue is normal, and the
     second one is not an error to report to anybody.
 
+    Only fingerprints that are stored findings of this query are recorded. A
+    dismissal is a row in a table, and any signed-in user may now dismiss on any
+    published query, so accepting arbitrary hashes would let one request grow it
+    without limit. A fingerprint the engine does not hold (invented, stale after
+    the finding stopped matching, or from another query) is ignored and not
+    counted. ``restore`` does not need this: it only ever removes.
+
     Stores the dismissal and nothing else. The finding itself stays, because
     other people's queues are made of it.
     """
-    if not fingerprints:
+    wanted = list(dict.fromkeys(fingerprints))
+    if not wanted:
         return 0
 
+    stored = set(
+        session.scalars(
+            select(FlaggedRow.row_fingerprint).where(
+                FlaggedRow.query_id == query.id, FlaggedRow.row_fingerprint.in_(wanted)
+            )
+        )
+    )
     existing = dismissed_fingerprints(session, query.id, user.id)
-    fresh = [f for f in dict.fromkeys(fingerprints) if f not in existing]
+    fresh = [f for f in wanted if f in stored and f not in existing]
     for fingerprint in fresh:
         session.add(
             FlagDismissal(query_id=query.id, user_id=user.id, row_fingerprint=fingerprint)

@@ -14,13 +14,17 @@ ids, and only genuinely removed ones are deleted.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+import hmac
+from typing import NoReturn
+
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.base import utcnow
 from app.enums import AuditAction
 from app.errors import AppError, ErrorCode
 from app.features.audit import service as audit_service
+from app.features.charts.fingerprint import definition_fingerprint
 from app.features.charts.models import QueryChart
 from app.features.connections.models import Connection
 from app.features.flag_rules.models import FlagRule
@@ -180,15 +184,46 @@ def _chart_for_owner(session: Session, chart_id: str, user: User) -> QueryChart:
     return chart
 
 
-def _clear_request(chart: QueryChart) -> None:
-    chart.publish_requested_by = None
-    chart.publish_requested_at = None
+#: Columns that say "nobody is waiting on this chart".
+_NO_REQUEST = {"publish_requested_by": None, "publish_requested_at": None}
+_NO_REJECTION = {
+    "publish_rejected_by": None,
+    "publish_rejected_at": None,
+    "publish_rejected_reason": None,
+}
 
 
-def _clear_rejection(chart: QueryChart) -> None:
-    chart.publish_rejected_by = None
-    chart.publish_rejected_at = None
-    chart.publish_rejected_reason = None
+def _apply_if(session: Session, chart: QueryChart, conditions: tuple, values: dict) -> bool:
+    """Change a chart only if it is still in the state the caller decided from.
+
+    Every transition is decided from a row that was read a moment earlier, and an
+    administrator's click and an author's withdrawal can land in that gap. Assigning
+    attributes and committing would let a stale approve publish a request that was
+    withdrawn meanwhile, or a stale withdrawal clear a publication. So the change is a
+    single conditional UPDATE and the answer is whether it matched: ``WHERE`` carries
+    the state the decision assumed, and a mismatch changes nothing.
+    """
+    result = session.execute(
+        update(QueryChart)
+        .where(QueryChart.id == chart.id, *conditions)
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    return (result.rowcount or 0) == 1
+
+
+def _audit(session: Session, user: User, action: AuditAction, chart: QueryChart, **extra) -> None:
+    audit_service.record(
+        session, user, action, "chart", chart.id,
+        {"chart": chart.name, "query_id": chart.query_id, **extra}, commit=False,
+    )
+
+
+def _finish(session: Session, chart: QueryChart) -> QueryChart:
+    """Commit and re-read, so the caller sees what the database says now."""
+    session.commit()
+    session.refresh(chart)
+    return chart
 
 
 def publish(session: Session, chart_id: str, user: User) -> QueryChart:
@@ -203,35 +238,27 @@ def publish(session: Session, chart_id: str, user: User) -> QueryChart:
     a retried request are harmless and the original requester and time stand.
     """
     chart = _chart_for_owner(session, chart_id, user)
-    if chart.is_public:
-        return chart
+    now = utcnow()
 
     if user.is_admin:
-        chart.is_public = True
-        chart.published_by = user.id
-        chart.published_at = utcnow()
-        _clear_request(chart)
-        _clear_rejection(chart)
-        audit_service.record(
-            session, user, AuditAction.CHART_PUBLISHED, "chart", chart.id,
-            {"chart": chart.name, "query_id": chart.query_id}, commit=False,
-        )
-        session.commit()
-        redraw_cached(session, chart.query_id)
-        return chart
+        if _apply_if(
+            session, chart, (QueryChart.is_public.is_(False),),
+            {"is_public": True, "published_by": user.id, "published_at": now,
+             **_NO_REQUEST, **_NO_REJECTION},
+        ):
+            _audit(session, user, AuditAction.CHART_PUBLISHED, chart)
+            _finish(session, chart)
+            redraw_cached(session, chart.query_id)
+            return chart
+        return _finish(session, chart)
 
-    if chart.publish_requested_at is not None:
-        return chart
-
-    chart.publish_requested_by = user.id
-    chart.publish_requested_at = utcnow()
-    _clear_rejection(chart)
-    audit_service.record(
-        session, user, AuditAction.CHART_PUBLISH_REQUESTED, "chart", chart.id,
-        {"chart": chart.name, "query_id": chart.query_id}, commit=False,
-    )
-    session.commit()
-    return chart
+    if _apply_if(
+        session, chart,
+        (QueryChart.is_public.is_(False), QueryChart.publish_requested_at.is_(None)),
+        {"publish_requested_by": user.id, "publish_requested_at": now, **_NO_REJECTION},
+    ):
+        _audit(session, user, AuditAction.CHART_PUBLISH_REQUESTED, chart)
+    return _finish(session, chart)
 
 
 def cancel_request(session: Session, chart_id: str, user: User) -> QueryChart:
@@ -239,22 +266,28 @@ def cancel_request(session: Session, chart_id: str, user: User) -> QueryChart:
 
     Unfreezes the query. A published chart is left alone (retract it with
     ``unpublish``), and a private one with nothing to clear is returned as it is.
+    Both halves are conditional on what they clear, so a withdrawal that arrives
+    after an administrator approved changes nothing: it cannot clear a publication.
     """
     chart = _chart_for_owner(session, chart_id, user)
-    if chart.is_public:
-        return chart
 
-    if chart.publish_requested_at is not None:
-        _clear_request(chart)
-        audit_service.record(
-            session, user, AuditAction.CHART_PUBLISH_CANCELLED, "chart", chart.id,
-            {"chart": chart.name, "query_id": chart.query_id}, commit=False,
+    if _apply_if(
+        session, chart,
+        (QueryChart.is_public.is_(False), QueryChart.publish_requested_at.is_not(None)),
+        _NO_REQUEST,
+    ):
+        _audit(session, user, AuditAction.CHART_PUBLISH_CANCELLED, chart)
+    else:
+        _apply_if(
+            session, chart,
+            (
+                QueryChart.is_public.is_(False),
+                QueryChart.publish_requested_at.is_(None),
+                QueryChart.publish_rejected_at.is_not(None),
+            ),
+            _NO_REJECTION,
         )
-        session.commit()
-    elif chart.publish_rejected_at is not None:
-        _clear_rejection(chart)
-        session.commit()
-    return chart
+    return _finish(session, chart)
 
 
 def _require_admin(user: User) -> None:
@@ -275,8 +308,46 @@ def _pending_chart(session: Session, chart_id: str) -> QueryChart:
     return chart
 
 
-def approve(session: Session, chart_id: str, user: User) -> QueryChart:
+def _rules_of(session: Session, query_id: str) -> list[FlagRule]:
+    return list(
+        session.scalars(
+            select(FlagRule)
+            .where(FlagRule.query_id == query_id)
+            .order_by(FlagRule.position)
+            .options(selectinload(FlagRule.conditions))
+        )
+    )
+
+
+def fingerprint_of(session: Session, chart: QueryChart) -> str:
+    """The fingerprint of this chart's definition as it is stored right now."""
+    return definition_fingerprint(chart.query, chart, _rules_of(session, chart.query_id))
+
+
+def _undecided(session: Session, chart_id: str) -> NoReturn:
+    """A request that was lost to somebody else between reading it and writing it."""
+    session.rollback()
+    raise AppError(
+        ErrorCode.PUBLISH_NOT_PENDING,
+        "Nobody is waiting on this chart: it was decided, withdrawn or asked for "
+        "again while you were looking at it.",
+    )
+
+
+def approve(
+    session: Session, chart_id: str, user: User, definition_fingerprint_seen: str
+) -> QueryChart:
     """An administrator accepts a request: the chart becomes visible to everyone.
+
+    Bound to the definition that was read. ``definition_fingerprint_seen`` is what the
+    administrator was shown; if the stored definition no longer hashes to it (the
+    author withdrew, edited and asked again while the page was open) the answer is
+    ``DEFINITION_CHANGED`` and nothing is published. Whether the request is still
+    pending is checked first and wins.
+
+    The write is a conditional update that also requires the request to be the very
+    one that was read, so an approval cannot land on a request withdrawn or replaced
+    in the meantime.
 
     ``published_by`` stays the person who asked, not the approver: the author may
     retract their own publication, and an approval does not take that away. (An
@@ -285,44 +356,69 @@ def approve(session: Session, chart_id: str, user: User) -> QueryChart:
     """
     _require_admin(user)
     chart = _pending_chart(session, chart_id)
-    requester = chart.publish_requested_by
-    chart.is_public = True
-    chart.published_by = requester
-    chart.published_at = utcnow()
-    _clear_request(chart)
-    _clear_rejection(chart)
-    audit_service.record(
-        session, user, AuditAction.CHART_PUBLISH_APPROVED, "chart", chart.id,
-        {"chart": chart.name, "query_id": chart.query_id, "requested_by": requester},
-        commit=False,
-    )
-    session.commit()
+    requested_at, requester = chart.publish_requested_at, chart.publish_requested_by
+
+    current = fingerprint_of(session, chart)
+    if not hmac.compare_digest(current, definition_fingerprint_seen or ""):
+        raise AppError(
+            ErrorCode.DEFINITION_CHANGED,
+            "This chart's definition changed since it was reviewed. Open it again and "
+            "review the current SQL and rules before approving.",
+            # No fingerprint in here, on purpose: a client that could read the new
+            # value out of the refusal could retry without anyone reading the new
+            # definition, which is the whole thing this error exists to prevent.
+        )
+
+    if not _apply_if(
+        session, chart,
+        (
+            QueryChart.is_public.is_(False),
+            QueryChart.publish_requested_at == requested_at,
+            QueryChart.publish_requested_by == requester,
+        ),
+        {"is_public": True, "published_by": requester, "published_at": utcnow(),
+         **_NO_REQUEST, **_NO_REJECTION},
+    ):
+        _undecided(session, chart_id)
+    _audit(session, user, AuditAction.CHART_PUBLISH_APPROVED, chart, requested_by=requester)
+    _finish(session, chart)
     redraw_cached(session, chart.query_id)
     return chart
 
 
 def reject(session: Session, chart_id: str, user: User, reason: str | None) -> QueryChart:
     """An administrator declines a request. The chart stays private and the
-    author sees why, until they ask again or withdraw."""
+    author sees why, until they ask again or withdraw. Needs no fingerprint:
+    declining publishes nothing, so there is nothing to bind it to."""
     _require_admin(user)
     chart = _pending_chart(session, chart_id)
-    requester = chart.publish_requested_by
-    _clear_request(chart)
-    chart.publish_rejected_by = user.id
-    chart.publish_rejected_at = utcnow()
-    chart.publish_rejected_reason = (reason or "").strip() or None
-    audit_service.record(
-        session, user, AuditAction.CHART_PUBLISH_REJECTED, "chart", chart.id,
-        {"chart": chart.name, "query_id": chart.query_id, "requested_by": requester,
-         "reason": chart.publish_rejected_reason},
-        commit=False,
+    requested_at, requester = chart.publish_requested_at, chart.publish_requested_by
+    cleaned = (reason or "").strip() or None
+
+    if not _apply_if(
+        session, chart,
+        (
+            QueryChart.is_public.is_(False),
+            QueryChart.publish_requested_at == requested_at,
+            QueryChart.publish_requested_by == requester,
+        ),
+        {**_NO_REQUEST, "publish_rejected_by": user.id, "publish_rejected_at": utcnow(),
+         "publish_rejected_reason": cleaned},
+    ):
+        _undecided(session, chart_id)
+    _audit(
+        session, user, AuditAction.CHART_PUBLISH_REJECTED, chart,
+        requested_by=requester, reason=cleaned,
     )
-    session.commit()
-    return chart
+    return _finish(session, chart)
 
 
 def list_pending(session: Session, user: User) -> list[dict]:
-    """Every waiting request, oldest first, for an administrator's queue."""
+    """Every waiting request, oldest first, for an administrator's queue.
+
+    Each carries the fingerprint of its definition as stored now, which is what
+    ``approve`` must be given back.
+    """
     _require_admin(user)
     charts = session.scalars(
         select(QueryChart)
@@ -342,6 +438,7 @@ def list_pending(session: Session, user: User) -> list[dict]:
                 "connection_name": connection.name if connection is not None else "",
                 "requested_by": chart.requester,
                 "requested_at": chart.publish_requested_at,
+                "definition_fingerprint": fingerprint_of(session, chart),
             }
         )
     return requests
@@ -366,17 +463,18 @@ def unpublish(session: Session, chart_id: str, user: User) -> QueryChart:
             "can unpublish it.",
         )
 
-    if chart.is_public:
-        chart.is_public = False
-        chart.published_by = None
-        chart.published_at = None
-        audit_service.record(
-            session, user, AuditAction.CHART_UNPUBLISHED, "chart", chart.id,
-            {"chart": chart.name, "query_id": chart.query_id}, commit=False,
-        )
-        session.commit()
+    conditions = (QueryChart.is_public.is_(True),)
+    if not user.is_admin:
+        conditions += (QueryChart.published_by == user.id,)
+    if _apply_if(
+        session, chart, conditions,
+        {"is_public": False, "published_by": None, "published_at": None},
+    ):
+        _audit(session, user, AuditAction.CHART_UNPUBLISHED, chart)
+        _finish(session, chart)
         redraw_cached(session, chart.query_id)
-    return chart
+        return chart
+    return _finish(session, chart)
 
 
 def list_published(session: Session) -> list[QueryChart]:
@@ -432,12 +530,7 @@ def definition(session: Session, chart_id: str, user: User) -> dict:
 
     connection = session.get(Connection, query.connection_id)
     owner = session.get(User, query.owner_id) if query.owner_id else None
-    rules = session.scalars(
-        select(FlagRule)
-        .where(FlagRule.query_id == query.id)
-        .order_by(FlagRule.position)
-        .options(selectinload(FlagRule.conditions))
-    )
+    rules = _rules_of(session, query.id)
     return {
         "chart": chart,
         "query": {
@@ -448,8 +541,10 @@ def definition(session: Session, chart_id: str, user: User) -> dict:
             "row_limit": query_service.resolve_row_limit(query.row_limit),
             "poll_interval_ms": query_service.poll_interval_for(query),
         },
-        "rules": list(rules),
+        "rules": rules,
         "connection_name": connection.name if connection is not None else "",
         "owner_name": owner.full_name if owner is not None else None,
         "read_only": not privileged,
+        # Current, always: the value approve must be given back.
+        "definition_fingerprint": definition_fingerprint(query, chart, rules),
     }

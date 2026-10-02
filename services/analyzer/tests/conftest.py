@@ -46,6 +46,7 @@ _INTEGRATION_MODULES = {
     "test_publish_approval",
     "test_shared_alerts",
     "test_chart_definition",
+    "test_publish_integrity",
     "test_lists_api",
 }
 

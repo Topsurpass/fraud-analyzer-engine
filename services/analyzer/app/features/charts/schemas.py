@@ -125,6 +125,12 @@ class PublishRejectRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
+class PublishApproveRequest(BaseModel):
+    """What approval is bound to: the definition the administrator was shown."""
+
+    definition_fingerprint: str = Field(min_length=1, max_length=128)
+
+
 class RequesterRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -143,6 +149,9 @@ class PublishRequestRead(BaseModel):
     connection_name: str
     requested_by: RequesterRead
     requested_at: UtcDatetime
+    #: Hash of the definition as stored now. Send it back to approve: approval is
+    #: bound to the definition that was reviewed.
+    definition_fingerprint: str
 
 
 class DefinitionQueryRead(BaseModel):
@@ -197,3 +206,6 @@ class ChartDefinitionRead(BaseModel):
     owner_name: str | None
     #: True unless the caller is the author or an administrator.
     read_only: bool
+    #: Hash of what is shown above and in the chart (SQL, limits, mapping, rules), as
+    #: stored now. A list's items are not part of it.
+    definition_fingerprint: str
